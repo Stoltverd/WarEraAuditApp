@@ -184,9 +184,18 @@ export default function App() {
 
   // Compute rankings with optional War Mode combat damage conversion
   const summary = useMemo(() => {
+    const targetCountryId = selectedCountry?._id;
+
     // 1. If timeframe is 'all', always use the complete All-Time cumulative ledger
     if (timeframe === 'all' && cumulative.length > 0) {
-      return calculateCumulativeRankings(cumulative, usersMap, appliedDamageConfig, 'all');
+      return calculateCumulativeRankings(
+        cumulative,
+        usersMap,
+        appliedDamageConfig,
+        'all',
+        undefined,
+        targetCountryId
+      );
     }
 
     // 2. For Daily, Weekly, Monthly, and Custom Range, use the granular transaction stream
@@ -196,13 +205,21 @@ export default function App() {
         usersMap,
         timeframe,
         customRange,
-        appliedDamageConfig
+        appliedDamageConfig,
+        targetCountryId
       );
     }
 
     // 3. If no API key or no granular data, fallback to cumulative ledger with active timeframe
     if (cumulative.length > 0) {
-      return calculateCumulativeRankings(cumulative, usersMap, appliedDamageConfig, timeframe, customRange);
+      return calculateCumulativeRankings(
+        cumulative,
+        usersMap,
+        appliedDamageConfig,
+        timeframe,
+        customRange,
+        targetCountryId
+      );
     }
 
     return {
@@ -218,7 +235,16 @@ export default function App() {
       isGranular: false,
       damageConfig: appliedDamageConfig,
     };
-  }, [timeframe, customRange, isGranularActive, transactions, cumulative, usersMap, appliedDamageConfig]);
+  }, [
+    selectedCountry?._id,
+    timeframe,
+    customRange,
+    isGranularActive,
+    transactions,
+    cumulative,
+    usersMap,
+    appliedDamageConfig,
+  ]);
 
   const [isCalculatingDamage, setIsCalculatingDamage] = useState<boolean>(false);
 
@@ -278,7 +304,12 @@ export default function App() {
       <Header
         countries={countries}
         selectedCountry={selectedCountry}
-        onSelectCountry={(c) => setSelectedCountry(c)}
+        onSelectCountry={(c) => {
+          setSelectedCountry(c);
+          setSelectedDonorId(null);
+          setTransactions([]);
+          setCumulative([]);
+        }}
         isSyncing={isSyncing}
         onSync={handleManualSync}
         isOnline={isOnline}
@@ -642,15 +673,29 @@ export default function App() {
             </div>
           )}
 
-          {/* Formula preview and audit explanation note */}
+          {/* Formula preview and strategic audit disclaimer note */}
           {includeDamage && (
-            <div className="mt-3 text-[11px] text-slate-400 bg-slate-950/50 p-2.5 rounded-xl border border-slate-800/60 flex items-center justify-between flex-wrap gap-2 font-mono">
-              <span className="text-slate-300">
-                Formula: <strong className="text-white">(Damage ÷ 1,000) × {damageRateInput || '0'} BTC</strong> added to citizen donations for {timeframe}.
-              </span>
-              <span className="text-amber-400/90">
-                Audits clearly display Direct BTC vs. Combat Damage BTC breakdown.
-              </span>
+            <div className="mt-3.5 space-y-2.5">
+              <div className="text-[11px] text-slate-400 bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 flex items-center justify-between flex-wrap gap-2 font-mono">
+                <span className="text-slate-300">
+                  Formula: <strong className="text-white">(Damage ÷ 1,000) × {damageRateInput || '0'} BTC</strong> converted as military/munitions contribution for {timeframe}.
+                </span>
+                <span className="text-emerald-400 font-bold flex items-center gap-1">
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  Active {selectedCountry?.name || 'Sovereign'} Citizens Only
+                </span>
+              </div>
+
+              {/* Strategic War Doctrine Audit Disclaimer */}
+              <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-xs text-amber-200/90 flex items-start gap-2.5 leading-relaxed">
+                <ShieldCheck className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <strong className="text-amber-300 block mb-0.5 font-bold">
+                    Strategic Military Expenditure & War Mode Audit Policy:
+                  </strong>
+                  In War Era, dealing heavy combat damage requires substantial personal BTC expenditure on weapons, armor, and munitions. Under this national conversion doctrine, combat output is recognized as monetary contribution to {selectedCountry?.name || 'the nation'}. Non-donating combatants are strictly verified by active sovereign citizenship. Deployed fighters returning home have their full combat records recognized for the national cause.
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -719,6 +764,8 @@ export default function App() {
           donor={selectedDonor}
           onClose={() => setSelectedDonorId(null)}
           countryName={selectedCountry?.name || 'Country'}
+          hasApiKey={Boolean(apiKey)}
+          timeframe={timeframe}
         />
       )}
 

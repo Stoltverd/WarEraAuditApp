@@ -21,6 +21,16 @@ import {
 } from '../types/warera';
 
 /**
+ * Safely extract string country ID from userProfile.country (which can be a string or object)
+ */
+export function normalizeCountryId(country: any): string {
+  if (!country) return '';
+  if (typeof country === 'string') return country.trim();
+  if (typeof country === 'object' && country._id) return String(country._id).trim();
+  return '';
+}
+
+/**
  * Calculate damage points dealt by a user for a given timeframe window
  */
 export function getUserDamageForTimeframe(
@@ -115,7 +125,8 @@ export function calculateGranularRankings(
   usersMap: Record<string, WareraUserLite>,
   timeframe: RankingTimeframe,
   customRange?: CustomDateRange,
-  damageConfig?: DamageDonationConfig
+  damageConfig?: DamageDonationConfig,
+  targetCountryId?: string
 ): RankingSummary {
   const { filtered, startDate, endDate } = filterTransactionsByTimeframe(
     transactions,
@@ -169,13 +180,19 @@ export function calculateGranularRankings(
   const appliedRate = damageConfig?.enabled ? (Number(damageConfig.ratePer1k) || 0) : 0;
 
   // If War Mode damage donations is active, also include country citizens who dealt combat damage
-  // even if they have not made a direct monetary donation
+  // even if they have not made a direct monetary donation, provided they hold active citizenship in the audited country!
   if (damageConfig?.enabled && appliedRate > 0) {
     Object.values(usersMap).forEach((userProfile) => {
       if (!userProfile || !userProfile._id) return;
       const uid = userProfile._id;
-      // Skip if already has direct transactions
+      // Skip if already has direct transactions in this country
       if (donorMap[uid]) return;
+
+      // STRICT SOVEREIGN CITIZENSHIP CHECK FOR PURE FIGHTERS:
+      // A fighter who has not donated cash to this country MUST currently be a registered citizen of this nation!
+      if (targetCountryId && normalizeCountryId(userProfile.country) !== targetCountryId) {
+        return;
+      }
 
       const rawDamageDealt = getUserDamageForTimeframe(userProfile, timeframe, customRange);
       if (rawDamageDealt > 0) {
@@ -207,7 +224,12 @@ export function calculateGranularRankings(
     let rawDamageDealt = 0;
     let damageAmount = 0;
 
-    if (damageConfig?.enabled && appliedRate > 0) {
+    // Universal Sovereign Rule: Combat damage is ONLY converted if the donor is CURRENTLY a citizen of this country!
+    const isCurrentCitizen = Boolean(
+      targetCountryId && normalizeCountryId(userProfile?.country) === targetCountryId
+    );
+
+    if (damageConfig?.enabled && appliedRate > 0 && isCurrentCitizen) {
       rawDamageDealt = getUserDamageForTimeframe(userProfile, timeframe, customRange);
       damageAmount = parseFloat(((rawDamageDealt / 1000) * appliedRate).toFixed(3));
       totalDamage += damageAmount;
@@ -224,7 +246,7 @@ export function calculateGranularRankings(
       directAmount: parseFloat(d.directAmount.toFixed(3)),
       damageAmount,
       rawDamageDealt,
-      appliedRatePer1k: appliedRate,
+      appliedRatePer1k: isCurrentCitizen ? appliedRate : 0,
       transactions: sortedTx,
       donations: sortedTx,
     };
@@ -267,7 +289,9 @@ export function calculateCumulativeRankings(
   usersMap: Record<string, WareraUserLite>,
   damageConfig?: DamageDonationConfig,
   timeframe: RankingTimeframe = 'all',
-  customRange?: CustomDateRange
+  customRange?: CustomDateRange,
+  targetCountryId?: string,
+  transactions?: WareraTransaction[]
 ): RankingSummary {
   let totalDirect = 0;
   let totalDamage = 0;
@@ -281,7 +305,12 @@ export function calculateCumulativeRankings(
     let rawDamageDealt = 0;
     let damageAmount = 0;
 
-    if (damageConfig?.enabled && appliedRate > 0) {
+    // Universal Sovereign Rule: Combat damage is ONLY converted if the donor is CURRENTLY a citizen of this country!
+    const isCurrentCitizen = Boolean(
+      targetCountryId && normalizeCountryId(userProfile?.country) === targetCountryId
+    );
+
+    if (damageConfig?.enabled && appliedRate > 0 && isCurrentCitizen) {
       rawDamageDealt = getUserDamageForTimeframe(userProfile, timeframe, customRange);
       damageAmount = parseFloat(((rawDamageDealt / 1000) * appliedRate).toFixed(3));
       totalDamage += damageAmount;
@@ -299,6 +328,15 @@ export function calculateCumulativeRankings(
       createdAt: c.updatedAt || c.createdAt,
     };
 
+    // Calculate verified country-specific donations count specifically for this country
+    const countrySpecificTxs = transactions && targetCountryId
+      ? transactions.filter(
+          (t) => t.userId === c.userId && (!t.countryId || t.countryId === targetCountryId)
+        )
+      : [];
+    const donationCount = countrySpecificTxs.length > 0 ? countrySpecificTxs.length : 1;
+    const resolvedTransactions = countrySpecificTxs.length > 0 ? countrySpecificTxs : [singleTx];
+
     return {
       rank: 0,
       userId: c.userId,
@@ -308,24 +346,31 @@ export function calculateCumulativeRankings(
       directAmount: parseFloat(directAmount.toFixed(3)),
       damageAmount,
       rawDamageDealt,
-      appliedRatePer1k: appliedRate,
-      transactionCount: 1, // Represents lifetime accumulated donations
+      appliedRatePer1k: isCurrentCitizen ? appliedRate : 0,
+      transactionCount: donationCount,
       lastDonationAt: c.updatedAt || c.createdAt,
       firstDonationAt: c.createdAt,
-      transactions: [singleTx],
-      donations: [singleTx],
-      isCumulativeOnly: true,
+      transactions: resolvedTransactions,
+      donations: resolvedTransactions,
+      isCumulativeOnly: countrySpecificTxs.length === 0,
     };
   });
 
   // If War Mode damage donations is active, also include country citizens who dealt combat damage
-  // even if they have not made a cumulative monetary donation
+  // even if they have not made a cumulative monetary donation, provided they hold active citizenship in the audited country!
   if (damageConfig?.enabled && appliedRate > 0) {
     const existingDonorIds = new Set(cumulative.map((c) => c.userId));
     Object.values(usersMap).forEach((userProfile) => {
       if (!userProfile || !userProfile._id) return;
       const uid = userProfile._id;
+      // Skip if already in cumulative monetary donations
       if (existingDonorIds.has(uid)) return;
+
+      // STRICT SOVEREIGN CITIZENSHIP CHECK FOR PURE FIGHTERS:
+      // A fighter who has not donated cash to this country MUST currently be a registered citizen of this nation!
+      if (targetCountryId && normalizeCountryId(userProfile.country) !== targetCountryId) {
+        return;
+      }
 
       const rawDamageDealt = getUserDamageForTimeframe(userProfile, timeframe, customRange);
       if (rawDamageDealt > 0) {
