@@ -10,16 +10,19 @@ import {
   WareraUserLite,
 } from '../types/warera';
 
+// War Era upstream tRPC endpoint supporting native browser CORS (access-control-allow-origin: *)
+const WARERA_TRPC_BASE = 'https://api2.warera.io/trpc';
+
 /**
  * Fetch all sovereign countries from War Era, sorted alphabetically
  */
 export async function getCountries(): Promise<WareraCountry[]> {
   try {
-    const res = await fetch('/api/warera/country.getAllCountries', {
+    const res = await fetch(`${WARERA_TRPC_BASE}/country.getAllCountries`, {
       headers: { 'Accept': 'application/json' },
     });
 
-    if (!res.ok) {
+    if (!res.ok || !res.headers.get('content-type')?.includes('application/json')) {
       throw new Error(`Country API responded with status ${res.status}`);
     }
 
@@ -77,7 +80,7 @@ export async function fetchGranularDonationTransactions(
     }
 
     const encoded = encodeURIComponent(JSON.stringify(queryInput));
-    const res = await fetch(`/api/warera/transaction.getPaginatedTransactions?input=${encoded}`, {
+    const res = await fetch(`${WARERA_TRPC_BASE}/transaction.getPaginatedTransactions?input=${encoded}`, {
       headers: {
         'Accept': 'application/json',
         'X-API-Key': apiKey.trim(),
@@ -165,9 +168,11 @@ export async function fetchPublicCumulativeDonations(
     }
 
     const encoded = encodeURIComponent(JSON.stringify(queryInput));
-    const res = await fetch(`/api/warera/donation.getManyPaginated?input=${encoded}`);
+    const res = await fetch(`${WARERA_TRPC_BASE}/donation.getManyPaginated?input=${encoded}`, {
+      headers: { 'Accept': 'application/json' },
+    });
 
-    if (!res.ok) {
+    if (!res.ok || !res.headers.get('content-type')?.includes('application/json')) {
       break;
     }
 
@@ -207,8 +212,10 @@ export async function fetchUserLite(userId: string): Promise<WareraUserLite | nu
 
   try {
     const encoded = encodeURIComponent(JSON.stringify({ userId }));
-    const res = await fetch(`/api/warera/user.getUserLite?input=${encoded}`);
-    if (!res.ok) return null;
+    const res = await fetch(`${WARERA_TRPC_BASE}/user.getUserLite?input=${encoded}`, {
+      headers: { 'Accept': 'application/json' },
+    });
+    if (!res.ok || !res.headers.get('content-type')?.includes('application/json')) return null;
 
     const json = await res.json();
     const data = json?.result?.data;
@@ -295,8 +302,10 @@ export async function ensureDonorsDamageStats(
       chunk.map(async (uid) => {
         try {
           const encoded = encodeURIComponent(JSON.stringify({ userId: uid }));
-          const res = await fetch(`/api/warera/user.getUserLite?input=${encoded}`);
-          if (!res.ok) return null;
+          const res = await fetch(`${WARERA_TRPC_BASE}/user.getUserLite?input=${encoded}`, {
+            headers: { 'Accept': 'application/json' },
+          });
+          if (!res.ok || !res.headers.get('content-type')?.includes('application/json')) return null;
           const json = await res.json();
           const data = json?.result?.data;
           if (data && data._id) {
@@ -344,8 +353,10 @@ export async function fetchCountryCitizens(
 ): Promise<string[]> {
   try {
     const encoded = encodeURIComponent(JSON.stringify({ countryId, limit }));
-    const res = await fetch(`/api/warera/user.getUsersByCountry?input=${encoded}`);
-    if (!res.ok) return [];
+    const res = await fetch(`${WARERA_TRPC_BASE}/user.getUsersByCountry?input=${encoded}`, {
+      headers: { 'Accept': 'application/json' },
+    });
+    if (!res.ok || !res.headers.get('content-type')?.includes('application/json')) return [];
     const json = await res.json();
     const items: Array<{ _id: string }> = json?.result?.data?.items || [];
     return items.map((item) => item._id).filter(Boolean);

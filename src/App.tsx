@@ -98,17 +98,12 @@ export default function App() {
     setApiKey(savedKey);
   }, []);
 
-  // Load countries on startup
+  // Load countries on startup without auto-selecting any country
   useEffect(() => {
     async function loadCountryList() {
       try {
         const list = await getCountries();
         setCountries(list);
-        if (list.length > 0 && !selectedCountry) {
-          // Default to Colombia (or first country)
-          const col = list.find((c) => c.name.toLowerCase() === 'colombia' || c.code === 'co');
-          setSelectedCountry(col || list[0]);
-        }
       } catch (err) {
         console.error('Failed to load countries:', err);
       }
@@ -162,6 +157,10 @@ export default function App() {
   const handleManualSync = () => {
     if (selectedCountry) {
       executeSync(selectedCountry, apiKey);
+    } else {
+      // Trigger header country selector dropdown if clicked with no country chosen
+      const countryBtn = document.querySelector('header button[type="button"]') as HTMLButtonElement;
+      countryBtn?.click();
     }
   };
 
@@ -658,38 +657,62 @@ export default function App() {
           )}
         </div>
 
-        {/* Aggregate KPI Summary Stats */}
-        <RankingStats
-          summary={summary}
-          countryName={selectedCountry?.name || 'Selected Country'}
-          onSelectDonor={(uid) => setSelectedDonorId(uid)}
-        />
+        {!selectedCountry ? (
+          <div className="my-8 p-8 rounded-3xl bg-slate-900/90 border border-slate-800 text-center max-w-xl mx-auto shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+            <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto mb-4 text-3xl shadow-lg">
+              🌐
+            </div>
+            <h2 className="text-xl font-black text-white mb-2">Select a Nation to Begin Audit</h2>
+            <p className="text-xs text-slate-400 leading-relaxed mb-6">
+              Choose any sovereign country from the 180+ nations in the top menu to view citizen donations, war mode damage rankings, and transparent audit receipts.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                const countryBtn = document.querySelector('header button[type="button"]') as HTMLButtonElement;
+                countryBtn?.click();
+              }}
+              className="px-6 py-3 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black rounded-xl text-xs transition shadow-lg shadow-amber-500/20"
+            >
+              Browse 180 Countries
+            </button>
+          </div>
+        ) : (
+          <>
+            {/* Aggregate KPI Summary Stats */}
+            <RankingStats
+              summary={summary}
+              countryName={selectedCountry.name}
+              onSelectDonor={(uid) => setSelectedDonorId(uid)}
+            />
 
-        {/* Visual Top-3 Podium */}
-        {summary.leaderboard.length >= 2 && (
-          <Podium
-            topDonors={summary.leaderboard.slice(0, 3)}
-            onSelectDonor={(uid) => setSelectedDonorId(uid)}
-          />
+            {/* Visual Top-3 Podium */}
+            {summary.leaderboard.length >= 2 && (
+              <Podium
+                topDonors={summary.leaderboard.slice(0, 3)}
+                onSelectDonor={(uid) => setSelectedDonorId(uid)}
+              />
+            )}
+
+            {/* Detailed Leaderboard Table with All Donors */}
+            <LeaderboardTable
+              leaderboard={summary.leaderboard}
+              totalAmountDonated={summary.totalAmountDonated}
+              onSelectDonor={(uid) => setSelectedDonorId(uid)}
+              timeframe={
+                timeframe === 'daily'
+                  ? 'Today (Past 24 Hours)'
+                  : timeframe === 'weekly'
+                  ? 'This Week (Past 7 Days)'
+                  : timeframe === 'monthly'
+                  ? 'This Month (Past 30 Days)'
+                  : timeframe === 'custom'
+                  ? `Custom Window (${customRange.startDate} to ${customRange.endDate})`
+                  : 'All-Time Record'
+              }
+            />
+          </>
         )}
-
-        {/* Detailed Leaderboard Table with All Donors */}
-        <LeaderboardTable
-          leaderboard={summary.leaderboard}
-          totalAmountDonated={summary.totalAmountDonated}
-          onSelectDonor={(uid) => setSelectedDonorId(uid)}
-          timeframe={
-            timeframe === 'daily'
-              ? 'Today (Past 24 Hours)'
-              : timeframe === 'weekly'
-              ? 'This Week (Past 7 Days)'
-              : timeframe === 'monthly'
-              ? 'This Month (Past 30 Days)'
-              : timeframe === 'custom'
-              ? `Custom Window (${customRange.startDate} to ${customRange.endDate})`
-              : 'All-Time Record'
-          }
-        />
       </main>
 
       {/* Citizen Drill-down Audit Modal */}

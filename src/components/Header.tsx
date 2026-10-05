@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { WareraCountry } from '../types/warera';
 import {
   Globe,
@@ -80,6 +80,18 @@ export const Header: React.FC<HeaderProps> = ({
     }, 1200);
   };
 
+  // Close modal on Escape key press
+  useEffect(() => {
+    if (!isKeyModalOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsKeyModalOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isKeyModalOpen]);
+
   return (
     <header className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 text-white">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
@@ -108,14 +120,18 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             type="button"
             onClick={() => setIsCountryMenuOpen(!isCountryMenuOpen)}
-            className="w-full flex items-center justify-between gap-3 px-3.5 py-2 bg-slate-800/90 hover:bg-slate-750 border border-slate-700 rounded-xl transition text-left text-sm shadow-sm"
+            className={`w-full flex items-center justify-between gap-3 px-3.5 py-2 rounded-xl transition text-left text-sm shadow-sm ${
+              !selectedCountry
+                ? 'bg-slate-800 border-2 border-amber-500/60 ring-2 ring-amber-500/20 hover:border-amber-400'
+                : 'bg-slate-800/90 hover:bg-slate-750 border border-slate-700'
+            }`}
           >
             <div className="flex items-center gap-2.5 truncate">
               <span className="text-xl">
                 {selectedCountry ? getFlagEmoji(selectedCountry.code) : '🌐'}
               </span>
-              <span className="font-extrabold text-slate-200 truncate">
-                {selectedCountry ? selectedCountry.name : 'Select Country...'}
+              <span className={`truncate ${!selectedCountry ? 'font-black text-amber-300' : 'font-extrabold text-slate-200'}`}>
+                {selectedCountry ? selectedCountry.name : 'Choose Country to Audit...'}
               </span>
               {selectedCountry && (
                 <span className="text-xs text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full border border-amber-400/20 font-mono font-bold hidden md:inline">
@@ -240,23 +256,39 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* API Key Modal */}
       {isKeyModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-3xl max-w-lg w-full p-6 shadow-2xl relative">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <div className="flex items-center gap-2">
-                <Key className="w-5 h-5 text-amber-400" />
-                <h3 className="text-lg font-bold text-white">War Era API Token</h3>
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setIsKeyModalOpen(false);
+            }
+          }}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm overflow-y-auto flex min-h-full items-center justify-center p-4 sm:p-6"
+        >
+          <div className="relative w-full max-w-lg max-h-[90vh] flex flex-col bg-slate-900 border border-slate-700 rounded-3xl p-5 sm:p-6 shadow-2xl my-auto animate-in fade-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800 shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400">
+                  <Key className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-white">War Era API Token</h3>
+                  <p className="text-[11px] text-slate-400">Private key for authenticating transaction receipts</p>
+                </div>
               </div>
               <button
                 type="button"
                 onClick={() => setIsKeyModalOpen(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-white"
+                className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="my-4 space-y-3">
+            {/* Scrollable Modal Content */}
+            <div className="flex-1 overflow-y-auto pr-1 my-4 space-y-3.5">
               <p className="text-xs text-slate-300 leading-relaxed">
                 To calculate <strong>genuine Daily (24h) and Weekly (7d) rankings</strong> and view individual transaction records (such as 10 BTC donations), War Era requires an API token to access the individual transaction stream via{' '}
                 <code className="text-amber-400 bg-slate-800 px-1 py-0.5 rounded font-mono">
@@ -275,6 +307,7 @@ export const Header: React.FC<HeaderProps> = ({
                   value={inputKey}
                   onChange={(e) => setInputKey(e.target.value)}
                   className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-amber-400 font-mono"
+                  autoFocus
                 />
               </div>
 
@@ -289,19 +322,20 @@ export const Header: React.FC<HeaderProps> = ({
                 <div>
                   <span className="font-bold text-slate-200">Where do I get my token?</span>
                   <br />
-                  Log into War Era $\rightarrow$ Settings / Profile $\rightarrow$ API Access, and copy your private key. It is stored solely on your device.
+                  Log into War Era $\rightarrow$ Settings / Profile $\rightarrow$ API Access, and copy your private key. It is stored securely on your browser device only.
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center justify-between pt-3 border-t border-slate-800">
+            {/* Modal Footer Actions */}
+            <div className="flex items-center justify-between pt-3 border-t border-slate-800 shrink-0">
               <button
                 type="button"
                 onClick={() => {
                   setInputKey('');
                   onSaveApiKey('');
                 }}
-                className="text-xs text-rose-400 hover:text-rose-300 font-semibold"
+                className="text-xs text-rose-400 hover:text-rose-300 font-semibold transition"
               >
                 Clear Token
               </button>
@@ -310,14 +344,14 @@ export const Header: React.FC<HeaderProps> = ({
                 <button
                   type="button"
                   onClick={() => setIsKeyModalOpen(false)}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold"
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={handleSaveKey}
-                  className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-xl text-xs font-extrabold shadow-md shadow-amber-500/20"
+                  className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-xl text-xs font-extrabold shadow-md shadow-amber-500/20 transition"
                 >
                   Save & Connect
                 </button>
