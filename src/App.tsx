@@ -25,6 +25,7 @@ import { Podium } from './components/Podium';
 import { LeaderboardTable } from './components/LeaderboardTable';
 import { CitizenDetailModal } from './components/CitizenDetailModal';
 import { ExportModal } from './components/ExportModal';
+import { ApiKeyModal } from './components/ApiKeyModal';
 import {
   CalendarDays,
   Share2,
@@ -48,6 +49,7 @@ export default function App() {
 
   const [timeframe, setTimeframe] = useState<RankingTimeframe>('daily');
   const [apiKey, setApiKey] = useState<string>('');
+  const [isKeyModalOpen, setIsKeyModalOpen] = useState<boolean>(false);
   const [isGranularActive, setIsGranularActive] = useState<boolean>(false);
 
   // Helper date strings for Custom Range (defaults to last 14 days)
@@ -281,7 +283,7 @@ export default function App() {
         onSync={handleManualSync}
         isOnline={isOnline}
         apiKey={apiKey}
-        onSaveApiKey={handleSaveApiKey}
+        onOpenKeyModal={() => setIsKeyModalOpen(true)}
       />
 
       {/* Main Content Area */}
@@ -303,7 +305,7 @@ export default function App() {
 
         {/* API Key Status Notice */}
         {!apiKey && (
-          <div className="mb-6 p-4 rounded-2xl bg-gradient-to-r from-amber-500/15 via-slate-900 to-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="mb-6 p-4 rounded-2xl bg-gradient-to-r from-amber-500/15 via-slate-900 to-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg">
             <div className="flex items-center gap-3">
               <Key className="w-5 h-5 text-amber-400 shrink-0" />
               <div>
@@ -315,11 +317,7 @@ export default function App() {
             </div>
             <button
               type="button"
-              onClick={() => {
-                // Focus header key button or trigger key modal
-                const btn = document.querySelector('header button[title*="API Token"]') as HTMLButtonElement;
-                btn?.click();
-              }}
+              onClick={() => setIsKeyModalOpen(true)}
               className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl text-xs transition shrink-0 shadow-md shadow-amber-500/20"
             >
               Connect API Token
@@ -732,6 +730,14 @@ export default function App() {
           onClose={() => setIsExportOpen(false)}
         />
       )}
+
+      {/* API Key Modal */}
+      <ApiKeyModal
+        isOpen={isKeyModalOpen}
+        onClose={() => setIsKeyModalOpen(false)}
+        apiKey={apiKey}
+        onSaveApiKey={handleSaveApiKey}
+      />
 
       {/* Footer */}
       <footer className="mt-12 border-t border-slate-800/80 py-6 text-center text-xs text-slate-500 bg-slate-950">

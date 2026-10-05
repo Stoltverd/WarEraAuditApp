@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { WareraCountry } from '../types/warera';
 import {
   Globe,
@@ -9,9 +9,6 @@ import {
   Coins,
   Key,
   ShieldCheck,
-  AlertCircle,
-  X,
-  ExternalLink,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -22,7 +19,7 @@ interface HeaderProps {
   onSync: () => void;
   isOnline: boolean;
   apiKey: string;
-  onSaveApiKey: (key: string) => void;
+  onOpenKeyModal: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -33,13 +30,10 @@ export const Header: React.FC<HeaderProps> = ({
   onSync,
   isOnline,
   apiKey,
-  onSaveApiKey,
+  onOpenKeyModal,
 }) => {
   const [isCountryMenuOpen, setIsCountryMenuOpen] = useState(false);
-  const [isKeyModalOpen, setIsKeyModalOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [inputKey, setInputKey] = useState(apiKey);
-  const [savedSuccess, setSavedSuccess] = useState(false);
 
   const filteredCountries = countries.filter(
     (c) =>
@@ -70,27 +64,6 @@ export const Header: React.FC<HeaderProps> = ({
   const getCountryWealthValue = (c: WareraCountry) => {
     return c.countryWealth?.value ?? c.rankings?.countryWealth?.value ?? c.money ?? 0;
   };
-
-  const handleSaveKey = () => {
-    onSaveApiKey(inputKey.trim());
-    setSavedSuccess(true);
-    setTimeout(() => {
-      setSavedSuccess(false);
-      setIsKeyModalOpen(false);
-    }, 1200);
-  };
-
-  // Close modal on Escape key press
-  useEffect(() => {
-    if (!isKeyModalOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setIsKeyModalOpen(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isKeyModalOpen]);
 
   return (
     <header className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 text-white">
@@ -211,10 +184,7 @@ export const Header: React.FC<HeaderProps> = ({
           {/* API Key Status Pill */}
           <button
             type="button"
-            onClick={() => {
-              setInputKey(apiKey);
-              setIsKeyModalOpen(true);
-            }}
+            onClick={onOpenKeyModal}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition ${
               apiKey
                 ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25'
@@ -253,113 +223,6 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         </div>
       </div>
-
-      {/* API Key Modal */}
-      {isKeyModalOpen && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) {
-              setIsKeyModalOpen(false);
-            }
-          }}
-          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm overflow-y-auto flex min-h-full items-center justify-center p-4 sm:p-6"
-        >
-          <div className="relative w-full max-w-lg max-h-[90vh] flex flex-col bg-slate-900 border border-slate-700 rounded-3xl p-5 sm:p-6 shadow-2xl my-auto animate-in fade-in zoom-in-95 duration-150">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800 shrink-0">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400">
-                  <Key className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-base sm:text-lg font-bold text-white">War Era API Token</h3>
-                  <p className="text-[11px] text-slate-400">Private key for authenticating transaction receipts</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsKeyModalOpen(false)}
-                className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Scrollable Modal Content */}
-            <div className="flex-1 overflow-y-auto pr-1 my-4 space-y-3.5">
-              <p className="text-xs text-slate-300 leading-relaxed">
-                To calculate <strong>genuine Daily (24h) and Weekly (7d) rankings</strong> and view individual transaction records (such as 10 BTC donations), War Era requires an API token to access the individual transaction stream via{' '}
-                <code className="text-amber-400 bg-slate-800 px-1 py-0.5 rounded font-mono">
-                  transaction.getPaginatedTransactions
-                </code>
-                .
-              </p>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
-                  Your War Era API Key / Token
-                </label>
-                <input
-                  type="password"
-                  placeholder="Paste your War Era API token here..."
-                  value={inputKey}
-                  onChange={(e) => setInputKey(e.target.value)}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-amber-400 font-mono"
-                  autoFocus
-                />
-              </div>
-
-              {savedSuccess && (
-                <div className="p-2.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center gap-2">
-                  <span>✓</span> API Token saved! Syncing granular transaction logs...
-                </div>
-              )}
-
-              <div className="p-3 bg-slate-800/60 rounded-xl border border-slate-700/60 flex items-start gap-2.5 text-xs text-slate-400">
-                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                <div>
-                  <span className="font-bold text-slate-200">Where do I get my token?</span>
-                  <br />
-                  Log into War Era $\rightarrow$ Settings / Profile $\rightarrow$ API Access, and copy your private key. It is stored securely on your browser device only.
-                </div>
-              </div>
-            </div>
-
-            {/* Modal Footer Actions */}
-            <div className="flex items-center justify-between pt-3 border-t border-slate-800 shrink-0">
-              <button
-                type="button"
-                onClick={() => {
-                  setInputKey('');
-                  onSaveApiKey('');
-                }}
-                className="text-xs text-rose-400 hover:text-rose-300 font-semibold transition"
-              >
-                Clear Token
-              </button>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsKeyModalOpen(false)}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold transition"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSaveKey}
-                  className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-xl text-xs font-extrabold shadow-md shadow-amber-500/20 transition"
-                >
-                  Save & Connect
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </header>
   );
 };
