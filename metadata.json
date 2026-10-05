@@ -1,0 +1,6 @@
+{
+  "name": "War Era Country Donation Rankings",
+  "description": "Analyze country transaction donations, track citizen contributions, and view daily, weekly, and monthly leaderboards using the War Era API.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
