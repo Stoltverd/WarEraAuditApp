@@ -5,9 +5,10 @@ import { Crown, Medal, Award, ExternalLink, Trophy } from 'lucide-react';
 interface PodiumProps {
   topDonors: DonorRankingItem[];
   onSelectDonor: (userId: string) => void;
+  timeframePhrase?: string;
 }
 
-export const Podium: React.FC<PodiumProps> = ({ topDonors, onSelectDonor }) => {
+export const Podium: React.FC<PodiumProps> = ({ topDonors, onSelectDonor, timeframePhrase }) => {
   if (!topDonors || topDonors.length === 0) return null;
 
   const first = topDonors[0];
@@ -145,9 +146,14 @@ export const Podium: React.FC<PodiumProps> = ({ topDonors, onSelectDonor }) => {
     <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-6 mb-8 shadow-xl">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-base font-bold text-white flex items-center gap-2">
-            <Trophy className="w-5 h-5 text-amber-400" />
-            Top Contributing Citizens
+          <h2 className="text-base font-bold text-white flex items-center gap-2 flex-wrap">
+            <Trophy className="w-5 h-5 text-amber-400 shrink-0" />
+            <span>Top Contributing Citizens</span>
+            {timeframePhrase && (
+              <span className="text-amber-400 font-semibold text-xs sm:text-sm bg-amber-500/10 px-2.5 py-0.5 rounded-lg border border-amber-500/20">
+                {timeframePhrase}
+              </span>
+            )}
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
             National podium for highest BTC contributions

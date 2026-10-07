@@ -20,6 +20,8 @@ interface HeaderProps {
   isOnline: boolean;
   apiKey: string;
   onOpenKeyModal: () => void;
+  activeMode: 'leaderboard' | 'ministry';
+  onToggleMode: (mode: 'leaderboard' | 'ministry') => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -31,6 +33,8 @@ export const Header: React.FC<HeaderProps> = ({
   isOnline,
   apiKey,
   onOpenKeyModal,
+  activeMode,
+  onToggleMode,
 }) => {
   const [isCountryMenuOpen, setIsCountryMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -177,6 +181,34 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
             </div>
           )}
+        </div>
+
+        {/* Workspace Mode Switcher: Leaderboard vs Ministry */}
+        <div className="flex items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-xl shrink-0">
+          <button
+            type="button"
+            onClick={() => onToggleMode('leaderboard')}
+            className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+              activeMode === 'leaderboard'
+                ? 'bg-amber-500 text-slate-950 shadow-sm font-black'
+                : 'text-slate-400 hover:text-white'
+            }`}
+            title="Public citizen donation rankings"
+          >
+            <span>Leaderboard</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onToggleMode('ministry')}
+            className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+              activeMode === 'ministry'
+                ? 'bg-amber-500 text-slate-950 shadow-sm font-black'
+                : 'text-slate-400 hover:text-white'
+            }`}
+            title="Executive Ministry of Economy tools (Leech radar, inter-state transfers, market advisor)"
+          >
+            <span>🏛️ Ministry</span>
+          </button>
         </div>
 
         {/* Right Actions: API Token Button & Sync */}

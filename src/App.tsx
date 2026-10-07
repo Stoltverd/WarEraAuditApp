@@ -2,7 +2,7 @@
  * War Era Country Donation Rankings & Citizen Leaderboard
  * Live ranking engine for country donations in War Era BTC across Daily, Weekly, and Monthly periods.
  */
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
   WareraCountry,
   WareraTransaction,
@@ -18,6 +18,7 @@ import {
   calculateGranularRankings,
   calculateCumulativeRankings,
   syncCountryData,
+  normalizeCountryId,
 } from './services/rankingService';
 import { Header } from './components/Header';
 import { RankingStats } from './components/RankingStats';
@@ -26,6 +27,30 @@ import { LeaderboardTable } from './components/LeaderboardTable';
 import { CitizenDetailModal } from './components/CitizenDetailModal';
 import { ExportModal } from './components/ExportModal';
 import { ApiKeyModal } from './components/ApiKeyModal';
+import { MinistryWorkspace } from './components/ministry/MinistryWorkspace';
+import {
+  CitizenEconomicProfile,
+  NationalTransaction,
+  ResourceReserveItem,
+  RespecAlert,
+  PlayerTag,
+  MinistryConfig,
+  WatchedCitizen,
+  DEFAULT_MINISTRY_CONFIG,
+} from './types/ministry';
+import {
+  calculateWarSkillPoints,
+  calculateEcoSkillPoints,
+  calculateDaysInBuild,
+  evaluatePlaystyle,
+  evaluateLeechTier,
+  calculateCountryEconomicBenchmark,
+  synthesizeCountryMinistryConfig,
+  auditCitizensIncomeGrowth,
+  detectCitizenRespecAlerts,
+  DEFAULT_COMMODITIES,
+  DEFAULT_STOCKPILES,
+} from './services/ministryService';
 import {
   CalendarDays,
   Share2,
@@ -42,13 +67,13 @@ import { CustomDateRange, DamageDonationConfig } from './types/warera';
 
 export default function App() {
   const [countries, setCountries] = useState<WareraCountry[]>([]);
-  const [selectedCountry, setSelectedCountry] = useState<WareraCountry | null>(null);
+  const [selectedCountry, setSelectedCountry] = useState<WareraCountry | null>(() => storage.getLastViewedCountry());
   const [transactions, setTransactions] = useState<WareraTransaction[]>([]);
   const [cumulative, setCumulative] = useState<WareraCumulativeDonation[]>([]);
   const [usersMap, setUsersMap] = useState<Record<string, WareraUserLite>>({});
 
   const [timeframe, setTimeframe] = useState<RankingTimeframe>('daily');
-  const [apiKey, setApiKey] = useState<string>('');
+  const [apiKey, setApiKey] = useState<string>(() => storage.getApiKey());
   const [isKeyModalOpen, setIsKeyModalOpen] = useState<boolean>(false);
   const [isGranularActive, setIsGranularActive] = useState<boolean>(false);
 
@@ -65,10 +90,10 @@ export default function App() {
 
   // Damage Donations (War Mode) State
   const [includeDamage, setIncludeDamage] = useState<boolean>(false);
-  const [damageRateInput, setDamageRateInput] = useState<string>('0.5');
+  const [damageRateInput, setDamageRateInput] = useState<string>('0.08');
   const [appliedDamageConfig, setAppliedDamageConfig] = useState<DamageDonationConfig>({
     enabled: false,
-    ratePer1k: 0.5,
+    ratePer1k: 0.08,
   });
 
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
@@ -100,12 +125,100 @@ export default function App() {
     setApiKey(savedKey);
   }, []);
 
-  // Load countries on startup without auto-selecting any country
+  // Mode Switcher: Leaderboard vs Ministry of Economy
+  const [activeMode, setActiveMode] = useState<'leaderboard' | 'ministry'>('leaderboard');
+
+  // Ministry of Economy State
+  const [playerTags, setPlayerTags] = useState<Record<string, { tag: PlayerTag; notes?: string }>>({});
+  const [nationalTransactions, setNationalTransactions] = useState<NationalTransaction[]>([]);
+  const [stockpiles, setStockpiles] = useState<ResourceReserveItem[]>(DEFAULT_STOCKPILES);
+  const [respecAlerts, setRespecAlerts] = useState<RespecAlert[]>([]);
+  const [watchedCitizens, setWatchedCitizens] = useState<WatchedCitizen[]>([]);
+  const [isAuditingIncome, setIsAuditingIncome] = useState<boolean>(false);
+  const [auditedProfilesMap, setAuditedProfilesMap] = useState<Record<string, CitizenEconomicProfile>>({});
+  const [ministryConfig, setMinistryConfig] = useState<MinistryConfig>(DEFAULT_MINISTRY_CONFIG);
+
+  // Sync Ministry Config and Watched Citizens when selected country changes
+  useEffect(() => {
+    if (selectedCountry?._id) {
+      const cfg = storage.getMinistryConfig(selectedCountry._id);
+      setMinistryConfig(cfg);
+      storage.getWatchedCitizens(selectedCountry._id).then(setWatchedCitizens);
+    } else {
+      setMinistryConfig(DEFAULT_MINISTRY_CONFIG);
+      storage.getWatchedCitizens().then(setWatchedCitizens);
+    }
+  }, [selectedCountry?._id]);
+
+  const handlePutOnWatch = async (profile: CitizenEconomicProfile, reasonNote: string) => {
+    const watched: WatchedCitizen = {
+      userId: profile.userId,
+      username: profile.username,
+      countryId: profile.countryId,
+      addedAt: new Date().toISOString(),
+      reasonNote,
+      wealthBtc: profile.wealthBtc,
+      totalDonatedBtc: profile.totalDonatedBtc,
+      contributionRatio: profile.contributionRatio,
+      playstyle: profile.playstyle,
+      avatarUrl: profile.avatarUrl,
+    };
+    await storage.saveWatchedCitizen(watched);
+    setWatchedCitizens((prev) => [...prev.filter((w) => w.userId !== profile.userId), watched]);
+  };
+
+  const handleRemoveFromWatch = async (userId: string) => {
+    await storage.removeWatchedCitizen(userId);
+    setWatchedCitizens((prev) => prev.filter((w) => w.userId !== userId));
+  };
+
+  // Load Ministry data from storage on startup and on country switch
+  useEffect(() => {
+    async function loadMinistryData() {
+      try {
+        const countryId = selectedCountry?._id;
+        const [tags, txs, stocks, alerts, watched] = await Promise.all([
+          storage.getPlayerTags(),
+          storage.getNationalTransactions(countryId),
+          storage.getStockpiles(countryId),
+          storage.getRespecAlerts(),
+          storage.getWatchedCitizens(countryId),
+        ]);
+        setPlayerTags(tags);
+        setNationalTransactions(txs);
+        setStockpiles(stocks && stocks.length > 0 ? stocks : DEFAULT_STOCKPILES);
+        if (alerts.length > 0) setRespecAlerts(alerts);
+        setWatchedCitizens(watched);
+      } catch (err) {
+        console.warn('Failed to load ministry state from storage:', err);
+      }
+    }
+    loadMinistryData();
+  }, [selectedCountry?._id]);
+
+  // Load countries on startup and restore/reconcile last viewed country
   useEffect(() => {
     async function loadCountryList() {
       try {
         const list = await getCountries();
         setCountries(list);
+
+        // Reconcile or auto-select last viewed country
+        const lastSaved = storage.getLastViewedCountry();
+        if (lastSaved?._id) {
+          const matched = list.find((c) => c._id === lastSaved._id);
+          if (matched) {
+            setSelectedCountry(matched);
+            storage.setLastViewedCountry(matched);
+          }
+        } else if (list.length > 0) {
+          // Default to Colombia or first nation if never previously selected
+          const defaultCountry = list.find((c) => c.name.toLowerCase() === 'colombia') || list[0];
+          if (defaultCountry) {
+            setSelectedCountry(defaultCountry);
+            storage.setLastViewedCountry(defaultCountry);
+          }
+        }
       } catch (err) {
         console.error('Failed to load countries:', err);
       }
@@ -113,37 +226,87 @@ export default function App() {
     loadCountryList();
   }, []);
 
-  // Sync execution
+  const syncRequestIdRef = useRef<number>(0);
+
+  // Sync execution with race condition protection and immediate country state reset
   const executeSync = useCallback(
     async (country: WareraCountry, currentKey: string) => {
+      const currentSyncId = ++syncRequestIdRef.current;
       setIsSyncing(true);
       setSyncError(null);
+
+      // Immediately purge in-memory arrays and user registry when switching countries so records from prior nation never bleed over
+      setTransactions([]);
+      setCumulative([]);
+      setUsersMap({});
 
       try {
         const result = await syncCountryData(
           country._id,
           country.name,
           currentKey,
-          (progress) => setSyncProgress(progress)
+          (progress) => {
+            if (currentSyncId === syncRequestIdRef.current) {
+              setSyncProgress(progress);
+            }
+          }
         );
+
+        // Discard result if user switched to another country while request was in-flight
+        if (currentSyncId !== syncRequestIdRef.current) return;
 
         setTransactions(result.transactions);
         setCumulative(result.cumulative);
         setIsGranularActive(result.isGranular);
-        setUsersMap((prev) => ({ ...prev, ...result.users }));
+        setUsersMap(result.users);
+
+        // Dynamically synthesize sovereign policy defaults from live API benchmarks for this selected country
+        const activeCitizens = Object.values(result.users).filter((u) => {
+          if (!u || !u._id) return false;
+          if (u.country && typeof u.country === 'string' && u.country !== country._id) return false;
+          const isActive = Boolean(u.isActive !== undefined ? u.isActive : true);
+          const lvl = Number(u.leveling?.level ?? u.level ?? 0);
+          return isActive && lvl >= 10;
+        });
+
+        const cumMap = new Map<string, { totalAmount: number; lastDonationAt?: string }>();
+        result.cumulative.forEach((c) => {
+          if (c.userId) {
+            cumMap.set(c.userId, {
+              totalAmount: Number(c.amount || 0),
+              lastDonationAt: c.updatedAt || c.createdAt,
+            });
+          }
+        });
+
+        const benchmark = calculateCountryEconomicBenchmark(country._id, activeCitizens, cumMap);
+        const dynamicPolicy = synthesizeCountryMinistryConfig(benchmark, ministryConfig);
+        setMinistryConfig(dynamicPolicy);
       } catch (err: any) {
+        if (currentSyncId !== syncRequestIdRef.current) return;
         setSyncError(err?.message || 'Sync failed');
         // Fallback to cached
         const cachedTx = await storage.getTransactionsByCountry(country._id);
         const cachedCum = await storage.getCumulativeDonationsByCountry(country._id);
-        const cachedUsers = await storage.getAllUsers();
+        const donorIds = [
+          ...cachedTx.map((t) => t.userId),
+          ...cachedCum.map((c) => c.userId),
+        ].filter((id): id is string => Boolean(id));
+        const cachedUsers = await storage.getUsersForCountry(country._id, donorIds);
+        if (currentSyncId !== syncRequestIdRef.current) return;
         setTransactions(cachedTx);
         setCumulative(cachedCum);
         setIsGranularActive(cachedTx.length > 0);
         setUsersMap(cachedUsers);
       } finally {
-        setIsSyncing(false);
-        setTimeout(() => setSyncProgress(null), 3500);
+        if (currentSyncId === syncRequestIdRef.current) {
+          setIsSyncing(false);
+          setTimeout(() => {
+            if (currentSyncId === syncRequestIdRef.current) {
+              setSyncProgress(null);
+            }
+          }, 3500);
+        }
       }
     },
     []
@@ -194,19 +357,21 @@ export default function App() {
         appliedDamageConfig,
         'all',
         undefined,
-        targetCountryId
+        targetCountryId,
+        transactions
       );
     }
 
     // 2. For Daily, Weekly, Monthly, and Custom Range, use the granular transaction stream
-    if (isGranularActive && transactions.length > 0) {
+    if (transactions.length > 0) {
       return calculateGranularRankings(
         transactions,
         usersMap,
         timeframe,
         customRange,
         appliedDamageConfig,
-        targetCountryId
+        targetCountryId,
+        cumulative
       );
     }
 
@@ -218,7 +383,8 @@ export default function App() {
         appliedDamageConfig,
         timeframe,
         customRange,
-        targetCountryId
+        targetCountryId,
+        transactions
       );
     }
 
@@ -298,6 +464,404 @@ export default function App() {
     );
   }, [selectedDonorId, summary.leaderboard]);
 
+  // Dynamic timeframe subtitle phrase per user specification
+  const timeframePhrase = useMemo(() => {
+    switch (timeframe) {
+      case 'daily':
+        return 'in the last 24 hours';
+      case 'weekly':
+        return 'in the last week';
+      case 'monthly':
+        return 'in the last month';
+      case 'custom':
+        return `between ${customRange.startDate} and ${customRange.endDate}`;
+      case 'all':
+      default:
+        return 'across all recorded history';
+    }
+  }, [timeframe, customRange.startDate, customRange.endDate]);
+
+  // Ministry of Economy: Citizen Economic Profiles
+  const citizenEconomicProfiles: CitizenEconomicProfile[] = useMemo(() => {
+    const list: CitizenEconomicProfile[] = [];
+    const countryId = selectedCountry?._id || '';
+    const countryName = selectedCountry?.name || 'Country';
+
+    const donorStatsMap: Record<string, DonorRankingItem> = {};
+    summary.leaderboard.forEach((d) => {
+      donorStatsMap[d.userId] = d;
+    });
+
+    // 1. Build persistent all-time cumulative donation ledger from cumulative data & transactions
+    const allTimeCumulativeMap = new Map<string, { totalAmount: number; lastDonationAt?: string }>();
+    cumulative.forEach((c) => {
+      if (c.userId) {
+        allTimeCumulativeMap.set(c.userId, {
+          totalAmount: Number(c.amount || 0),
+          lastDonationAt: c.updatedAt || c.createdAt,
+        });
+      }
+    });
+
+    // Also include transactions if they exceed or aren't present in cumulative
+    transactions.forEach((tx) => {
+      if (tx.userId) {
+        const existing = allTimeCumulativeMap.get(tx.userId);
+        const txAmt = Number(tx.money || tx.amount || 0);
+        if (!existing) {
+          allTimeCumulativeMap.set(tx.userId, {
+            totalAmount: txAmt,
+            lastDonationAt: tx.createdAt,
+          });
+        }
+      }
+    });
+
+    // 2. Determine nation's true all-time Top Lifetime Donors (Hall of Fame)
+    const historicalDonorRanks = new Map<string, number>();
+    const allTimeSorted = Array.from(allTimeCumulativeMap.entries())
+      .map(([uId, data]) => ({ userId: uId, totalAmount: data.totalAmount }))
+      .sort((a, b) => b.totalAmount - a.totalAmount);
+
+    const topCutoff = ministryConfig.topHistoricalDonorProtectionRank || 10;
+    allTimeSorted.slice(0, topCutoff).forEach((entry, idx) => {
+      historicalDonorRanks.set(entry.userId, idx + 1);
+    });
+
+    const watchedMap = new Map<string, WatchedCitizen>();
+    watchedCitizens.forEach((w) => watchedMap.set(w.userId, w));
+
+    // 3. Filter active citizens belonging to this country
+    const activeCountryCitizens = Object.values(usersMap).filter((user) => {
+      if (!user || !user._id) return false;
+      if (selectedCountry) {
+        const userCountryId = normalizeCountryId(user);
+        if (userCountryId && userCountryId !== selectedCountry._id) {
+          return false;
+        }
+      }
+      const isActive = Boolean(user.isActive !== undefined ? user.isActive : true);
+      const level = Number(user.leveling?.level ?? user.level ?? 0);
+      return isActive && level >= 10;
+    });
+
+    // 4. Dynamically compute country-proportional statistical benchmarks
+    const countryBenchmark = calculateCountryEconomicBenchmark(
+      countryId,
+      activeCountryCitizens,
+      allTimeCumulativeMap
+    );
+
+    // 5. Determine country-relative Heavy Hitters in active combat mobilization
+    const fightersList = activeCountryCitizens
+      .map((u) => {
+        const donor = donorStatsMap[u._id];
+        const weeklyDmg = Number(u.rankings?.weeklyUserDamages?.value ?? (donor && timeframe !== 'all' ? donor.damageAmount : 0));
+        const allTimeDmg = Number(u.rankings?.userDamages?.value ?? (u as any).stats?.damage ?? 0);
+        const dmg = weeklyDmg > 0 ? weeklyDmg : allTimeDmg;
+        return { userId: u._id, damage: dmg };
+      })
+      .filter((f) => f.damage > 0)
+      .sort((a, b) => b.damage - a.damage);
+
+    const heavyHitterCutoff = Math.max(3, Math.min(ministryConfig.topHeavyHitterRankCutoff || 10, countryBenchmark.heavyHitterCohortSize));
+    const heavyHitterRanks = new Map<string, number>();
+    fightersList.slice(0, heavyHitterCutoff).forEach((f, idx) => {
+      heavyHitterRanks.set(f.userId, idx + 1);
+    });
+
+    activeCountryCitizens.forEach((user) => {
+      const level = Number(user.leveling?.level ?? user.level ?? 0);
+      const donor = donorStatsMap[user._id];
+      const lifetimeData = allTimeCumulativeMap.get(user._id);
+
+      const wealthObj = typeof user.stats?.wealth === 'object' ? user.stats.wealth : null;
+      const wealth = Number(user.rankings?.userWealth?.value || wealthObj?.total || (typeof user.stats?.wealth === 'number' ? user.stats.wealth : 0));
+      // Read real liquid cash directly from stats.wealth.money, falling back to user.money (never 35% estimate)
+      const liquidMoney = Number(wealthObj?.money !== undefined ? wealthObj.money : (user.money ?? 0));
+      const resourceWealth = Number(wealthObj?.items !== undefined ? wealthObj.items : ((user as any).resourceWealth ?? (user as any).resourcesValue ?? 0));
+      const companiesWealth = Number(wealthObj?.companies ?? 0);
+      const equipmentsWealth = Number(wealthObj?.equipments ?? 0);
+      const weaponsWealth = Number(wealthObj?.weapons ?? 0);
+      
+      // Determine real period donations vs lifetime donations:
+      let direct = 0;
+      if (transactions && transactions.length > 0) {
+        const periodMs = (ministryConfig.analysisPeriodDays || 7) * 24 * 60 * 60 * 1000;
+        const cutoffTime = Date.now() - periodMs;
+        direct = transactions
+          .filter((t) => t.userId === user._id && new Date(t.createdAt).getTime() >= cutoffTime)
+          .reduce((sum, t) => sum + Number(t.money || t.amount || 0), 0);
+      } else if (donor && timeframe !== 'all') {
+        direct = Number(donor.directAmount || 0);
+      }
+      const totalDonated = lifetimeData ? Number(lifetimeData.totalAmount || 0) : (donor ? Number(donor.totalAmount || 0) : 0);
+      const damageDonated = donor && timeframe !== 'all' ? Number(donor.damageAmount || 0) : 0;
+      // Actual verified transfer count: only counts individual transaction events if recorded
+      const donationCount = donor?.transactionCount || donor?.donations?.length || 0;
+
+      const warPoints = calculateWarSkillPoints(user);
+      const ecoPoints = calculateEcoSkillPoints(user);
+      const playstyle = evaluatePlaystyle(warPoints, ecoPoints);
+      const daysInBuild = calculateDaysInBuild(user);
+      const audited = auditedProfilesMap[user._id];
+      const currentWealthBasis = (ministryConfig.includeResourceWealth && resourceWealth > 0)
+        ? wealth + resourceWealth
+        : wealth;
+
+      const historicalRank = historicalDonorRanks.get(user._id);
+      const isHistoricalTopDonor = Boolean(historicalRank);
+      const heavyHitterRank = heavyHitterRanks.get(user._id);
+      const isNationalHeavyHitter = Boolean(heavyHitterRank);
+
+      // 7-day weekly combat damage vs career lifetime damage:
+      const weeklyCombatDamage = Number(
+        user.rankings?.weeklyUserDamages?.value ??
+        (donor && timeframe !== 'all' ? donor.damageAmount : 0)
+      );
+      const lifetimeCombatDamage = Number(
+        user.rankings?.userDamages?.value ??
+        (user as any).stats?.damage ??
+        donor?.rawDamageDealt ??
+        weeklyCombatDamage
+      );
+
+      const { ratio, tier, reason, damageValueBtc } = evaluateLeechTier(
+        currentWealthBasis,
+        direct,
+        ministryConfig,
+        audited?.grossIncomeBtc,
+        playstyle,
+        totalDonated,
+        resourceWealth,
+        weeklyCombatDamage,
+        isHistoricalTopDonor,
+        historicalRank,
+        isNationalHeavyHitter,
+        heavyHitterRank,
+        countryBenchmark
+      );
+      const tagInfo = playerTags[user._id];
+      const watchedItem = watchedMap.get(user._id);
+
+      // Calculate days since last donation using true all-time records
+      const effectiveLastDonation = donor?.lastDonationAt || lifetimeData?.lastDonationAt;
+      let daysSinceLastDonation: number | undefined = undefined;
+      let isInactiveDonor = false;
+      if (effectiveLastDonation) {
+        const lastDonationMs = new Date(effectiveLastDonation).getTime();
+        daysSinceLastDonation = Math.max(0, Math.floor((Date.now() - lastDonationMs) / (1000 * 60 * 60 * 24)));
+        if (daysSinceLastDonation >= 7) {
+          isInactiveDonor = true;
+        }
+      } else {
+        // Never donated to this country
+        isInactiveDonor = true;
+      }
+
+      list.push({
+        userId: user._id,
+        username: user.username || `Citizen #${user._id.slice(-6)}`,
+        avatarUrl: user.avatarUrl,
+        countryId,
+        countryName,
+        level,
+        wealthBtc: wealth,
+        liquidBtc: liquidMoney,
+        resourceWealthBtc: resourceWealth,
+        companiesWealthBtc: companiesWealth,
+        equipmentsWealthBtc: equipmentsWealth,
+        weaponsWealthBtc: weaponsWealth,
+        pastWealthBtc: audited?.pastWealthBtc,
+        grossIncomeBtc: audited?.grossIncomeBtc,
+        periodDonatedBtc: audited?.periodDonatedBtc !== undefined ? audited.periodDonatedBtc : direct,
+        totalDonatedBtc: totalDonated,
+        directDonatedBtc: direct,
+        damageDonatedBtc: damageDonated,
+        damageValueBtc: audited?.damageValueBtc !== undefined ? audited.damageValueBtc : damageValueBtc,
+        totalCombatDamage: weeklyCombatDamage,
+        lifetimeCombatDamage,
+        isHistoricalTopDonor,
+        historicalRank,
+        isNationalHeavyHitter,
+        heavyHitterRank,
+        tierReasonBadge: audited?.tierReasonBadge || reason,
+        donationCount,
+        lastDonationAt: effectiveLastDonation,
+        contributionRatio: audited ? audited.contributionRatio : ratio,
+        leechTier: audited ? audited.leechTier : tier,
+        warSkillPoints: warPoints,
+        ecoSkillPoints: ecoPoints,
+        playstyle,
+        manualTag: tagInfo?.tag || 'none',
+        notes: tagInfo?.notes,
+        isActive: true,
+        daysInBuild,
+        daysSinceLastDonation,
+        isInactiveDonor,
+        isOnWatch: Boolean(watchedItem),
+        watchReason: watchedItem?.reasonNote,
+        auditBaselineStatus: audited?.auditBaselineStatus,
+        auditMethodologyNote: audited?.auditMethodologyNote,
+        ministerialVerdict: audited?.ministerialVerdict,
+        ministerialVerdictReason: audited?.ministerialVerdictReason,
+        playerCashflow: audited?.playerCashflow,
+        companiesCount: audited?.companiesCount ?? Number(user.skills?.companies?.value ?? user.skills?.companies?.level ?? 2),
+        activeCompaniesCount: audited?.activeCompaniesCount ?? Number(user.skills?.companies?.value ?? 2),
+        maxCompaniesCap: audited?.maxCompaniesCap ?? Number(user.skills?.companies?.value ?? 2),
+        automationLevelEst: audited?.automationLevelEst ?? 7,
+        storageLevelEst: audited?.storageLevelEst ?? 7,
+        estimatedCompanyCapacityBtc: audited?.estimatedCompanyCapacityBtc,
+        worksCount: Number(user.stats?.worksCount || 0),
+        employerCompanyId: typeof user.company === 'string' ? user.company : undefined,
+      });
+    });
+
+    return list;
+  }, [summary.leaderboard, cumulative, transactions, usersMap, selectedCountry, playerTags, ministryConfig, watchedCitizens, auditedProfilesMap]);
+
+  // Income Growth Audit Action
+  const handleRunIncomeAudit = async (customConfig?: MinistryConfig) => {
+    setIsAuditingIncome(true);
+    const cfg = customConfig || ministryConfig;
+    try {
+      const activeCitizens = Object.values(usersMap).filter((user) => {
+        if (!user || !user._id) return false;
+        if (selectedCountry && user.country && typeof user.country === 'string' && user.country !== selectedCountry._id) {
+          return false;
+        }
+        const isActive = Boolean(user.isActive !== undefined ? user.isActive : true);
+        const level = Number(user.leveling?.level ?? user.level ?? 0);
+        return isActive && level >= 10;
+      });
+
+      const allTimeCumulativeMap = new Map<string, { totalAmount: number; lastDonationAt?: string }>();
+      cumulative.forEach((c) => {
+        if (c.userId) {
+          allTimeCumulativeMap.set(c.userId, {
+            totalAmount: Number(c.amount || 0),
+            lastDonationAt: c.updatedAt || c.createdAt,
+          });
+        }
+      });
+
+      const countryBenchmark = calculateCountryEconomicBenchmark(
+        selectedCountry?._id || '',
+        activeCitizens,
+        allTimeCumulativeMap
+      );
+
+      const audited = await auditCitizensIncomeGrowth(
+        citizenEconomicProfiles,
+        cfg,
+        storage.getClosestWealthSnapshot.bind(storage),
+        storage.saveWealthSnapshotsBatch.bind(storage),
+        countryBenchmark,
+        transactions,
+        usersMap
+      );
+      const map: Record<string, CitizenEconomicProfile> = {};
+      audited.forEach((a) => {
+        map[a.userId] = a;
+      });
+      setAuditedProfilesMap(map);
+
+      // Phase 4: Detect playstyle respecs and register alerts
+      const priorPlaystyles = storage.getCitizenPlaystyles();
+      const { newAlerts, updatedPlaystyles } = detectCitizenRespecAlerts(
+        audited,
+        respecAlerts,
+        priorPlaystyles
+      );
+      if (newAlerts.length > 0) {
+        const merged = [...newAlerts, ...respecAlerts];
+        setRespecAlerts(merged);
+        await storage.saveRespecAlerts(merged);
+      }
+      storage.saveCitizenPlaystyles(updatedPlaystyles);
+    } catch (err) {
+      console.warn('Income audit failed:', err);
+    } finally {
+      setIsAuditingIncome(false);
+    }
+  };
+
+  const handleUpdateMinistryConfig = async (cfg: MinistryConfig) => {
+    setMinistryConfig(cfg);
+    if (selectedCountry?._id) {
+      storage.saveMinistryConfig(selectedCountry._id, cfg);
+    }
+    // Changing policy immediately generates audit calculations
+    await handleRunIncomeAudit(cfg);
+  };
+
+  // Automatically execute 7-day income growth audit whenever country changes or donors sync
+  useEffect(() => {
+    if (citizenEconomicProfiles.length > 0) {
+      handleRunIncomeAudit();
+    }
+  }, [selectedCountry?._id, summary.leaderboard.length]);
+
+  // Ministry Handlers
+  const handleUpdatePlayerTag = async (userId: string, tag: PlayerTag, notes = '') => {
+    await storage.savePlayerTag(userId, tag, notes);
+    setPlayerTags((prev) => ({
+      ...prev,
+      [userId]: { tag, notes },
+    }));
+  };
+
+  const handleAddNationalTransaction = async (tx: NationalTransaction) => {
+    const updated = [tx, ...nationalTransactions];
+    setNationalTransactions(updated);
+    await storage.saveNationalTransactions(updated, selectedCountry?._id);
+  };
+
+  const handleDeleteNationalTransaction = async (id: string) => {
+    const updated = nationalTransactions.filter((t) => t.id !== id);
+    setNationalTransactions(updated);
+    await storage.saveNationalTransactions(updated, selectedCountry?._id);
+  };
+
+  const handleImportNationalTransactions = async (imported: NationalTransaction[]) => {
+    const existingIds = new Set(nationalTransactions.map((t) => t.id));
+    const newItems = imported.filter((t) => !existingIds.has(t.id));
+    const merged = [...newItems, ...nationalTransactions];
+    setNationalTransactions(merged);
+    await storage.saveNationalTransactions(merged, selectedCountry?._id);
+  };
+
+  const handleUpdateStockpile = async (updated: ResourceReserveItem[]) => {
+    setStockpiles(updated);
+    await storage.saveStockpiles(updated, selectedCountry?._id);
+  };
+
+  const handleAcknowledgeAlert = async (id: string) => {
+    const updated = respecAlerts.map((a) => (a.id === id ? { ...a, acknowledged: true } : a));
+    setRespecAlerts(updated);
+    await storage.saveRespecAlerts(updated);
+  };
+
+  const handleRestoreBackup = async () => {
+    if (selectedCountry?._id) {
+      const cfg = storage.getMinistryConfig(selectedCountry._id);
+      setMinistryConfig(cfg);
+    }
+    const [tags, txs, stocks, alerts, watched] = await Promise.all([
+      storage.getPlayerTags(),
+      storage.getNationalTransactions(selectedCountry?._id),
+      storage.getStockpiles(selectedCountry?._id),
+      storage.getRespecAlerts(),
+      storage.getWatchedCitizens(selectedCountry?._id),
+    ]);
+    setPlayerTags(tags);
+    setNationalTransactions(txs);
+    setStockpiles(stocks && stocks.length > 0 ? stocks : DEFAULT_STOCKPILES);
+    setRespecAlerts(alerts);
+    setWatchedCitizens(watched);
+    await handleRunIncomeAudit();
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-amber-500 selection:text-slate-950">
       {/* Top Header */}
@@ -306,6 +870,7 @@ export default function App() {
         selectedCountry={selectedCountry}
         onSelectCountry={(c) => {
           setSelectedCountry(c);
+          storage.setLastViewedCountry(c);
           setSelectedDonorId(null);
           setTransactions([]);
           setCumulative([]);
@@ -315,6 +880,8 @@ export default function App() {
         isOnline={isOnline}
         apiKey={apiKey}
         onOpenKeyModal={() => setIsKeyModalOpen(true)}
+        activeMode={activeMode}
+        onToggleMode={(mode) => setActiveMode(mode)}
       />
 
       {/* Main Content Area */}
@@ -403,8 +970,36 @@ export default function App() {
           </div>
         )}
 
-        {/* Period Control Bar */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 bg-slate-900/60 border border-slate-800/80 p-3 sm:p-4 rounded-2xl">
+        {activeMode === 'ministry' ? (
+          <MinistryWorkspace
+            countryName={selectedCountry?.name || 'Colombia'}
+            countryId={selectedCountry?._id || ''}
+            countries={countries}
+            profiles={citizenEconomicProfiles}
+            transactions={nationalTransactions}
+            stockpiles={stockpiles}
+            commodities={DEFAULT_COMMODITIES}
+            alerts={respecAlerts}
+            watchedCitizens={watchedCitizens}
+            config={ministryConfig}
+            apiKey={apiKey}
+            isAuditingIncome={isAuditingIncome}
+            onUpdateConfig={handleUpdateMinistryConfig}
+            onUpdateTag={handleUpdatePlayerTag}
+            onAddTransaction={handleAddNationalTransaction}
+            onDeleteTransaction={handleDeleteNationalTransaction}
+            onImportTransactions={handleImportNationalTransactions}
+            onUpdateStockpile={handleUpdateStockpile}
+            onAcknowledgeAlert={handleAcknowledgeAlert}
+            onPutOnWatch={handlePutOnWatch}
+            onRemoveFromWatch={handleRemoveFromWatch}
+            onRunIncomeAudit={handleRunIncomeAudit}
+            onRestoreBackup={handleRestoreBackup}
+          />
+        ) : (
+          <>
+            {/* Period Control Bar */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 bg-slate-900/60 border border-slate-800/80 p-3 sm:p-4 rounded-2xl">
           {/* Timeframe Selector Tabs */}
           <div className="flex items-center gap-1.5 bg-slate-950/80 p-1 rounded-xl border border-slate-800 overflow-x-auto">
             <button
@@ -568,7 +1163,17 @@ export default function App() {
               <input
                 type="checkbox"
                 checked={includeDamage}
-                onChange={(e) => setIncludeDamage(e.target.checked)}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setIncludeDamage(checked);
+                  if (!checked) {
+                    // Instant deactivation: immediately revert rankings to pure monetary donations
+                    setAppliedDamageConfig((prev) => ({
+                      ...prev,
+                      enabled: false,
+                    }));
+                  }
+                }}
                 className="w-4 h-4 rounded text-amber-500 bg-slate-800 border-slate-700 focus:ring-amber-500 focus:ring-offset-slate-900 focus:ring-2 cursor-pointer"
               />
               <div className="flex items-center gap-2">
@@ -622,14 +1227,14 @@ export default function App() {
                   <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mr-1">
                     Presets:
                   </span>
-                  {[0.1, 0.25, 0.5, 1.0, 2.0].map((preset) => (
+                  {[0.05, 0.08, 0.09, 0.1, 0.12].map((preset) => (
                     <button
                       key={preset}
                       type="button"
                       onClick={() => setDamageRateInput(preset.toString())}
                       className={`px-2 py-1 rounded-lg text-xs font-mono font-semibold transition border ${
                         damageRateInput === preset.toString()
-                          ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                          ? 'bg-amber-500/20 border-amber-500/40 text-amber-300 font-bold'
                           : 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-400 hover:text-white'
                       }`}
                     >
@@ -734,6 +1339,7 @@ export default function App() {
               <Podium
                 topDonors={summary.leaderboard.slice(0, 3)}
                 onSelectDonor={(uid) => setSelectedDonorId(uid)}
+                timeframePhrase={timeframePhrase}
               />
             )}
 
@@ -744,18 +1350,20 @@ export default function App() {
               onSelectDonor={(uid) => setSelectedDonorId(uid)}
               timeframe={
                 timeframe === 'daily'
-                  ? 'Today (Past 24 Hours)'
+                  ? 'in the last 24 hours'
                   : timeframe === 'weekly'
-                  ? 'This Week (Past 7 Days)'
+                  ? 'in the last week'
                   : timeframe === 'monthly'
-                  ? 'This Month (Past 30 Days)'
+                  ? 'in the last month'
                   : timeframe === 'custom'
-                  ? `Custom Window (${customRange.startDate} to ${customRange.endDate})`
+                  ? `between ${customRange.startDate} and ${customRange.endDate}`
                   : 'All-Time Record'
               }
             />
           </>
         )}
+      </>
+    )}
       </main>
 
       {/* Citizen Drill-down Audit Modal */}

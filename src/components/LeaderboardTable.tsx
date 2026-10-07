@@ -156,7 +156,7 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
               >
                 <div className="flex items-center justify-end gap-1">
                   <Clock className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Last Active</span>
+                  <span>Last Donation</span>
                   <ArrowUpDown className="w-3 h-3" />
                 </div>
               </th>
@@ -253,9 +253,19 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
 
                     {/* Donations count */}
                     <td className="py-3.5 px-3 sm:px-4 text-center font-mono text-slate-300 hidden sm:table-cell">
-                      {donor.donations.length > 0 ? (
-                        <span className="px-2.5 py-1 rounded-md bg-slate-800 border border-slate-700 text-xs font-semibold">
-                          {donor.donations.length}
+                      {donor.isCumulativeOnly ? (
+                        <span
+                          className="px-2.5 py-1 rounded-md border text-xs font-semibold bg-slate-800/80 border-slate-700 text-slate-300"
+                          title="Official lifetime treasury record on register"
+                        >
+                          Lifetime
+                        </span>
+                      ) : (donor.transactionCount || donor.donations.length) > 0 ? (
+                        <span
+                          className="px-2.5 py-1 rounded-md border text-xs font-semibold bg-amber-500/10 border-amber-500/30 text-amber-300"
+                          title={`${donor.transactionCount || donor.donations.length} verified individual donations`}
+                        >
+                          {donor.transactionCount || donor.donations.length}
                         </span>
                       ) : (
                         <span className="px-2 py-0.5 rounded-full bg-red-500/20 border border-red-500/30 text-red-300 text-[10px] font-bold whitespace-nowrap">
@@ -264,9 +274,13 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
                       )}
                     </td>
 
-                    {/* Last Active Timestamp */}
+                    {/* Last Donation Timestamp */}
                     <td className="py-3.5 px-3 sm:px-4 text-right text-slate-400 text-xs hidden md:table-cell font-mono">
-                      {formatRelativeTime(donor.lastDonationAt)}
+                      {donor.directAmount === 0 && donor.damageAmount > 0 ? (
+                        <span className="text-red-400 font-semibold text-[11px]">War Mode Active</span>
+                      ) : (
+                        formatRelativeTime(donor.lastDonationAt)
+                      )}
                     </td>
 
                     {/* Action */}

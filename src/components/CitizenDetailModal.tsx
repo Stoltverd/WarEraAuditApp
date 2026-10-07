@@ -126,98 +126,127 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
           </div>
         ) : null}
 
-        {/* Aggregate Stats Cards */}
+        {/* Consolidated Aggregate Stats Cards - No redundancy */}
         <div className={`grid ${hasDamage ? 'grid-cols-1 sm:grid-cols-3' : 'grid-cols-1 sm:grid-cols-2'} gap-3.5 my-3.5`}>
+          {/* 1. Direct Donations (Pure cash given to treasury) */}
           <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-4 sm:p-5">
             <div className="text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
-              <Coins className="w-4 h-4 text-amber-400" /> Total Effective
-            </div>
-            <div className="text-2xl sm:text-3xl lg:text-4xl font-mono font-black text-amber-400">
-              {formatBtc(donor.totalAmount)}{' '}
-              <span className="text-sm sm:text-base font-bold text-amber-500">BTC</span>
-            </div>
-            <div className="text-xs text-slate-400 mt-1 font-mono">Recognized for {countryName}</div>
-          </div>
-
-          <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-4 sm:p-5">
-            <div className="text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
-              <Coins className="w-4 h-4 text-emerald-400" /> Direct Donated
+              <Coins className="w-4 h-4 text-emerald-400" /> {hasDamage ? 'Direct Cash Donated' : 'Total BTC Donated'}
             </div>
             <div className="text-2xl sm:text-3xl lg:text-4xl font-mono font-black text-emerald-400">
               {formatBtc(donor.directAmount)}{' '}
               <span className="text-sm sm:text-base font-bold text-emerald-500">BTC</span>
             </div>
-            <div className="text-xs text-slate-400 mt-1 font-mono">{donor.transactionCount || donor.transactions.length} verified donations</div>
+            <div className="text-xs text-slate-400 mt-1 font-mono">
+              {timeframe === 'all'
+                ? `Official lifetime treasury transfer for ${countryName}`
+                : `${donor.transactionCount || donor.transactions.length} verified donations for ${countryName}`}
+            </div>
           </div>
 
-          {hasDamage && (
+          {/* 2. Secondary Card: When War Mode is OFF -> Treasury Impact / Status. When War Mode is ON -> Combat Damage Credit */}
+          {hasDamage ? (
             <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-4 sm:p-5">
               <div className="text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
-                <Swords className="w-4 h-4 text-red-400" /> Combat Damage
+                <Swords className="w-4 h-4 text-red-400" /> Munitions Damage Credit
               </div>
               <div className="text-2xl sm:text-3xl lg:text-4xl font-mono font-black text-red-300">
                 {formatBtc(donor.damageAmount)}{' '}
                 <span className="text-sm sm:text-base font-bold text-red-400">BTC</span>
               </div>
               <div className="text-xs text-slate-400 mt-1 font-mono">
-                {donor.rawDamageDealt.toLocaleString()} combat damage
+                {donor.rawDamageDealt.toLocaleString()} combat damage @ {donor.appliedRatePer1k} BTC/1k
+              </div>
+            </div>
+          ) : (
+            <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-4 sm:p-5">
+              <div className="text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
+                <ShieldCheck className="w-4 h-4 text-amber-400" /> Treasury Standing
+              </div>
+              <div className="text-2xl sm:text-3xl lg:text-4xl font-mono font-black text-amber-400">
+                Rank #{donor.rank}
+              </div>
+              <div className="text-xs text-slate-400 mt-1 font-mono">
+                {timeframe === 'all' ? 'All-Time Sovereign Registry' : `Verified ${timeframe} Contributor`}
+              </div>
+            </div>
+          )}
+
+          {/* 3. Third Card: Total Sovereign Contribution (only when War Mode combines direct cash + combat damage) */}
+          {hasDamage && (
+            <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-4 sm:p-5">
+              <div className="text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
+                <Coins className="w-4 h-4 text-amber-400" /> Total Sovereign Contribution
+              </div>
+              <div className="text-2xl sm:text-3xl lg:text-4xl font-mono font-black text-amber-400">
+                {formatBtc(donor.totalAmount)}{' '}
+                <span className="text-sm sm:text-base font-bold text-amber-500">BTC</span>
+              </div>
+              <div className="text-xs text-slate-400 mt-1 font-mono">
+                Cash + Military Munitions recognized for {countryName}
               </div>
             </div>
           )}
         </div>
 
-        {/* Notice if viewing cumulative-only record */}
-        {donor.isCumulativeOnly && (
-          <div
-            className={`mb-3.5 p-4 sm:p-5 rounded-2xl text-xs sm:text-sm flex items-start gap-3 border ${
-              hasApiKey
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
-                : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
-            }`}
-          >
-            {hasApiKey ? (
-              <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-            ) : (
-              <Info className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-            )}
-            <div className="leading-relaxed">
-              {hasApiKey ? (
-                <>
-                  <strong className="text-white block font-black text-sm mb-1">
-                    Official Lifetime Treasury Record (API Key Active)
-                  </strong>
-                  All-Time mode audits the official lifetime cumulative registry from War Era. To view day-by-day itemized receipts and individual 10 BTC / 50 BTC transactions, switch the top timeframe to{' '}
-                  <strong className="text-emerald-300 font-bold">Daily (24h)</strong>,{' '}
-                  <strong className="text-emerald-300 font-bold">Weekly (7d)</strong>, or{' '}
-                  <strong className="text-emerald-300 font-bold">Custom Range</strong>.
-                </>
-              ) : (
-                <>
-                  <strong className="text-white block font-black text-sm mb-1">
+        {/* Timeframe-aware Audit Body */}
+        {timeframe === 'all' ? (
+          /* All-Time View: Clean Lifetime Treasury Summary without misleading incomplete event counts */
+          <div className="flex-1 overflow-y-auto pr-1 space-y-4">
+            <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-5 sm:p-6">
+              <div className="flex items-center justify-between pb-4 border-b border-slate-700/60 mb-4">
+                <div className="flex items-center gap-2.5">
+                  <Calendar className="w-5 h-5 text-amber-400" />
+                  <span className="font-bold text-white text-sm sm:text-base">
                     Official Lifetime Treasury Record
-                  </strong>
-                  This is a lifetime cumulative record from the public registry. To stream live itemized transaction receipts for Daily (24h) and Weekly (7d) periods, connect your War Era API Key in the top header.
-                </>
-              )}
+                  </span>
+                </div>
+                <span className="px-3 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 font-mono text-xs font-bold">
+                  All-Time Aggregate
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs sm:text-sm">
+                <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl">
+                  <div className="text-slate-400 font-medium mb-1">Lifetime Treasury Contribution</div>
+                  <div className="text-lg sm:text-xl font-bold font-mono text-emerald-400">
+                    {formatBtc(donor.directAmount)} BTC
+                  </div>
+                  <div className="text-slate-500 text-xs mt-1">Direct monetary transfers on record for {countryName}</div>
+                </div>
+
+                <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl">
+                  <div className="text-slate-400 font-medium mb-1">National Donor Standing</div>
+                  <div className="text-lg sm:text-xl font-bold font-mono text-amber-400">
+                    Rank #{donor.rank} All-Time
+                  </div>
+                  <div className="text-slate-500 text-xs mt-1">Official Sovereign Registry for {countryName}</div>
+                </div>
+
+                <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl">
+                  <div className="text-slate-400 font-medium mb-1 flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5 text-cyan-400" /> Last Contribution On Record
+                  </div>
+                  <div className="text-lg sm:text-xl font-bold font-mono text-cyan-400">
+                    {donor.lastDonationAmount !== undefined ? (
+                      `${formatBtc(donor.lastDonationAmount)} BTC`
+                    ) : (
+                      'Recorded Transfer'
+                    )}
+                  </div>
+                  <div className="text-slate-400 font-mono text-xs mt-1">
+                    {donor.lastDonationAt
+                      ? new Date(donor.lastDonationAt).toLocaleDateString(undefined, {
+                          year: 'numeric',
+                          month: 'short',
+                          day: 'numeric',
+                        })
+                      : 'Historical ledger'}
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
-        )}
 
-        {/* Transactions Audit Log */}
-        <div className="flex-1 overflow-y-auto pr-1">
-          <div className="text-xs sm:text-sm font-bold text-slate-300 uppercase tracking-wider mb-3 flex items-center justify-between">
-            <span className="flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-slate-400" />
-              {donor.isCumulativeOnly
-                ? 'Official Treasury Registry Ledger'
-                : `Itemized Donation Receipts (${donor.transactions.length})`}
-            </span>
-            <span className="text-xs text-slate-400 font-mono">
-              {donor.isCumulativeOnly ? 'Lifetime Record' : 'Verified Transactions'}
-            </span>
-          </div>
-
-          <div className="space-y-2.5">
             {/* If Damage is active, show the converted Combat Damage row */}
             {hasDamage && (
               <div className="bg-gradient-to-r from-red-950/40 via-slate-800/70 to-slate-800/70 border border-red-500/40 rounded-2xl p-4 flex items-center justify-between text-xs sm:text-sm">
@@ -239,44 +268,81 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
                 </div>
               </div>
             )}
-
-            {/* Direct individual transactions */}
-            {donor.transactions.length === 0 && (
-              <div className="p-4 bg-slate-800/40 border border-slate-700/40 rounded-2xl text-center text-xs sm:text-sm text-slate-400">
-                <span>This citizen contributed exclusively through combat support in War Mode. No direct treasury cash donations recorded.</span>
-              </div>
-            )}
-
-            {donor.transactions.map((tx) => (
-              <div
-                key={tx._id}
-                className="bg-slate-800/60 border border-slate-700/50 rounded-2xl p-4 flex items-center justify-between text-xs sm:text-sm"
-              >
-                <div>
-                  <div className="font-bold text-amber-400 font-mono text-sm sm:text-base flex items-center gap-2.5">
-                    <span>+{formatBtc(Number(tx.money || tx.amount || 0))} BTC</span>
-                    <span className="text-xs px-2.5 py-0.5 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-300 uppercase font-mono font-bold">
-                      {tx.transactionType || 'Direct Donation'}
-                    </span>
-                  </div>
-                  <div className="text-xs text-slate-500 font-mono mt-1">
-                    Tx ID: {tx._id}
-                  </div>
-                </div>
-
-                <div className="text-right text-slate-400 font-mono text-xs">
-                  <div className="flex items-center gap-1.5 justify-end font-semibold text-slate-200">
-                    <Clock className="w-3.5 h-3.5 text-slate-400" />
-                    <span>{new Date(tx.createdAt).toLocaleDateString()}</span>
-                  </div>
-                  <div className="text-slate-400 mt-0.5">
-                    {new Date(tx.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </div>
-                </div>
-              </div>
-            ))}
           </div>
-        </div>
+        ) : (
+          /* Timed Reports (Daily, Weekly, Monthly, Custom): Full Itemized Transaction Receipts Log */
+          <div className="flex-1 overflow-y-auto pr-1">
+            <div className="text-xs sm:text-sm font-bold text-slate-300 uppercase tracking-wider mb-3 flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-slate-400" />
+                Itemized Donation Receipts ({donor.transactions.length})
+              </span>
+              <span className="text-xs text-slate-400 font-mono">
+                Verified Transactions
+              </span>
+            </div>
+
+            <div className="space-y-2.5">
+              {/* If Damage is active, show the converted Combat Damage row */}
+              {hasDamage && (
+                <div className="bg-gradient-to-r from-red-950/40 via-slate-800/70 to-slate-800/70 border border-red-500/40 rounded-2xl p-4 flex items-center justify-between text-xs sm:text-sm">
+                  <div>
+                    <div className="font-bold text-red-300 font-mono text-sm sm:text-base flex items-center gap-2">
+                      <Swords className="w-4 h-4 text-red-400" />
+                      <span>+{formatBtc(donor.damageAmount)} BTC</span>
+                      <span className="text-xs px-2.5 py-0.5 rounded-lg bg-red-500/20 border border-red-500/30 text-red-300 uppercase font-mono font-bold">
+                        War Mode Damage
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-400 font-mono mt-1">
+                      Dealt {donor.rawDamageDealt.toLocaleString()} combat damage @ {donor.appliedRatePer1k} BTC per 1k dmg
+                    </div>
+                  </div>
+
+                  <div className="text-right text-slate-400 font-mono text-xs sm:text-sm">
+                    <span className="text-red-300 font-bold">Active in War</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Direct individual transactions */}
+              {donor.transactions.length === 0 && (
+                <div className="p-4 bg-slate-800/40 border border-slate-700/40 rounded-2xl text-center text-xs sm:text-sm text-slate-400">
+                  <span>This citizen contributed exclusively through combat support in War Mode. No direct treasury cash donations recorded.</span>
+                </div>
+              )}
+
+              {donor.transactions.map((tx) => (
+                <div
+                  key={tx._id}
+                  className="bg-slate-800/60 border border-slate-700/50 rounded-2xl p-4 flex items-center justify-between text-xs sm:text-sm"
+                >
+                  <div>
+                    <div className="font-bold text-amber-400 font-mono text-sm sm:text-base flex items-center gap-2.5">
+                      <span>+{formatBtc(Number(tx.money || tx.amount || 0))} BTC</span>
+                      <span className="text-xs px-2.5 py-0.5 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-300 uppercase font-mono font-bold">
+                        {tx.transactionType || 'Direct Donation'}
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-500 font-mono mt-1">
+                      Tx ID: {tx._id}
+                    </div>
+                  </div>
+
+                  <div className="text-right text-slate-400 font-mono text-xs">
+                    <div className="flex items-center gap-1.5 justify-end font-semibold text-slate-200">
+                      <Clock className="w-3.5 h-3.5 text-slate-400" />
+                      <span>{new Date(tx.createdAt).toLocaleDateString()}</span>
+                    </div>
+                    <div className="text-slate-400 mt-0.5">
+                      {new Date(tx.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Footer */}
         <div className="mt-4 pt-3.5 border-t border-slate-800 flex justify-end">

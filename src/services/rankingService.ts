@@ -7,6 +7,7 @@ import {
   fetchPublicCumulativeDonations,
   batchResolveUsers,
   fetchCountryCitizens,
+  knownCountryIdsSet,
 } from './apiService';
 import {
   DonorRankingItem,
@@ -21,17 +22,34 @@ import {
 } from '../types/warera';
 
 /**
- * Safely extract string country ID from userProfile.country (which can be a string or object)
+ * Safely extract string country ID from userProfile, country string, or country object.
+ * Robust against variations in API response shapes (countryId, country._id, or string).
  */
-export function normalizeCountryId(country: any): string {
-  if (!country) return '';
-  if (typeof country === 'string') return country.trim();
-  if (typeof country === 'object' && country._id) return String(country._id).trim();
+export function normalizeCountryId(input: any): string {
+  if (!input) return '';
+  if (typeof input === 'string') return input.trim();
+  if (typeof input === 'object') {
+    if (input.countryId && typeof input.countryId === 'string') {
+      return input.countryId.trim();
+    }
+    if (input.country) {
+      if (typeof input.country === 'string') return input.country.trim();
+      if (typeof input.country === 'object' && input.country._id) {
+        return String(input.country._id).trim();
+      }
+    }
+    // Only return input._id if input explicitly represents a country entity (has currency, code, or country name)
+    if (input._id && (input.currency || input.code || (input.name && !input.username))) {
+      return String(input._id).trim();
+    }
+  }
   return '';
 }
 
 /**
- * Calculate damage points dealt by a user for a given timeframe window
+ * Calculate damage points dealt by a user for a given timeframe window.
+ * Strictly scopes weekly damages to daily (1/7), monthly (30-day equivalent),
+ * custom date duration, or all-time stats.
  */
 export function getUserDamageForTimeframe(
   userProfile?: WareraUserLite,
@@ -39,8 +57,11 @@ export function getUserDamageForTimeframe(
   customRange?: CustomDateRange
 ): number {
   if (!userProfile) return 0;
-  const weekly = userProfile.rankings?.weeklyUserDamages?.value || 0;
-  const allTime = userProfile.rankings?.userDamages?.value || userProfile.stats?.damagesCount || 0;
+  const weekly = Math.max(0, userProfile.rankings?.weeklyUserDamages?.value || 0);
+  const allTime = Math.max(
+    0,
+    userProfile.rankings?.userDamages?.value || userProfile.stats?.damagesCount || 0
+  );
 
   switch (timeframe) {
     case 'weekly':
@@ -48,19 +69,21 @@ export function getUserDamageForTimeframe(
     case 'daily':
       return Math.round(weekly / 7);
     case 'monthly':
-      return weekly * 4;
+      // Authoritative 30-day month calculation: (weekly / 7) * 30
+      return Math.round((weekly / 7) * 30);
     case 'custom': {
       if (customRange?.startDate && customRange?.endDate) {
         const ms =
           new Date(customRange.endDate).getTime() - new Date(customRange.startDate).getTime();
         const days = Math.max(1, Math.round(ms / (24 * 3600 * 1000)));
-        return Math.round((weekly / 7) * days);
+        const calculated = Math.round((weekly / 7) * days);
+        return allTime > 0 ? Math.min(calculated, allTime) : calculated;
       }
-      return weekly * 2;
+      return Math.round((weekly / 7) * 14);
     }
     case 'all':
     default:
-      return allTime;
+      return Math.max(allTime, weekly);
   }
 }
 
@@ -126,10 +149,59 @@ export function calculateGranularRankings(
   timeframe: RankingTimeframe,
   customRange?: CustomDateRange,
   damageConfig?: DamageDonationConfig,
-  targetCountryId?: string
+  targetCountryId?: string,
+  cumulativeDonations?: WareraCumulativeDonation[]
 ): RankingSummary {
+  // Build lookup of verified cumulative donors and recent updates for target nation
+  const verifiedDonorIds = new Set<string>();
+  const cumulativeUpdates: Array<{ userId: string; updatedAt: string; amount: number }> = [];
+  if (cumulativeDonations) {
+    cumulativeDonations.forEach((c) => {
+      if (
+        c.userId &&
+        !knownCountryIdsSet.has(c.userId) &&
+        (!c.countryId || !targetCountryId || c.countryId === targetCountryId)
+      ) {
+        verifiedDonorIds.add(c.userId);
+        cumulativeUpdates.push({
+          userId: c.userId,
+          updatedAt: c.updatedAt || c.createdAt,
+          amount: Number(c.amount || 0),
+        });
+      }
+    });
+  }
+
+  // Strict country boundary filter and non-donation purge
+  const scopedTransactions = transactions.filter((t) => {
+    // Sovereign country blacklist guard: a country is NEVER a citizen
+    if (t.userId && (knownCountryIdsSet.has(t.userId) || (targetCountryId && t.userId === targetCountryId))) {
+      return false;
+    }
+    // Exclude if explicitly belonging to another nation's treasury
+    if (targetCountryId && t.countryId && t.countryId !== targetCountryId) return false;
+    // Purge non-donation operations: wages, trades, crafts, commercial market
+    if (t.transactionType) {
+      const lower = t.transactionType.toLowerCase();
+      if (
+        lower.includes('wage') ||
+        lower.includes('salary') ||
+        lower.includes('work') ||
+        lower.includes('case') ||
+        lower.includes('craft') ||
+        lower.includes('dismantle') ||
+        lower.includes('market') ||
+        lower.includes('trade') ||
+        lower.includes('trading')
+      ) {
+        return false;
+      }
+    }
+    return true;
+  });
+
   const { filtered, startDate, endDate } = filterTransactionsByTimeframe(
-    transactions,
+    scopedTransactions,
     timeframe,
     customRange
   );
@@ -137,15 +209,25 @@ export function calculateGranularRankings(
   const donorMap: Record<string, DonorRankingItem> = {};
 
   filtered.forEach((tx) => {
-    const uid = tx.userId || 'unknown';
+    const uid = tx.userId;
+
+    // Never fall back to tx._id or heuristic matching! If no valid citizen can be determined, skip
+    if (!uid) return;
+
+    // Sovereign country blacklist guard: a country (e.g. Malaysia 683ddd2c24b5a2e114af15d9) can NEVER be a citizen
+    if (knownCountryIdsSet.has(uid) || (targetCountryId && uid === targetCountryId)) {
+      return;
+    }
+
     const amount = Number(tx.money || tx.amount || 0);
 
     if (!donorMap[uid]) {
       const userProfile = usersMap[uid];
+      const fallbackName = uid.length >= 6 ? `Citizen #${uid.slice(-6)}` : `Citizen #${uid}`;
       donorMap[uid] = {
         rank: 0,
         userId: uid,
-        username: userProfile?.username || `Citizen #${uid.slice(-6)}`,
+        username: userProfile?.username || fallbackName,
         avatarUrl: userProfile?.avatarUrl,
         totalAmount: 0,
         directAmount: 0,
@@ -155,6 +237,7 @@ export function calculateGranularRankings(
         transactionCount: 0,
         lastDonationAt: tx.createdAt,
         firstDonationAt: tx.createdAt,
+        lastDonationAmount: amount,
         transactions: [],
         donations: [],
         isCumulativeOnly: false,
@@ -169,6 +252,7 @@ export function calculateGranularRankings(
     const txTime = new Date(tx.createdAt).getTime();
     if (txTime > new Date(donor.lastDonationAt).getTime()) {
       donor.lastDonationAt = tx.createdAt;
+      donor.lastDonationAmount = amount;
     }
     if (txTime < new Date(donor.firstDonationAt).getTime()) {
       donor.firstDonationAt = tx.createdAt;
@@ -190,7 +274,8 @@ export function calculateGranularRankings(
 
       // STRICT SOVEREIGN CITIZENSHIP CHECK FOR PURE FIGHTERS:
       // A fighter who has not donated cash to this country MUST currently be a registered citizen of this nation!
-      if (targetCountryId && normalizeCountryId(userProfile.country) !== targetCountryId) {
+      const userCountryId = normalizeCountryId(userProfile);
+      if (!targetCountryId || userCountryId !== targetCountryId) {
         return;
       }
 
@@ -219,15 +304,16 @@ export function calculateGranularRankings(
 
   const donorsList = Object.values(donorMap).map((d) => {
     const userProfile = usersMap[d.userId];
+    const resolvedUsername = userProfile?.username || d.username;
+    const resolvedAvatarUrl = userProfile?.avatarUrl || d.avatarUrl;
     totalDirect += d.directAmount;
 
     let rawDamageDealt = 0;
     let damageAmount = 0;
 
     // Universal Sovereign Rule: Combat damage is ONLY converted if the donor is CURRENTLY a citizen of this country!
-    const isCurrentCitizen = Boolean(
-      targetCountryId && normalizeCountryId(userProfile?.country) === targetCountryId
-    );
+    const userCountryId = normalizeCountryId(userProfile);
+    const isCurrentCitizen = Boolean(targetCountryId && userCountryId === targetCountryId);
 
     if (damageConfig?.enabled && appliedRate > 0 && isCurrentCitizen) {
       rawDamageDealt = getUserDamageForTimeframe(userProfile, timeframe, customRange);
@@ -242,6 +328,8 @@ export function calculateGranularRankings(
 
     return {
       ...d,
+      username: resolvedUsername,
+      avatarUrl: resolvedAvatarUrl,
       totalAmount: combinedTotal,
       directAmount: parseFloat(d.directAmount.toFixed(3)),
       damageAmount,
@@ -297,7 +385,18 @@ export function calculateCumulativeRankings(
   let totalDamage = 0;
   const appliedRate = damageConfig?.enabled ? (Number(damageConfig.ratePer1k) || 0) : 0;
 
-  const donorsList: DonorRankingItem[] = cumulative.map((c) => {
+  // Strict country boundary filter: only process cumulative records belonging strictly to targetCountryId
+  const scopedCumulative = cumulative.filter((c) => {
+    if (!c.userId || knownCountryIdsSet.has(c.userId) || (targetCountryId && c.userId === targetCountryId)) {
+      return false;
+    }
+    if (targetCountryId && c.countryId !== targetCountryId) {
+      return false;
+    }
+    return true;
+  });
+
+  const donorsList: DonorRankingItem[] = scopedCumulative.map((c) => {
     const userProfile = usersMap[c.userId];
     const directAmount = Number(c.amount) || 0;
     totalDirect += directAmount;
@@ -306,9 +405,8 @@ export function calculateCumulativeRankings(
     let damageAmount = 0;
 
     // Universal Sovereign Rule: Combat damage is ONLY converted if the donor is CURRENTLY a citizen of this country!
-    const isCurrentCitizen = Boolean(
-      targetCountryId && normalizeCountryId(userProfile?.country) === targetCountryId
-    );
+    const userCountryId = normalizeCountryId(userProfile);
+    const isCurrentCitizen = Boolean(targetCountryId && userCountryId === targetCountryId);
 
     if (damageConfig?.enabled && appliedRate > 0 && isCurrentCitizen) {
       rawDamageDealt = getUserDamageForTimeframe(userProfile, timeframe, customRange);
@@ -328,8 +426,18 @@ export function calculateCumulativeRankings(
       createdAt: c.updatedAt || c.createdAt,
     };
 
-    // Calculate verified country-specific donations count specifically for this country
-    const countrySpecificTxs = transactions && targetCountryId
+    // In All-Time view, the cumulative record represents the verified lifetime treasury contribution.
+    // Inspect recent transaction buffer to extract the last recorded donation event (timestamp & BTC amount) if available.
+    const allCitizenRecentTxs = transactions
+      ? transactions
+          .filter((t) => t.userId === c.userId && (!targetCountryId || !t.countryId || t.countryId === targetCountryId))
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      : [];
+    const latestTx = allCitizenRecentTxs[0];
+    const lastDonationAmount = latestTx ? Number(latestTx.money || latestTx.amount || 0) : undefined;
+    const lastDonationAt = latestTx ? latestTx.createdAt : (c.updatedAt || c.createdAt);
+
+    const countrySpecificTxs = transactions && targetCountryId && timeframe !== 'all'
       ? transactions.filter(
           (t) => t.userId === c.userId && (!t.countryId || t.countryId === targetCountryId)
         )
@@ -347,19 +455,20 @@ export function calculateCumulativeRankings(
       damageAmount,
       rawDamageDealt,
       appliedRatePer1k: isCurrentCitizen ? appliedRate : 0,
-      transactionCount: donationCount,
-      lastDonationAt: c.updatedAt || c.createdAt,
+      transactionCount: timeframe === 'all' ? 0 : donationCount,
+      lastDonationAt,
       firstDonationAt: c.createdAt,
-      transactions: resolvedTransactions,
-      donations: resolvedTransactions,
-      isCumulativeOnly: countrySpecificTxs.length === 0,
+      lastDonationAmount,
+      transactions: timeframe === 'all' ? [singleTx] : resolvedTransactions,
+      donations: timeframe === 'all' ? [singleTx] : resolvedTransactions,
+      isCumulativeOnly: timeframe === 'all' || countrySpecificTxs.length === 0,
     };
   });
 
   // If War Mode damage donations is active, also include country citizens who dealt combat damage
   // even if they have not made a cumulative monetary donation, provided they hold active citizenship in the audited country!
   if (damageConfig?.enabled && appliedRate > 0) {
-    const existingDonorIds = new Set(cumulative.map((c) => c.userId));
+    const existingDonorIds = new Set(scopedCumulative.map((c) => c.userId));
     Object.values(usersMap).forEach((userProfile) => {
       if (!userProfile || !userProfile._id) return;
       const uid = userProfile._id;
@@ -368,7 +477,8 @@ export function calculateCumulativeRankings(
 
       // STRICT SOVEREIGN CITIZENSHIP CHECK FOR PURE FIGHTERS:
       // A fighter who has not donated cash to this country MUST currently be a registered citizen of this nation!
-      if (targetCountryId && normalizeCountryId(userProfile.country) !== targetCountryId) {
+      const userCountryId = normalizeCountryId(userProfile);
+      if (!targetCountryId || userCountryId !== targetCountryId) {
         return;
       }
 

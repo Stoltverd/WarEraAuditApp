@@ -45,16 +45,40 @@ export interface WareraUserLite {
   avatar?: string;
   country?: string;
   countryId?: string;
+  level?: number;
   leveling?: {
     level?: number;
     totalXp?: number;
   };
   militaryRank?: number;
   isActive?: boolean;
+  createdAt?: string;
+  dates?: {
+    lastConnectionAt?: string;
+    lastSkillsResetAt?: string;
+    lastWorkAt?: string;
+    [key: string]: any;
+  };
+  money?: number;
+  company?: string;
   stats?: {
     damagesCount?: number;
+    companiesCount?: number;
+    wealth?: {
+      total?: number;
+      money?: number;
+      items?: number;
+      companies?: number;
+      equipments?: number;
+      weapons?: number;
+    } | number;
+    [key: string]: any;
   };
   rankings?: {
+    userWealth?: {
+      value?: number;
+      rank?: number;
+    };
     userDamages?: {
       value?: number;
       rank?: number;
@@ -64,18 +88,53 @@ export interface WareraUserLite {
       rank?: number;
     };
   };
+  skills?: {
+    attack?: { level?: number; value?: number; [key: string]: any };
+    criticalDamages?: { level?: number; value?: number; [key: string]: any };
+    criticalChance?: { level?: number; value?: number; [key: string]: any };
+    armor?: { level?: number; value?: number; [key: string]: any };
+    precision?: { level?: number; value?: number; [key: string]: any };
+    dodge?: { level?: number; value?: number; [key: string]: any };
+    health?: { level?: number; value?: number; [key: string]: any };
+    stamina?: { level?: number; value?: number; [key: string]: any };
+    energy?: { level?: number; value?: number; [key: string]: any };
+    companies?: { level?: number; value?: number; [key: string]: any };
+    entrepreneurship?: { level?: number; value?: number; [key: string]: any };
+    production?: { level?: number; value?: number; [key: string]: any };
+    management?: { level?: number; value?: number; [key: string]: any };
+    lootChance?: { level?: number; value?: number; [key: string]: any };
+    [key: string]: any;
+  };
 }
 
+export type WareraTransactionType =
+  | 'wage'
+  | 'trading'
+  | 'market'
+  | 'itemMarket'
+  | 'donation'
+  | 'applicationFee'
+  | 'articleTip'
+  | 'openCase'
+  | 'craftItem'
+  | 'dismantleItem'
+  | string;
+
 /**
- * Individual donation transaction event from transaction.getPaginatedTransactions
+ * Individual donation / financial transaction event from transaction.getPaginatedTransactions
  */
 export interface WareraTransaction {
   _id: string;
-  transactionType: 'donation' | string;
-  money?: number;     // Amount of BTC donated in this single transaction
+  transactionType: WareraTransactionType;
+  money?: number;     // Amount of BTC involved in transaction
   amount?: number;    // Normalized amount
-  userId?: string;    // Citizen donor ID
-  countryId?: string; // Recipient country ID
+  userId?: string;    // Citizen ID (employee, actor, donor, etc.)
+  sellerId?: string;  // Seller user ID (for market/trade sales)
+  buyerId?: string;   // Buyer user ID (for market/trade purchases)
+  companyId?: string; // Employer or company ID (for wage/production)
+  item?: string;      // Canonical resource / item traded (Oil, Iron, Food, Munitions)
+  resourceType?: string;
+  countryId?: string; // Recipient/Origin country ID
   createdAt: string;  // Exact timestamp of this transaction
   updatedAt?: string;
 }
@@ -122,6 +181,7 @@ export interface DonorRankingItem {
   transactionCount: number;
   lastDonationAt: string;
   firstDonationAt: string;
+  lastDonationAmount?: number;
   transactions: WareraTransaction[];
   donations: WareraTransaction[];
   isCumulativeOnly?: boolean;
@@ -149,4 +209,25 @@ export interface SyncProgress {
   fetchedItems: number;
   message?: string;
   error?: string;
+}
+
+export interface WareraCompany {
+  _id: string;
+  user: string;
+  region?: string;
+  name: string;
+  itemCode: string;
+  isFull?: boolean;
+  concreteInvested?: number;
+  production: number;
+  activeUpgradeLevels?: {
+    storage?: number;
+    automatedEngine?: number;
+    breakRoom?: number;
+    [key: string]: number | undefined;
+  };
+  workerCount?: number;
+  estimatedValue?: number;
+  createdAt?: string;
+  updatedAt?: string;
 }
