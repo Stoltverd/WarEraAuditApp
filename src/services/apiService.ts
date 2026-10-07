@@ -28,12 +28,82 @@ export function registerKnownCountryIds(countries: WareraCountry[]): void {
   });
 }
 
+// =========================================================================
+// Centralized Rate-Limiting Queue Dispatcher for War Era API
+// Enforces max concurrency of 3 and responsive 90ms spacing with 429 auto-backoff
+// =========================================================================
+let activeRequests = 0;
+const MAX_CONCURRENT_REQUESTS = 3; // Tuned safe concurrency ceiling
+const MIN_REQUEST_INTERVAL_MS = 90; // Responsive spacing between queries
+let lastRequestTimestamp = 0;
+const requestQueue: Array<() => void> = [];
+
+function pumpQueue(): void {
+  while (activeRequests < MAX_CONCURRENT_REQUESTS && requestQueue.length > 0) {
+    const task = requestQueue.shift();
+    if (!task) break;
+
+    activeRequests++;
+    const now = Date.now();
+    const elapsed = now - lastRequestTimestamp;
+    const delay = Math.max(0, MIN_REQUEST_INTERVAL_MS - elapsed);
+
+    setTimeout(() => {
+      lastRequestTimestamp = Date.now();
+      task();
+    }, delay);
+  }
+}
+
+export async function rateLimitedFetch(
+  url: string,
+  options?: RequestInit,
+  retries = 3
+): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
+    const execute = async () => {
+      try {
+        const res = await fetch(url, options);
+
+        if (res.status === 429 && retries > 0) {
+          // Upstream API rate limit hit: pause queue and back off exponentially
+          const retryHeader = res.headers.get('Retry-After');
+          const backoffDelay = retryHeader
+            ? Math.max(1500, parseInt(retryHeader, 10) * 1000)
+            : (4 - retries) * 1800; // 1.8s, 3.6s, 5.4s
+
+          console.warn(`[War Era Rate-Limiter] HTTP 429 detected. Pacing queue for ${backoffDelay}ms (attempt ${4 - retries}/3)...`);
+          await new Promise((r) => setTimeout(r, backoffDelay));
+
+          activeRequests = Math.max(0, activeRequests - 1);
+          pumpQueue();
+
+          // Re-queue with one fewer retry
+          resolve(rateLimitedFetch(url, options, retries - 1));
+          return;
+        }
+
+        activeRequests = Math.max(0, activeRequests - 1);
+        pumpQueue();
+        resolve(res);
+      } catch (err) {
+        activeRequests = Math.max(0, activeRequests - 1);
+        pumpQueue();
+        reject(err);
+      }
+    };
+
+    requestQueue.push(execute);
+    pumpQueue();
+  });
+}
+
 /**
  * Fetch all sovereign countries from War Era, sorted alphabetically
  */
 export async function getCountries(): Promise<WareraCountry[]> {
   try {
-    const res = await fetch(`${WARERA_TRPC_BASE}/country.getAllCountries`, {
+    const res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/country.getAllCountries`, {
       headers: { 'Accept': 'application/json' },
     });
 
@@ -289,7 +359,7 @@ export async function fetchGranularDonationTransactions(
     }
 
     const encoded = encodeURIComponent(JSON.stringify(queryInput));
-    const res = await fetch(`${WARERA_TRPC_BASE}/transaction.getPaginatedTransactions?input=${encoded}`, {
+    const res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/transaction.getPaginatedTransactions?input=${encoded}`, {
       headers: {
         'Accept': 'application/json',
         'X-API-Key': apiKey.trim(),
@@ -466,7 +536,7 @@ export async function fetchUserTransactions(
 
     const encoded = encodeURIComponent(JSON.stringify(queryInput));
     try {
-      const res = await fetch(`${WARERA_TRPC_BASE}/transaction.getPaginatedTransactions?input=${encoded}`, {
+      const res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/transaction.getPaginatedTransactions?input=${encoded}`, {
         headers: {
           'Accept': 'application/json',
           'X-API-Key': apiKey.trim(),
@@ -617,7 +687,7 @@ export async function fetchPublicCumulativeDonations(
     }
 
     const encoded = encodeURIComponent(JSON.stringify(queryInput));
-    const res = await fetch(`${WARERA_TRPC_BASE}/donation.getManyPaginated?input=${encoded}`, {
+    const res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/donation.getManyPaginated?input=${encoded}`, {
       headers: { 'Accept': 'application/json' },
     });
 
@@ -633,6 +703,35 @@ export async function fetchPublicCumulativeDonations(
       break;
     }
 
+    // Proactively harvest embedded user profiles from cumulative items so patrons resolve with 0 latency
+    const harvestedUsers: WareraUserLite[] = [];
+    rawItems.forEach((it) => {
+      const uObj = typeof it.user === 'object' ? it.user : (typeof it.donor === 'object' ? it.donor : null);
+      const uid = it.userId || (uObj ? uObj._id : null) || it.donorId;
+      if (uid && (uObj || it.username)) {
+        const uName = uObj?.username || it.username || it.donorUsername;
+        const uAvatar = uObj?.avatarUrl || uObj?.avatar || it.avatarUrl || it.avatar;
+        const uUser: WareraUserLite = {
+          _id: uid,
+          username: uName || `Citizen #${uid.slice(-6)}`,
+          avatarUrl: uAvatar,
+          country: countryId,
+          isActive: uObj?.isActive !== undefined ? Boolean(uObj.isActive) : true,
+          leveling: uObj?.leveling,
+          level: Number(uObj?.leveling?.level ?? uObj?.level ?? 0),
+          militaryRank: uObj?.militaryRank,
+          rankings: uObj?.rankings,
+          stats: uObj?.stats,
+        };
+        memoryUserCache[uid] = { ...(memoryUserCache[uid] || {}), ...uUser };
+        harvestedUsers.push(uUser);
+      }
+    });
+
+    if (harvestedUsers.length > 0) {
+      await storage.saveUsers(harvestedUsers);
+    }
+
     const items: WareraCumulativeDonation[] = rawItems.map((it) => ({
       ...it,
       countryId: it.countryId || countryId,
@@ -645,7 +744,7 @@ export async function fetchPublicCumulativeDonations(
     hasMore = Boolean(cursor && items.length >= 50);
 
     if (hasMore) {
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 60));
     }
   }
 
@@ -667,12 +766,12 @@ export async function fetchUserLite(userId: string, forceRefresh = false): Promi
   try {
     const encoded = encodeURIComponent(JSON.stringify({ userId }));
     // Use user.getUserById to extract complete stats.wealth breakdown (money, items, companies, equipment, weapons, total)
-    let res = await fetch(`${WARERA_TRPC_BASE}/user.getUserById?input=${encoded}`, {
+    let res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/user.getUserById?input=${encoded}`, {
       headers: { 'Accept': 'application/json' },
     });
     if (!res.ok) {
       // Fallback to getUserLite if getUserById is unavailable
-      res = await fetch(`${WARERA_TRPC_BASE}/user.getUserLite?input=${encoded}`, {
+      res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/user.getUserLite?input=${encoded}`, {
         headers: { 'Accept': 'application/json' },
       });
     }
@@ -707,32 +806,52 @@ export async function fetchUserLite(userId: string, forceRefresh = false): Promi
 }
 
 /**
- * Batch resolve user profiles with controlled concurrency
+ * Batch resolve user profiles with controlled concurrency and polite pacing
  */
 export async function batchResolveUsers(
   userIds: string[],
-  onBatchProgress?: (completed: number, total: number) => void
+  onBatchProgress?: (completed: number, total: number) => void,
+  onChunkResolved?: (chunkUsers: WareraUserLite[]) => void
 ): Promise<Record<string, WareraUserLite>> {
   const existingMap = await storage.getAllUsers();
   Object.assign(memoryUserCache, existingMap);
 
-  // Require fetch if not cached, missing combat damage stats, missing skills, or missing complete wealth breakdown
+  // Filter missing: query users who have no record or have a temporary placeholder
   const missingIds = userIds.filter((id) => {
     const cached = memoryUserCache[id];
-    const hasWealth = cached && cached.stats && typeof cached.stats.wealth === 'object' && cached.stats.wealth.money !== undefined;
-    return !cached || !cached.rankings || !cached.rankings.userDamages || !cached.skills || !hasWealth;
+    return !cached || !cached.username || cached.username.startsWith('Citizen #');
   });
-  const newUsers: WareraUserLite[] = [];
 
-  const chunkSize = 5;
+  const newUsers: WareraUserLite[] = [];
+  const chunkSize = 2; // Strict concurrency ceiling of 2
   for (let i = 0; i < missingIds.length; i += chunkSize) {
     const chunk = missingIds.slice(i, i + chunkSize);
-    const results = await Promise.all(chunk.map((uid) => fetchUserLite(uid, true)));
-    results.forEach((u) => {
-      if (u) newUsers.push(u);
+    const results = await Promise.all(chunk.map((uid) => fetchUserLite(uid, false)));
+    const chunkUsers: WareraUserLite[] = [];
+    results.forEach((u, idx) => {
+      const uid = chunk[idx];
+      if (u) {
+        newUsers.push(u);
+        chunkUsers.push(u);
+      } else {
+        const placeholder: WareraUserLite = {
+          _id: uid,
+          username: `Citizen #${uid.slice(-6)}`,
+          isActive: false,
+        };
+        memoryUserCache[uid] = placeholder;
+        chunkUsers.push(placeholder);
+      }
     });
+
+    if (chunkUsers.length > 0 && onChunkResolved) {
+      onChunkResolved(chunkUsers);
+    }
+
     onBatchProgress?.(Math.min(i + chunkSize, missingIds.length), missingIds.length);
-    await new Promise((r) => setTimeout(r, 70));
+    if (i + chunkSize < missingIds.length) {
+      await new Promise((r) => setTimeout(r, 120));
+    }
   }
 
   if (newUsers.length > 0) {
@@ -764,18 +883,18 @@ export async function ensureDonorsDamageStats(
   }
 
   const updated: WareraUserLite[] = [];
-  const chunkSize = 5;
+  const chunkSize = 2; // Paced concurrency of 2
   for (let i = 0; i < missing.length; i += chunkSize) {
     const chunk = missing.slice(i, i + chunkSize);
     const results = await Promise.all(
-      chunk.map((uid) => fetchUserLite(uid, true))
+      chunk.map((uid) => fetchUserLite(uid, forceRefresh))
     );
 
     results.forEach((u) => {
       if (u) updated.push(u);
     });
     if (i + chunkSize < missing.length) {
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 180));
     }
   }
 
@@ -815,7 +934,7 @@ export async function fetchUserCompanies(userId: string, forceRefresh = false): 
       }
 
       const encoded = encodeURIComponent(JSON.stringify(queryInput));
-      const res = await fetch(`${WARERA_TRPC_BASE}/company.getCompanies?input=${encoded}`, {
+      const res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/company.getCompanies?input=${encoded}`, {
         headers: { 'Accept': 'application/json' },
       });
 
@@ -840,7 +959,7 @@ export async function fetchUserCompanies(userId: string, forceRefresh = false): 
       allCompanyIds.map(async (cid) => {
         try {
           const enc = encodeURIComponent(JSON.stringify({ companyId: cid }));
-          const cRes = await fetch(`${WARERA_TRPC_BASE}/company.getById?input=${enc}`, {
+          const cRes = await rateLimitedFetch(`${WARERA_TRPC_BASE}/company.getById?input=${enc}`, {
             headers: { 'Accept': 'application/json' },
           });
           if (!cRes.ok) return;
@@ -880,24 +999,77 @@ export async function fetchUserCompanies(userId: string, forceRefresh = false): 
 }
 
 /**
- * Fetch registered citizens of a country via user.getUsersByCountry
+ * Fetch registered citizens of a country via user.getUsersByCountry with bulk pagination.
+ * Directly harvests complete citizen profiles (username, avatar, leveling, active status)
+ * so hundreds of citizens are ingested with 0 individual queries and zero rate limits.
  */
 export async function fetchCountryCitizens(
   countryId: string,
-  limit = 100
+  maxPages = 5
 ): Promise<string[]> {
+  const allCitizenIds: string[] = [];
+  const harvestedUsers: WareraUserLite[] = [];
+  let cursor: string | undefined = undefined;
+  let page = 0;
+
   try {
-    const encoded = encodeURIComponent(JSON.stringify({ countryId, limit }));
-    const res = await fetch(`${WARERA_TRPC_BASE}/user.getUsersByCountry?input=${encoded}`, {
-      headers: { 'Accept': 'application/json' },
-    });
-    if (!res.ok || !res.headers.get('content-type')?.includes('application/json')) return [];
-    const json = await res.json();
-    const items: Array<{ _id: string }> = json?.result?.data?.items || [];
-    return items.map((item) => item._id).filter(Boolean);
+    while (page < maxPages) {
+      page++;
+      const queryInput: Record<string, any> = { countryId, limit: 100 };
+      if (cursor) queryInput.cursor = cursor;
+
+      const encoded = encodeURIComponent(JSON.stringify(queryInput));
+      const res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/user.getUsersByCountry?input=${encoded}`, {
+        headers: { 'Accept': 'application/json' },
+      });
+
+      if (!res.ok || !res.headers.get('content-type')?.includes('application/json')) break;
+
+      const json = await res.json();
+      const rawData = json?.result?.data;
+      const rawItems: any[] = rawData?.items || [];
+      if (rawItems.length === 0) break;
+
+      rawItems.forEach((item) => {
+        if (!item || !item._id) return;
+        const uid = String(item._id).trim();
+        allCitizenIds.push(uid);
+
+        const wealthObj = typeof item.stats?.wealth === 'object' ? item.stats.wealth : null;
+        const user: WareraUserLite = {
+          _id: uid,
+          username: item.username || `Citizen #${uid.slice(-6)}`,
+          avatarUrl: item.avatarUrl || item.avatar,
+          country: item.country || countryId,
+          countryId: typeof item.country === 'string' ? item.country : (item.country?._id || countryId),
+          leveling: item.leveling,
+          level: Number(item.leveling?.level ?? item.level ?? 0),
+          militaryRank: item.militaryRank,
+          isActive: item.isActive !== undefined ? Boolean(item.isActive) : true,
+          createdAt: item.createdAt,
+          dates: item.dates,
+          skills: item.skills,
+          rankings: item.rankings,
+          stats: item.stats,
+          money: wealthObj?.money !== undefined ? wealthObj.money : item.money,
+        };
+
+        memoryUserCache[uid] = { ...(memoryUserCache[uid] || {}), ...user };
+        harvestedUsers.push(user);
+      });
+
+      cursor = rawData?.nextCursor;
+      if (!cursor || rawItems.length < 100) break;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+
+    if (harvestedUsers.length > 0) {
+      await storage.saveUsers(harvestedUsers);
+    }
+    return Array.from(new Set(allCitizenIds));
   } catch (err) {
     console.warn('Failed to fetch country citizens:', err);
-    return [];
+    return Array.from(new Set(allCitizenIds));
   }
 }
 
@@ -918,7 +1090,7 @@ export async function fetchNationalTransfers(
       limit: 50,
     };
     const encoded = encodeURIComponent(JSON.stringify(queryInput));
-    const res = await fetch(`${WARERA_TRPC_BASE}/transaction.getPaginatedTransactions?input=${encoded}`, {
+    const res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/transaction.getPaginatedTransactions?input=${encoded}`, {
       headers: {
         'Accept': 'application/json',
         'X-API-Key': apiKey.trim(),

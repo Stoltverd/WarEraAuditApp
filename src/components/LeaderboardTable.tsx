@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { DonorRankingItem } from '../types/warera';
 import {
   Search,
@@ -6,8 +6,12 @@ import {
   Coins,
   Clock,
   ChevronRight,
+  ChevronLeft,
+  ChevronsLeft,
+  ChevronsRight,
   TrendingUp,
   Layers,
+  RefreshCw,
 } from 'lucide-react';
 
 interface LeaderboardTableProps {
@@ -15,6 +19,7 @@ interface LeaderboardTableProps {
   totalAmountDonated: number;
   onSelectDonor: (userId: string) => void;
   timeframe: string;
+  onResolveUsers?: (userIds: string[]) => Promise<void>;
 }
 
 type SortField = 'rank' | 'amount' | 'events' | 'lastDonation';
@@ -24,11 +29,15 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
   totalAmountDonated,
   onSelectDonor,
   timeframe,
+  onResolveUsers,
 }) => {
   const [search, setSearch] = useState('');
   const [sortField, setSortField] = useState<SortField>('rank');
   const [sortAsc, setSortAsc] = useState(true);
-  const [displayCount, setDisplayCount] = useState(50);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(25);
+  const [jumpPageInput, setJumpPageInput] = useState('');
+  const requestedIdsRef = useRef<Set<string>>(new Set());
 
   const filteredAndSorted = useMemo(() => {
     let result = leaderboard.filter(
@@ -59,6 +68,45 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
     return result;
   }, [leaderboard, search, sortField, sortAsc]);
 
+  const totalPages = Math.max(1, Math.ceil(filteredAndSorted.length / pageSize));
+
+  // Automatically keep currentPage within valid range
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [totalPages, currentPage]);
+
+  // Active slice of donors rendered strictly for the current page
+  const paginatedItems = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredAndSorted.slice(start, start + pageSize);
+  }, [filteredAndSorted, currentPage, pageSize]);
+
+  // Viewport-exclusive JIT hydration: only resolve citizens currently on this page
+  useEffect(() => {
+    if (!onResolveUsers) return;
+    const needResolve = paginatedItems
+      .filter((item) => item.username.startsWith('Citizen #'))
+      .map((item) => item.userId);
+
+    const pending = needResolve.filter((id) => !requestedIdsRef.current.has(id));
+    if (pending.length === 0) return;
+
+    // Immediately resolve active page in responsive chunks of 10
+    const chunk = pending.slice(0, 10);
+    chunk.forEach((id) => requestedIdsRef.current.add(id));
+
+    // Watchdog timer: release lock after 8s so network blips can retry
+    const timer = setTimeout(() => {
+      chunk.forEach((id) => requestedIdsRef.current.delete(id));
+    }, 8000);
+
+    onResolveUsers(chunk).finally(() => {
+      clearTimeout(timer);
+    });
+  }, [paginatedItems, onResolveUsers]);
+
   const handleSort = (field: SortField) => {
     if (sortField === field) {
       setSortAsc(!sortAsc);
@@ -66,7 +114,53 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
       setSortField(field);
       setSortAsc(field === 'rank');
     }
+    setCurrentPage(1);
   };
+
+  const handlePageChange = (newPage: number) => {
+    const clamped = Math.max(1, Math.min(newPage, totalPages));
+    setCurrentPage(clamped);
+    const tableAnchor = document.getElementById('leaderboard-table-anchor');
+    if (tableAnchor) {
+      tableAnchor.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  };
+
+  const handleJumpSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsed = parseInt(jumpPageInput, 10);
+    if (!isNaN(parsed) && parsed >= 1 && parsed <= totalPages) {
+      handlePageChange(parsed);
+      setJumpPageInput('');
+    }
+  };
+
+  // Generate clean pagination window: e.g. [1, '...', 7, 8, 9, '...', 44]
+  const paginationRange = useMemo(() => {
+    const delta = 1;
+    const range: (number | string)[] = [];
+    for (
+      let i = Math.max(2, currentPage - delta);
+      i <= Math.min(totalPages - 1, currentPage + delta);
+      i++
+    ) {
+      range.push(i);
+    }
+
+    if (currentPage - delta > 2) {
+      range.unshift('...');
+    }
+    if (currentPage + delta < totalPages - 1) {
+      range.push('...');
+    }
+
+    range.unshift(1);
+    if (totalPages > 1) {
+      range.push(totalPages);
+    }
+
+    return range;
+  }, [currentPage, totalPages]);
 
   const formatBtc = (val: number) => {
     return val.toLocaleString(undefined, {
@@ -116,7 +210,7 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
       </div>
 
       {/* Table Container */}
-      <div className="overflow-x-auto rounded-2xl border border-slate-800">
+      <div id="leaderboard-table-anchor" className="overflow-x-auto rounded-2xl border border-slate-800">
         <table className="w-full text-left border-collapse text-xs sm:text-sm">
           <thead>
             <tr className="bg-slate-800/70 border-b border-slate-700/80 text-slate-400 font-semibold uppercase tracking-wider text-[11px]">
@@ -173,7 +267,7 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
                 </td>
               </tr>
             ) : (
-              filteredAndSorted.slice(0, displayCount).map((donor) => {
+              paginatedItems.map((donor) => {
                 const percentage =
                   totalAmountDonated > 0
                     ? ((donor.totalAmount / totalAmountDonated) * 100).toFixed(1)
@@ -212,19 +306,32 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
                             <img
                               src={donor.avatarUrl}
                               alt={donor.username}
-                              className="w-full h-full object-cover"
+                              className="w-full h-full object-cover transition-opacity duration-300"
                               onError={(e) => {
                                 (e.currentTarget as HTMLElement).style.display = 'none';
                               }}
                             />
+                          ) : donor.username.startsWith('Citizen #') ? (
+                            <div className="w-full h-full flex items-center justify-center bg-slate-800 text-amber-400">
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            </div>
                           ) : (
                             donor.username.slice(0, 2).toUpperCase()
                           )}
                         </div>
                         <div className="truncate max-w-[150px] sm:max-w-xs">
-                          <div className="font-extrabold text-slate-200 group-hover:text-amber-400 transition truncate text-sm">
-                            {donor.username}
-                          </div>
+                          {donor.username.startsWith('Citizen #') ? (
+                            <div className="flex items-center gap-1.5 py-0.5">
+                              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-xs font-mono text-amber-300 animate-pulse">
+                                <RefreshCw className="w-3 h-3 animate-spin text-amber-400 shrink-0" />
+                                Syncing Citizen #{donor.userId.slice(-6)}...
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="font-extrabold text-slate-200 group-hover:text-amber-400 transition truncate text-sm">
+                              {donor.username}
+                            </div>
+                          )}
                           <div className="text-[11px] text-slate-500 font-mono truncate">
                             ID: {donor.userId}
                           </div>
@@ -305,16 +412,139 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
         </table>
       </div>
 
-      {/* Pagination / Show more */}
-      {filteredAndSorted.length > displayCount && (
-        <div className="mt-5 text-center">
-          <button
-            type="button"
-            onClick={() => setDisplayCount((prev) => prev + 50)}
-            className="px-5 py-2.5 bg-slate-800 hover:bg-slate-750 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 transition shadow-sm"
-          >
-            Load Next 50 Donors ({filteredAndSorted.length - displayCount} remaining)
-          </button>
+      {/* High-Performance Paged Navigation Bar */}
+      {filteredAndSorted.length > 0 && (
+        <div className="mt-5 pt-4 border-t border-slate-800 flex flex-col md:flex-row items-center justify-between gap-4 text-xs">
+          {/* Left: Summary & Per-Page Selector */}
+          <div className="flex items-center gap-3 text-slate-400 flex-wrap">
+            <span>
+              Showing{' '}
+              <strong className="text-white font-mono">
+                {((currentPage - 1) * pageSize) + 1}–{Math.min(currentPage * pageSize, filteredAndSorted.length)}
+              </strong>{' '}
+              of <strong className="text-white font-mono">{filteredAndSorted.length.toLocaleString()}</strong> patrons
+            </span>
+
+            <div className="flex items-center gap-1.5 pl-2 border-l border-slate-800">
+              <span className="text-slate-500 text-[11px]">Per page:</span>
+              {[25, 50, 100].map((size) => (
+                <button
+                  key={size}
+                  type="button"
+                  onClick={() => {
+                    setPageSize(size);
+                    setCurrentPage(1);
+                  }}
+                  className={`px-2 py-0.5 rounded font-mono text-[11px] font-bold transition ${
+                    pageSize === size
+                      ? 'bg-amber-500 text-slate-950 shadow-sm'
+                      : 'bg-slate-800 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {size}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Center: Numeric Page Navigation Controls */}
+          {totalPages > 1 && (
+            <div className="flex items-center gap-1 flex-wrap justify-center">
+              {/* First Page */}
+              <button
+                type="button"
+                onClick={() => handlePageChange(1)}
+                disabled={currentPage === 1}
+                className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white disabled:opacity-30 disabled:pointer-events-none transition border border-slate-700/60"
+                title="First Page"
+              >
+                <ChevronsLeft className="w-4 h-4" />
+              </button>
+
+              {/* Previous Page */}
+              <button
+                type="button"
+                onClick={() => handlePageChange(currentPage - 1)}
+                disabled={currentPage === 1}
+                className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white disabled:opacity-30 disabled:pointer-events-none transition border border-slate-700/60"
+                title="Previous Page"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+
+              {/* Page Numbers */}
+              {paginationRange.map((pageItem, idx) => {
+                if (pageItem === '...') {
+                  return (
+                    <span key={`ellipsis-${idx}`} className="px-2 py-1 text-slate-500 font-mono">
+                      ...
+                    </span>
+                  );
+                }
+
+                const pageNum = Number(pageItem);
+                const isActive = pageNum === currentPage;
+                return (
+                  <button
+                    key={`page-${pageNum}`}
+                    type="button"
+                    onClick={() => handlePageChange(pageNum)}
+                    className={`min-w-8 h-8 px-2 rounded-lg font-mono font-bold text-xs transition border ${
+                      isActive
+                        ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md shadow-amber-500/20'
+                        : 'bg-slate-800/80 text-slate-300 hover:text-white hover:bg-slate-750 border-slate-700/60'
+                    }`}
+                  >
+                    {pageNum}
+                  </button>
+                );
+              })}
+
+              {/* Next Page */}
+              <button
+                type="button"
+                onClick={() => handlePageChange(currentPage + 1)}
+                disabled={currentPage === totalPages}
+                className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white disabled:opacity-30 disabled:pointer-events-none transition border border-slate-700/60"
+                title="Next Page"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+
+              {/* Last Page */}
+              <button
+                type="button"
+                onClick={() => handlePageChange(totalPages)}
+                disabled={currentPage === totalPages}
+                className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white disabled:opacity-30 disabled:pointer-events-none transition border border-slate-700/60"
+                title="Last Page"
+              >
+                <ChevronsRight className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Right: Direct Page Jump Input */}
+          {totalPages > 3 && (
+            <form onSubmit={handleJumpSubmit} className="flex items-center gap-1.5">
+              <span className="text-slate-500 text-[11px]">Go to:</span>
+              <input
+                type="number"
+                min={1}
+                max={totalPages}
+                value={jumpPageInput}
+                onChange={(e) => setJumpPageInput(e.target.value)}
+                placeholder={`1-${totalPages}`}
+                className="w-16 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white placeholder-slate-500 text-center font-mono focus:outline-none focus:border-amber-400"
+              />
+              <button
+                type="submit"
+                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold border border-slate-700 transition"
+              >
+                Go
+              </button>
+            </form>
+          )}
         </div>
       )}
     </div>

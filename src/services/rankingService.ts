@@ -616,40 +616,50 @@ export async function syncCountryData(
     }
   }
 
-  // 3. Ingest national citizens and collect unique user IDs across all datasets
+  // 3. Dual-Stream Eager Hydration: Extract top donors from BOTH recent transactions (Daily/Weekly)
+  // AND the cumulative ledger so Page 1 of ALL views is 100% resolved upon loading
+  const recentDonorTotals = new Map<string, number>();
+  txs.forEach((t) => {
+    if (t.userId) {
+      recentDonorTotals.set(t.userId, (recentDonorTotals.get(t.userId) || 0) + Number(t.amount || (t as any).money || 0));
+    }
+  });
+
+  const cumulativeDonorTotals = new Map<string, number>();
+  cumulative.forEach((c) => {
+    if (c.userId) {
+      cumulativeDonorTotals.set(c.userId, (cumulativeDonorTotals.get(c.userId) || 0) + Number(c.amount || 0));
+    }
+  });
+
+  const topRecentIds = Array.from(recentDonorTotals.keys())
+    .sort((a, b) => (recentDonorTotals.get(b) || 0) - (recentDonorTotals.get(a) || 0))
+    .slice(0, 35);
+
+  const topCumulativeIds = Array.from(cumulativeDonorTotals.keys())
+    .sort((a, b) => (cumulativeDonorTotals.get(b) || 0) - (cumulativeDonorTotals.get(a) || 0))
+    .slice(0, 30);
+
+  // Combine and deduplicate top daily/weekly patrons + top cumulative patrons
+  const eagerDonorIds = Array.from(new Set([...topRecentIds, ...topCumulativeIds]));
+
+  const totalKnownPatrons = Math.max(cumulative.length, txs.length);
+
   onProgress?.({
     status: 'syncing',
     countryId,
     countryName,
     fetchedItems: cumulative.length + txs.length,
-    message: `Ingesting national citizen registry for ${countryName}...`,
+    message: `Verifying top leaderboard patrons for ${countryName}...`,
   });
 
-  const nationalCitizenIds = await fetchCountryCitizens(countryId);
-
-  const allUserIds = Array.from(
-    new Set([
-      ...cumulative.map((c) => c.userId),
-      ...txs.map((t) => t.userId),
-      ...nationalCitizenIds,
-    ].filter(Boolean))
-  ) as string[];
-
-  onProgress?.({
-    status: 'syncing',
-    countryId,
-    countryName,
-    fetchedItems: cumulative.length + txs.length,
-    message: `Resolving citizen profiles & combat stats (${allUserIds.length} citizens)...`,
-  });
-
-  const users = await batchResolveUsers(allUserIds, (done, total) => {
+  const users = await batchResolveUsers(eagerDonorIds, (done, total) => {
     onProgress?.({
       status: 'syncing',
       countryId,
       countryName,
       fetchedItems: cumulative.length + txs.length,
-      message: `Loaded ${done} of ${total} citizen profiles & combat stats...`,
+      message: `Verified ${done} of ${total} top patrons...`,
     });
   });
 
@@ -658,7 +668,7 @@ export async function syncCountryData(
     countryId,
     countryName,
     fetchedItems: cumulative.length + txs.length,
-    message: `Sync complete: ${allUserIds.length} citizens and ${txs.length} recent receipts loaded!`,
+    message: `Sync complete: ${totalKnownPatrons} patrons ledger verified!`,
   });
 
   return {

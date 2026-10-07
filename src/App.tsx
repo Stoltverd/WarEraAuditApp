@@ -13,7 +13,7 @@ import {
   DonorRankingItem,
 } from './types/warera';
 import { storage } from './services/storage';
-import { getCountries, ensureDonorsDamageStats, fetchCountryCitizens } from './services/apiService';
+import { getCountries, ensureDonorsDamageStats, fetchCountryCitizens, batchResolveUsers } from './services/apiService';
 import {
   calculateGranularRankings,
   calculateCumulativeRankings,
@@ -263,7 +263,13 @@ export default function App() {
         // Dynamically synthesize sovereign policy defaults from live API benchmarks for this selected country
         const activeCitizens = Object.values(result.users).filter((u) => {
           if (!u || !u._id) return false;
-          if (u.country && typeof u.country === 'string' && u.country !== country._id) return false;
+          const uCId =
+            typeof u.country === 'string'
+              ? u.country
+              : typeof u.country === 'object' && (u.country as any)?._id
+              ? String((u.country as any)._id).trim()
+              : u.countryId;
+          if (uCId && uCId !== country._id) return false;
           const isActive = Boolean(u.isActive !== undefined ? u.isActive : true);
           const lvl = Number(u.leveling?.level ?? u.level ?? 0);
           return isActive && lvl >= 10;
@@ -413,18 +419,53 @@ export default function App() {
     appliedDamageConfig,
   ]);
 
-  // Verified active citizens count (level 10+ and active) for the selected country
+  // Verified active citizens count for the selected country
   const totalActiveCitizens = useMemo(() => {
     if (!selectedCountry?._id) return 0;
+    // Prefer authoritative active census population directly from country record
+    const officialCensus =
+      selectedCountry.rankings?.countryActivePopulation?.value ??
+      (selectedCountry as any).currentPopulation;
+    if (typeof officialCensus === 'number' && officialCensus > 0) {
+      return officialCensus;
+    }
+
     const countryId = selectedCountry._id;
     return Object.values(usersMap).filter((u) => {
       if (!u || !u._id) return false;
-      if (u.country && typeof u.country === 'string' && u.country !== countryId) return false;
+      const uCId =
+        typeof u.country === 'string'
+          ? u.country
+          : typeof u.country === 'object' && (u.country as any)?._id
+          ? String((u.country as any)._id).trim()
+          : u.countryId;
+      if (uCId && uCId !== countryId) return false;
       const isActive = Boolean(u.isActive !== undefined ? u.isActive : true);
       const lvl = Number(u.leveling?.level ?? u.level ?? 0);
       return isActive && lvl >= 10;
     }).length;
-  }, [usersMap, selectedCountry?._id]);
+  }, [usersMap, selectedCountry]);
+
+  // Just-in-time on-demand hydration for visible leaderboard citizens with incremental live streaming
+  const handleResolveUsers = useCallback(async (userIds: string[]) => {
+    if (!userIds || userIds.length === 0) return;
+    try {
+      await batchResolveUsers(
+        userIds,
+        undefined,
+        (chunkUsers) => {
+          // Immediately stream each resolved pair into React state
+          const chunkMap: Record<string, WareraUserLite> = {};
+          chunkUsers.forEach((u) => {
+            chunkMap[u._id] = u;
+          });
+          setUsersMap((prev) => ({ ...prev, ...chunkMap }));
+        }
+      );
+    } catch (err) {
+      console.warn('Failed to resolve users on-demand:', err);
+    }
+  }, []);
 
   const [isCalculatingDamage, setIsCalculatingDamage] = useState<boolean>(false);
 
@@ -1363,6 +1404,7 @@ export default function App() {
               leaderboard={summary.leaderboard}
               totalAmountDonated={summary.totalAmountDonated}
               onSelectDonor={(uid) => setSelectedDonorId(uid)}
+              onResolveUsers={handleResolveUsers}
               timeframe={
                 timeframe === 'daily'
                   ? 'in the last 24 hours'
