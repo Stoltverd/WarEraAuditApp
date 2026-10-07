@@ -5,12 +5,14 @@ import { Coins, Users, Trophy, ArrowUpRight, TrendingUp } from 'lucide-react';
 interface RankingStatsProps {
   summary: RankingSummary;
   countryName: string;
+  totalActiveCitizens?: number;
   onSelectDonor?: (userId: string) => void;
 }
 
 export const RankingStats: React.FC<RankingStatsProps> = ({
   summary,
   countryName,
+  totalActiveCitizens,
   onSelectDonor,
 }) => {
   const timeframeLabel =
@@ -30,6 +32,12 @@ export const RankingStats: React.FC<RankingStatsProps> = ({
       maximumFractionDigits: 3,
     });
   };
+
+  const activeCount = totalActiveCitizens ?? summary.totalActiveCitizens ?? 0;
+  const medianValue = summary.medianDonationAmount ?? summary.averageDonationAmount ?? 0;
+  const meanValue = summary.averageDonationAmount ?? 0;
+  // Skew occurs when high contributors pull the mean notably above median
+  const isSkewed = summary.totalDonors > 1 && meanValue > medianValue * 1.1;
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -59,41 +67,68 @@ export const RankingStats: React.FC<RankingStatsProps> = ({
         </div>
       </div>
 
-      {/* 2. Contributing Citizens Count */}
+      {/* 2. Contributing Citizens Count vs Active Citizens */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-lg relative overflow-hidden">
         <div className="absolute -right-4 -bottom-4 w-20 h-20 bg-emerald-500/10 rounded-full blur-xl pointer-events-none" />
         <div className="flex items-center justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider mb-2">
           <span>Contributing Citizens</span>
           <Users className="w-4 h-4 text-emerald-400" />
         </div>
-        <div className="flex items-baseline gap-1.5">
+        <div className="flex items-baseline gap-1.5 flex-wrap">
           <span className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
             {summary.totalDonors}
           </span>
-          <span className="text-xs font-semibold text-slate-400">patrons</span>
+          <span className="text-xs font-semibold text-slate-300">
+            {activeCount > 0 ? (
+              <>
+                patrons <span className="text-slate-500 font-normal">out of</span>{' '}
+                <strong className="text-emerald-400 font-bold">{activeCount}</strong> active citizens
+              </>
+            ) : (
+              'patrons'
+            )}
+          </span>
         </div>
         <div className="mt-2 text-xs text-slate-400 flex items-center justify-between">
-          <span>Ranked in this period</span>
+          <span title="Active pool: level 10+ and active status">
+            {activeCount > 0 && summary.totalDonors > 0
+              ? `${Math.min(100, Math.round((summary.totalDonors / activeCount) * 100))}% citizen turnout (lvl 10+)`
+              : 'Ranked in this period'}
+          </span>
           <span className="text-emerald-400/80 font-mono text-[11px] font-semibold">{timeframeLabel}</span>
         </div>
       </div>
 
-      {/* 3. Average Contribution */}
+      {/* 3. Median Contribution with Softened Mean Disclaimer */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-lg relative overflow-hidden">
         <div className="absolute -right-4 -bottom-4 w-20 h-20 bg-blue-500/10 rounded-full blur-xl pointer-events-none" />
         <div className="flex items-center justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider mb-2">
-          <span>Average Contribution</span>
+          <span>Median Contribution</span>
           <TrendingUp className="w-4 h-4 text-blue-400" />
         </div>
         <div className="flex items-baseline gap-1.5 truncate">
           <span className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-            {formatBtc(summary.averageDonationAmount)}
+            {formatBtc(medianValue)}
           </span>
           <span className="text-xs font-bold text-blue-400">BTC</span>
         </div>
-        <div className="mt-2 text-xs text-slate-400 flex items-center justify-between">
-          <span>Per active donor</span>
-          <span className="text-blue-400/80 font-mono text-[11px] font-semibold">{timeframeLabel}</span>
+        <div className="mt-2 text-xs text-slate-400 flex items-center justify-between gap-1">
+          <span className="truncate" title={`Arithmetic Mean: ${formatBtc(meanValue)} BTC`}>
+            {summary.totalDonors === 0 ? (
+              'No recorded contributions'
+            ) : isSkewed ? (
+              <>
+                <strong className="text-slate-300 font-semibold font-mono">Mean: {formatBtc(meanValue)} BTC</strong>{' '}
+                <span className="text-amber-400/90 text-[11px]">• Skewed by large contributions</span>
+              </>
+            ) : (
+              <>
+                <strong className="text-slate-300 font-semibold font-mono">Mean: {formatBtc(meanValue)} BTC</strong>{' '}
+                <span className="text-slate-500 text-[11px]">• Uniform contributions</span>
+              </>
+            )}
+          </span>
+          <span className="text-blue-400/80 font-mono text-[11px] font-semibold shrink-0">{timeframeLabel}</span>
         </div>
       </div>
 

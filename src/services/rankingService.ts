@@ -47,6 +47,19 @@ export function normalizeCountryId(input: any): string {
 }
 
 /**
+ * Robust median calculation for monetary contributions to resist whale skew
+ */
+export function calculateMedianDonation(amounts: number[]): number {
+  if (!amounts || amounts.length === 0) return 0;
+  const sorted = [...amounts].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    return parseFloat(((sorted[mid - 1] + sorted[mid]) / 2).toFixed(3));
+  }
+  return parseFloat(sorted[mid].toFixed(3));
+}
+
+/**
  * Calculate damage points dealt by a user for a given timeframe window.
  * Strictly scopes weekly damages to daily (1/7), monthly (30-day equivalent),
  * custom date duration, or all-time stats.
@@ -351,6 +364,7 @@ export function calculateGranularRankings(
   const totalCombined = parseFloat((totalDirect + totalDamage).toFixed(3));
   const averageDonationAmount =
     totalDonors > 0 ? parseFloat((totalCombined / totalDonors).toFixed(3)) : 0;
+  const medianDonationAmount = calculateMedianDonation(donorsList.map((d) => d.totalAmount));
 
   return {
     timeframe,
@@ -362,6 +376,7 @@ export function calculateGranularRankings(
     totalDamageDonated: parseFloat(totalDamage.toFixed(3)),
     topDonor: donorsList[0] || undefined,
     averageDonationAmount,
+    medianDonationAmount,
     leaderboard: donorsList,
     isGranular: true,
     damageConfig,
@@ -518,6 +533,7 @@ export function calculateCumulativeRankings(
   const totalCombined = parseFloat((totalDirect + totalDamage).toFixed(3));
   const averageDonationAmount =
     totalDonors > 0 ? parseFloat((totalCombined / totalDonors).toFixed(3)) : 0;
+  const medianDonationAmount = calculateMedianDonation(donorsList.map((d) => d.totalAmount));
 
   return {
     timeframe,
@@ -529,6 +545,7 @@ export function calculateCumulativeRankings(
     totalDamageDonated: parseFloat(totalDamage.toFixed(3)),
     topDonor: donorsList[0] || undefined,
     averageDonationAmount,
+    medianDonationAmount,
     leaderboard: donorsList,
     isGranular: false,
     damageConfig,

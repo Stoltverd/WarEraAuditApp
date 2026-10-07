@@ -397,6 +397,7 @@ export default function App() {
       totalDirectDonated: 0,
       totalDamageDonated: 0,
       averageDonationAmount: 0,
+      medianDonationAmount: 0,
       leaderboard: [],
       isGranular: false,
       damageConfig: appliedDamageConfig,
@@ -411,6 +412,19 @@ export default function App() {
     usersMap,
     appliedDamageConfig,
   ]);
+
+  // Verified active citizens count (level 10+ and active) for the selected country
+  const totalActiveCitizens = useMemo(() => {
+    if (!selectedCountry?._id) return 0;
+    const countryId = selectedCountry._id;
+    return Object.values(usersMap).filter((u) => {
+      if (!u || !u._id) return false;
+      if (u.country && typeof u.country === 'string' && u.country !== countryId) return false;
+      const isActive = Boolean(u.isActive !== undefined ? u.isActive : true);
+      const lvl = Number(u.leveling?.level ?? u.level ?? 0);
+      return isActive && lvl >= 10;
+    }).length;
+  }, [usersMap, selectedCountry?._id]);
 
   const [isCalculatingDamage, setIsCalculatingDamage] = useState<boolean>(false);
 
@@ -1331,6 +1345,7 @@ export default function App() {
             <RankingStats
               summary={summary}
               countryName={selectedCountry.name}
+              totalActiveCitizens={totalActiveCitizens}
               onSelectDonor={(uid) => setSelectedDonorId(uid)}
             />
 

@@ -197,6 +197,8 @@ export interface RankingSummary {
   totalDamageDonated: number; // Damage BTC
   topDonor?: DonorRankingItem;
   averageDonationAmount: number;
+  medianDonationAmount: number;
+  totalActiveCitizens?: number;
   leaderboard: DonorRankingItem[];
   isGranular: boolean;
   damageConfig?: DamageDonationConfig;
