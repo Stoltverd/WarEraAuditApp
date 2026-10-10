@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { DonorRankingItem } from '../types/warera';
+import { formatDateDDMMYYYY } from '../utils/dateUtils';
 import {
   Search,
   ArrowUpDown,
@@ -179,7 +180,7 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
     if (hours < 24) return `${hours}h ago`;
     const days = Math.floor(hours / 24);
     if (days < 30) return `${days}d ago`;
-    return new Date(isoString).toLocaleDateString();
+    return formatDateDDMMYYYY(isoString);
   };
 
   return (
@@ -382,7 +383,7 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
                     </td>
 
                     {/* Last Donation Timestamp */}
-                    <td className="py-3.5 px-3 sm:px-4 text-right text-slate-400 text-xs hidden md:table-cell font-mono">
+                    <td className="py-3.5 px-3 sm:px-4 text-right text-slate-400 text-xs hidden md:table-cell font-mono" title={formatDateDDMMYYYY(donor.lastDonationAt)}>
                       {donor.directAmount === 0 && donor.damageAmount > 0 ? (
                         <span className="text-red-400 font-semibold text-[11px]">War Mode Active</span>
                       ) : (

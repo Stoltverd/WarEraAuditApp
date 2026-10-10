@@ -2,16 +2,22 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   CitizenEconomicProfile,
   LeechTier,
+  CitizenEconomicStanding,
   PlaystyleMode,
   PlayerTag,
   MinisterialMessage,
   MinistryConfig,
   DEFAULT_MINISTRY_CONFIG,
+  CountryEconomicBenchmark,
 } from '../../types/ministry';
 import { sanitizePolicyConfig } from '../../services/storage';
-import { generateMinisterialNudge } from '../../services/ministryService';
+import { generateMinisterialNudge, resolveMasterCitizenStanding } from '../../services/ministryService';
+import { formatDateDDMMYYYY, formatDateTimeDDMMYYYY } from '../../utils/dateUtils';
+import { SyncProgress } from '../../types/warera';
+import { CitizenAuditModal } from './CitizenAuditModal';
 import { CitizenCalculationExplainerModal } from './CitizenCalculationExplainerModal';
 import { GrossIncomeBreakdownModal } from './GrossIncomeBreakdownModal';
+import { ErrorBoundary } from '../common/ErrorBoundary';
 import {
   Search,
   Filter,
@@ -44,13 +50,21 @@ import {
   RefreshCw,
   CheckCircle2,
   HardDrive,
+  Zap,
+  Play,
+  Pause,
+  Square,
 } from 'lucide-react';
+import { auditStreamService, AutoAuditStreamState } from '../../services/auditStreamService';
 
 interface CitizenRadarProps {
   profiles: CitizenEconomicProfile[];
   countryName: string;
   config?: MinistryConfig;
   watchedUserIds?: Set<string>;
+  totalActiveCitizens?: number;
+  isSyncing?: boolean;
+  syncProgress?: SyncProgress | null;
   onUpdateConfig?: (cfg: MinistryConfig) => void;
   onUpdateTag: (userId: string, tag: PlayerTag, notes?: string) => void;
   onPutOnWatch?: (profile: CitizenEconomicProfile, reasonNote: string) => void;
@@ -59,6 +73,7 @@ interface CitizenRadarProps {
   isAuditing?: boolean;
   onOpenBackup?: () => void;
   apiKey?: string;
+  countryBenchmark?: CountryEconomicBenchmark;
   onUpdateProfile?: (updated: CitizenEconomicProfile) => void;
 }
 
@@ -67,6 +82,10 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
   countryName,
   config = DEFAULT_MINISTRY_CONFIG,
   watchedUserIds = new Set(),
+  totalActiveCitizens,
+  isSyncing = false,
+  syncProgress = null,
+  countryBenchmark,
   onUpdateConfig,
   onUpdateTag,
   onPutOnWatch,
@@ -78,10 +97,8 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
   onUpdateProfile,
 }) => {
   const [search, setSearch] = useState('');
-  const [filterPlaystyle, setFilterPlaystyle] = useState<string>('all');
-  const [filterTier, setFilterTier] = useState<string>('all');
-  const [filterVerdict, setFilterVerdict] = useState<string>('all');
-  const [filterTag, setFilterTag] = useState<string>('all');
+  const [filterFiscalStanding, setFilterFiscalStanding] = useState<string>('all');
+  const [filterBuild, setFilterBuild] = useState<string>('all');
   const [onlyInactiveDonors, setOnlyInactiveDonors] = useState<boolean>(false);
   const [isPolicyModalOpen, setIsPolicyModalOpen] = useState<boolean>(false);
   const [showPolicyHelp, setShowPolicyHelp] = useState<boolean>(false);
@@ -111,16 +128,55 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
   const [activeNudgeProfile, setActiveNudgeProfile] = useState<CitizenEconomicProfile | null>(null);
   const [selectedExplainerProfile, setSelectedExplainerProfile] = useState<CitizenEconomicProfile | null>(null);
   const [selectedIncomeBreakdownProfile, setSelectedIncomeBreakdownProfile] = useState<CitizenEconomicProfile | null>(null);
+  const [selectedAuditProfile, setSelectedAuditProfile] = useState<CitizenEconomicProfile | null>(null);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
   // Watchlist modal state
   const [watchTargetProfile, setWatchTargetProfile] = useState<CitizenEconomicProfile | null>(null);
   const [watchNoteDraft, setWatchNoteDraft] = useState<string>('');
 
-  // Active citizens counts (all profiles in radar are verified level 10+ active citizens)
-  const activeCount = profiles.length;
+  // Active citizens counts (authoritative game census aligned with radar profiles)
+  const activeCount = totalActiveCitizens || profiles.length;
+  const targetCohortSize = totalActiveCitizens && totalActiveCitizens > 0 ? totalActiveCitizens : profiles.length;
+  const isCohortAuditing = Boolean(isSyncing) || (totalActiveCitizens !== undefined && totalActiveCitizens > 0 && profiles.length < totalActiveCitizens);
+  const auditProgressPct = targetCohortSize > 0 ? Math.min(100, Math.round((profiles.length / targetCohortSize) * 100)) : 100;
+
+  // High-performance automatic background ledger streamer state
+  const [streamState, setStreamState] = useState<AutoAuditStreamState>(() => auditStreamService.getState());
+
+  useEffect(() => {
+    const unsub = auditStreamService.subscribe(setStreamState);
+    return unsub;
+  }, []);
+
+  const auditedCount = useMemo(() => {
+    return profiles.filter((p) => p.auditBaselineStatus === 'audited').length;
+  }, [profiles]);
+  const pendingAuditCount = profiles.length - auditedCount;
+
+  // Seamless background stream trigger: initiates non-blocking verification for unverified citizens
+  useEffect(() => {
+    if (apiKey && apiKey.trim() && profiles.length > 0 && !streamState.isRunning) {
+      const hasUnverified = profiles.some((p) => p.auditBaselineStatus !== 'audited');
+      if (hasUnverified) {
+        auditStreamService.startStream(
+          profiles,
+          apiKey,
+          config,
+          countryBenchmark,
+          (updated) => {
+            onUpdateProfile?.(updated);
+          }
+        );
+      }
+    }
+  }, [profiles.length, apiKey, config.analysisPeriodDays]);
+
   const inactiveDonorCount = useMemo(() => {
     return profiles.filter((p) => p.isInactiveDonor).length;
+  }, [profiles]);
+  const zeroContributionCount = useMemo(() => {
+    return profiles.filter((p) => (p.totalDonatedBtc || 0) === 0).length;
   }, [profiles]);
 
   // Filtered and sorted profiles (memoized to prevent redundant sorting and layout recalculations)
@@ -134,18 +190,34 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
           return false;
         }
       }
-      if (filterPlaystyle !== 'all' && p.playstyle !== filterPlaystyle) return false;
-      if (filterTier !== 'all' && p.leechTier !== filterTier) return false;
-      if (filterVerdict !== 'all') {
-        const v = p.ministerialVerdict || p.playerCashflow?.ministerialVerdict;
-        if (v !== filterVerdict) return false;
+
+      // Simplified Fiscal Standing filter
+      if (filterFiscalStanding === 'critical') {
+        if (p.leechTier !== 'critical-leech' && p.leechTier !== 'low-contributor') return false;
+      } else if (filterFiscalStanding === 'zero-donations') {
+        if ((p.totalDonatedBtc || 0) > 0) return false;
+      } else if (filterFiscalStanding === 'moderate') {
+        if (p.leechTier !== 'moderate') return false;
+      } else if (filterFiscalStanding === 'patriot') {
+        if (p.leechTier !== 'sovereign-patriot' && p.leechTier !== 'historical-pillar') return false;
       }
-      if (filterTag !== 'all' && p.manualTag !== filterTag) return false;
+
+      // Simplified Build & Commitment filter
+      const isEco = p.playstyle === 'pure-eco' || p.manualTag === 'perma-eco';
+      const isWar = p.playstyle === 'pure-war' || p.manualTag === 'perma-war';
+      const isHybrid = p.playstyle === 'hybrid' || p.manualTag === 'mixed-style';
+      const isPinned = p.manualTag && p.manualTag !== 'none';
+
+      if (filterBuild === 'eco' && !isEco) return false;
+      if (filterBuild === 'war' && !isWar) return false;
+      if (filterBuild === 'hybrid' && !isHybrid) return false;
+      if (filterBuild === 'pinned' && !isPinned) return false;
+
       return true;
     });
 
     return [...list].sort((a, b) => b.wealthBtc - a.wealthBtc);
-  }, [profiles, onlyInactiveDonors, search, filterPlaystyle, filterTier, filterVerdict, filterTag]);
+  }, [profiles, onlyInactiveDonors, search, filterFiscalStanding, filterBuild]);
 
   // Single-pass computation for fast KPI metrics
   const { criticalLeechCount, inactiveCount, ecoCount, warCount, hybridCount } = useMemo(() => {
@@ -156,11 +228,11 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
     let hybridCount = 0;
 
     for (const p of filtered) {
-      if (p.leechTier === 'critical-leech') criticalLeechCount++;
+      if (p.leechTier === 'critical-leech' || p.leechTier === 'low-contributor') criticalLeechCount++;
       if (p.isInactiveDonor) inactiveCount++;
-      if (p.playstyle === 'pure-eco') ecoCount++;
-      else if (p.playstyle === 'pure-war') warCount++;
-      else if (p.playstyle === 'hybrid') hybridCount++;
+      if (p.playstyle === 'pure-eco' || p.manualTag === 'perma-eco') ecoCount++;
+      else if (p.playstyle === 'pure-war' || p.manualTag === 'perma-war') warCount++;
+      else hybridCount++;
     }
 
     return { criticalLeechCount, inactiveCount, ecoCount, warCount, hybridCount };
@@ -239,7 +311,42 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex items-center gap-2.5 shrink-0 flex-wrap">
+          {/* Direct 7D vs 30D Audit Timeframe Switcher */}
+          <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl p-1 text-xs font-mono shadow-inner">
+            <span className="text-[10px] text-slate-500 uppercase px-2 font-bold font-sans">Audit Cycle:</span>
+            <button
+              type="button"
+              disabled={isAuditing}
+              onClick={() => onUpdateConfig?.({ ...config, analysisPeriodDays: 7 })}
+              className={`px-3 py-1.5 rounded-lg font-bold transition text-xs flex items-center gap-1.5 disabled:cursor-not-allowed ${
+                (config?.analysisPeriodDays ?? 7) === 7
+                  ? 'bg-amber-500 text-slate-950 shadow-sm font-black'
+                  : 'text-slate-400 hover:text-white disabled:opacity-50'
+              }`}
+            >
+              {(config?.analysisPeriodDays ?? 7) === 7 && isAuditing && (
+                <Loader2 className="w-3 h-3 animate-spin text-slate-950" />
+              )}
+              <span>7 Days</span>
+            </button>
+            <button
+              type="button"
+              disabled={isAuditing}
+              onClick={() => onUpdateConfig?.({ ...config, analysisPeriodDays: 30 })}
+              className={`px-3 py-1.5 rounded-lg font-bold transition text-xs flex items-center gap-1.5 disabled:cursor-not-allowed ${
+                (config?.analysisPeriodDays ?? 7) === 30
+                  ? 'bg-amber-500 text-slate-950 shadow-sm font-black'
+                  : 'text-slate-400 hover:text-white disabled:opacity-50'
+              }`}
+            >
+              {(config?.analysisPeriodDays ?? 7) === 30 && isAuditing && (
+                <Loader2 className="w-3 h-3 animate-spin text-slate-950" />
+              )}
+              <span>30 Days</span>
+            </button>
+          </div>
+
           <button
             type="button"
             onClick={() => {
@@ -254,6 +361,35 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
           </button>
         </div>
       </div>
+      {/* High-Integrity National Census Ingestion Banner */}
+      {isCohortAuditing && (
+        <div className="p-4 rounded-2xl bg-amber-950/40 border border-amber-500/40 text-amber-200 flex items-start justify-between gap-3 shadow-lg animate-fade-in">
+          <div className="flex items-start gap-3">
+            <Loader2 className="w-5 h-5 text-amber-400 shrink-0 animate-spin mt-0.5" />
+            <div className="space-y-1">
+              <span className="font-bold text-amber-300 text-sm block">
+                National Census Ingestion in Progress — {countryName}
+              </span>
+              <p className="text-xs text-amber-200/90 leading-relaxed">
+                Processed <strong className="text-white font-mono">{profiles.length}</strong> of <strong className="text-white font-mono">{targetCohortSize}</strong> registered active citizens ({auditProgressPct}%).
+                Executive ministerial metrics (total net worth, leech classifications, build stances, and inactive donor counts) are held in pending status until all citizens are audited to prevent misleading fiscal intelligence.
+              </p>
+              <div className="w-full bg-slate-900/80 rounded-full h-2 mt-2 overflow-hidden border border-amber-500/30">
+                <div
+                  className="bg-gradient-to-r from-amber-500 to-orange-500 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${auditProgressPct}%` }}
+                />
+              </div>
+              {syncProgress?.message && (
+                <div className="text-[11px] font-mono text-amber-400/80 mt-1">
+                  {syncProgress.message}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Executive KPI Summary for Economy Minister */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 shadow-md">
@@ -265,57 +401,123 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
               {activeCount} Active (Lvl 10+)
             </span>
           </div>
-          <div className="text-2xl font-black font-mono text-white">
-            {formatBtc(filtered.reduce((acc, p) => acc + p.wealthBtc, 0))} <span className="text-xs text-amber-400 font-bold">BTC</span>
-          </div>
-          <div className="text-slate-500 text-[11px] mt-1">
-            Active citizens in {countryName} (level 10+ verified)
-          </div>
+          {isCohortAuditing ? (
+            <div className="py-1">
+              <div className="flex items-center gap-2 text-amber-400 font-mono text-sm font-semibold">
+                <Loader2 className="w-4 h-4 animate-spin text-amber-400 shrink-0" />
+                <span>Auditing National Assets...</span>
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">
+                Aggregating complete census ({profiles.length}/{targetCohortSize} verified)
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="text-2xl font-black font-mono text-white">
+                {formatBtc(filtered.reduce((acc, p) => acc + p.wealthBtc, 0))} <span className="text-xs text-amber-400 font-bold">BTC</span>
+              </div>
+              <div className="text-slate-400 text-[11px] mt-1 flex items-center justify-between">
+                <span>
+                  Assets in {countryName}
+                  {zeroContributionCount > 0 && (
+                    <span className="text-slate-500 text-[10px] ml-1.5 font-normal">
+                      ({profiles.length - zeroContributionCount} patrons • {zeroContributionCount} zero-contrib)
+                    </span>
+                  )}
+                </span>
+                <span className="text-cyan-400 font-mono font-semibold" title={`Gross economic turnover across ${config?.analysisPeriodDays ?? 7} days`}>
+                  {formatBtc(filtered.reduce((acc, p) => acc + (p.grossIncomeBtc || 0), 0))} BTC ({config?.analysisPeriodDays ?? 7}D Flow)
+                </span>
+              </div>
+            </>
+          )}
         </div>
 
         <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 shadow-md">
           <div className="text-slate-400 text-xs font-medium uppercase tracking-wider mb-1 flex items-center gap-1.5">
             <AlertTriangle className="w-3.5 h-3.5 text-red-400" /> Critical Leeches Flagged
           </div>
-          <div className="text-2xl font-black font-mono text-red-400">
-            {criticalLeechCount}
-          </div>
-          <div className="text-slate-500 text-[11px] mt-1">
-            Contributing under {config.lowContributorIncomeRatePct ?? 5}% of BTC income growth ({config.analysisPeriodDays ?? 7}D window)
-          </div>
+          {isCohortAuditing ? (
+            <div className="py-1">
+              <div className="flex items-center gap-2 text-red-400 font-mono text-sm font-semibold">
+                <Loader2 className="w-4 h-4 animate-spin text-red-400 shrink-0" />
+                <span>Calculating Leech Quotas...</span>
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">
+                Pending full {targetCohortSize}-citizen economic evaluation
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="text-2xl font-black font-mono text-red-400">
+                {criticalLeechCount}
+              </div>
+              <div className="text-slate-500 text-[11px] mt-1">
+                Contributing under {config.lowContributorIncomeRatePct ?? 5}% of BTC income growth ({config.analysisPeriodDays ?? 7}D window)
+              </div>
+            </>
+          )}
         </div>
 
         <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 shadow-md">
           <div className="text-slate-400 text-xs font-medium uppercase tracking-wider mb-1 flex items-center gap-1.5">
             <Clock className="w-3.5 h-3.5 text-amber-400" /> Inactive Donors (&gt;7d)
           </div>
-          <div className="text-2xl font-black font-mono text-amber-400">
-            {inactiveCount}
-          </div>
-          <div className="text-slate-500 text-[11px] mt-1">
-            Active citizens with no treasury contribution in 7+ days
-          </div>
+          {isCohortAuditing ? (
+            <div className="py-1">
+              <div className="flex items-center gap-2 text-amber-400 font-mono text-sm font-semibold">
+                <Loader2 className="w-4 h-4 animate-spin text-amber-400 shrink-0" />
+                <span>Scanning Inactive Donors...</span>
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">
+                Verifying donation timestamps for {targetCohortSize} citizens
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="text-2xl font-black font-mono text-amber-400">
+                {inactiveCount}
+              </div>
+              <div className="text-slate-500 text-[11px] mt-1">
+                Active citizens with no treasury contribution in 7+ days
+              </div>
+            </>
+          )}
         </div>
 
         <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 shadow-md">
           <div className="text-slate-400 text-xs font-medium uppercase tracking-wider mb-1 flex items-center gap-1.5">
             <Sprout className="w-3.5 h-3.5 text-emerald-400" /> Eco vs War Stance
           </div>
-          <div className="text-xl font-black font-mono text-white flex items-center gap-2">
-            <span className="text-emerald-400 font-bold">{ecoCount} 🌾</span>
-            <span className="text-slate-500">/</span>
-            <span className="text-red-400 font-bold">{warCount} ⚔️</span>
-            <span className="text-slate-500">/</span>
-            <span className="text-amber-400 font-bold">{hybridCount} ⚖️</span>
-          </div>
-          <div className="text-slate-500 text-[11px] mt-1">Pure Eco / Pure War / Hybrid citizens</div>
+          {isCohortAuditing ? (
+            <div className="py-1">
+              <div className="flex items-center gap-2 text-emerald-400 font-mono text-sm font-semibold">
+                <Loader2 className="w-4 h-4 animate-spin text-emerald-400 shrink-0" />
+                <span>Analyzing Stance Distribution...</span>
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">
+                Compiling Eco / War / Hybrid build distribution
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="text-xl font-black font-mono text-white flex items-center gap-2">
+                <span className="text-emerald-400 font-bold">{ecoCount} 🌾</span>
+                <span className="text-slate-500">/</span>
+                <span className="text-red-400 font-bold">{warCount} ⚔️</span>
+                <span className="text-slate-500">/</span>
+                <span className="text-amber-400 font-bold">{hybridCount} ⚖️</span>
+              </div>
+              <div className="text-slate-500 text-[11px] mt-1">Pure Eco / Pure War / Hybrid citizens</div>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Control Bar: Filters, Audit Trigger, Search & Policy Calibration Button */}
+      {/* Control Bar: Filters, Audit Status, Search & Build Filters */}
       <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between shadow-lg">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative flex-1 min-w-[200px] max-w-xs">
+        <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-0">
+          <div className="relative flex-1 min-w-[180px] max-w-xs">
             <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
             <input
               type="text"
@@ -326,31 +528,29 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
             />
           </div>
 
-          {/* Continuous 7-Day Income Audit Disclaimer & Status */}
-          <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-cyan-950/40 border border-cyan-800/40 text-cyan-300 text-xs shadow-inner">
-            <div className="flex items-center gap-1.5 font-semibold">
+          {/* Compact Continuous Audit Status Pill */}
+          <div className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-cyan-950/40 border border-cyan-800/40 text-cyan-300 text-xs shadow-inner shrink-0">
+            {isAuditing ? (
+              <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin shrink-0" />
+            ) : (
               <CheckCircle2 className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-              <span>7-Day Continuous Audit Active</span>
-            </div>
-            <span className="text-cyan-700 hidden lg:inline">•</span>
-            <span className="text-[11px] text-slate-400 hidden lg:inline">
-              Auto-computed on country switch &amp; donor sync
-            </span>
+            )}
+            <span className="font-semibold">{config?.analysisPeriodDays ?? 7}D Audit Active</span>
             {onRunIncomeAudit && (
               <button
                 type="button"
                 onClick={onRunIncomeAudit}
                 disabled={isAuditing}
-                title="Force refresh 7-day income growth audit"
-                className="ml-auto p-1 text-cyan-400 hover:text-cyan-200 hover:bg-cyan-900/40 rounded-lg transition disabled:opacity-50"
+                title={`Force refresh ${config?.analysisPeriodDays ?? 7}-day income growth audit`}
+                className="ml-1 p-0.5 text-cyan-400 hover:text-cyan-200 rounded transition disabled:opacity-50"
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${isAuditing ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`w-3 h-3 ${isAuditing ? 'animate-spin' : ''}`} />
               </button>
             )}
           </div>
 
           {/* Inactive Donor Alert Toggle */}
-          <label className={`flex items-center gap-2 px-3 py-2 border rounded-xl text-xs font-semibold cursor-pointer select-none transition ${
+          <label className={`flex items-center gap-2 px-3 py-2 border rounded-xl text-xs font-semibold cursor-pointer select-none transition shrink-0 ${
             onlyInactiveDonors
               ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
               : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
@@ -362,80 +562,44 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
               className="rounded accent-amber-500 w-3.5 h-3.5"
             />
             <Clock className="w-3.5 h-3.5 text-amber-400" />
-            <span>&gt;7d Inactive Donors ({inactiveDonorCount})</span>
+            <span>&gt;7d Inactive ({isCohortAuditing ? `${inactiveDonorCount} found...` : inactiveDonorCount})</span>
           </label>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Playstyle Filter */}
+        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+          {/* Fiscal Standing Filter */}
           <select
-            value={filterPlaystyle}
-            onChange={(e) => setFilterPlaystyle(e.target.value)}
+            value={filterFiscalStanding}
+            onChange={(e) => setFilterFiscalStanding(e.target.value)}
             className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 font-medium focus:outline-none focus:border-amber-500 transition cursor-pointer"
+            title="Filter by sovereign fiscal standing"
           >
-            <option value="all">All Playstyles</option>
-            <option value="pure-eco">🌾 Pure Eco Mode</option>
-            <option value="pure-war">⚔️ Pure War Mode</option>
-            <option value="hybrid">⚖️ Hybrid Mode</option>
+            <option value="all">
+              All Fiscal Standings {isCohortAuditing ? `(auditing ${profiles.length}/${targetCohortSize}...)` : `(${activeCount})`}
+            </option>
+            <option value="critical">
+              🚨 Needs Attention / Leeches {isCohortAuditing ? '(auditing...)' : `(${criticalLeechCount})`}
+            </option>
+            {zeroContributionCount > 0 && !isCohortAuditing && (
+              <option value="zero-donations">⚠️ Zero Contributions ({zeroContributionCount})</option>
+            )}
+            <option value="moderate">🔵 Fair / Moderate Donors</option>
+            <option value="patriot">🟢 Model Patriots &amp; Pillars</option>
           </select>
 
-          {/* Leech Status Filter */}
+          {/* Build & Commitment Filter (7-Day Respec Aware) */}
           <select
-            value={filterTier}
-            onChange={(e) => setFilterTier(e.target.value)}
+            value={filterBuild}
+            onChange={(e) => setFilterBuild(e.target.value)}
             className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 font-medium focus:outline-none focus:border-amber-500 transition cursor-pointer"
+            title="Filter by build and commitment"
           >
-            <option value="all">All Contribution Ratios</option>
-            <option value="critical-leech">🔴 Critical Leeches</option>
-            <option value="low-contributor">🟡 Low Contributors</option>
-            <option value="moderate">⚪ Moderate Donors</option>
-            <option value="sovereign-patriot">🟢 Model Patriots</option>
-            <option value="historical-pillar">🏛️ Historical Pillars</option>
-            <option value="combat-veteran">⚔️ Combat Heroes</option>
+            <option value="all">All Citizen Builds</option>
+            <option value="eco">🌾 Eco Players (Dynamic &amp; Perma)</option>
+            <option value="war">⚔️ War Players (Dynamic &amp; Perma)</option>
+            <option value="hybrid">⚖️ Hybrid Builds</option>
+            <option value="pinned">🔒 Pinned Builds Only</option>
           </select>
-
-          {/* Ministerial Audit Status Filter */}
-          <select
-            value={filterVerdict}
-            onChange={(e) => setFilterVerdict(e.target.value)}
-            className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 font-medium focus:outline-none focus:border-cyan-500 transition cursor-pointer"
-          >
-            <option value="all">All Ministerial Audits</option>
-            <option value="slacker-evader">🚨 Identified Slackers (Evaders)</option>
-            <option value="subsistence-worker">🛡️ Subsistence Workers (Exempt)</option>
-            <option value="illiquid-asset-rich">🔒 Illiquid Combatants</option>
-            <option value="patriotic-fulfiller">💎 Patriotic Fulfillers</option>
-            <option value="moderate-contributor">🔵 Moderate Contributors</option>
-            <option value="exempted-recruit">🌱 New Recruits (&lt; Lvl 15)</option>
-          </select>
-
-          {/* Tag Filter */}
-          <select
-            value={filterTag}
-            onChange={(e) => setFilterTag(e.target.value)}
-            className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 font-medium focus:outline-none focus:border-amber-500 transition cursor-pointer"
-          >
-            <option value="all">All Tags</option>
-            <option value="perma-war">Perma War</option>
-            <option value="perma-eco">Perma Eco</option>
-            <option value="mixed-style">Mixed Style</option>
-            <option value="mercenary">Mercenary</option>
-            <option value="vip">VIP</option>
-          </select>
-
-          {/* Policy Calibration Button */}
-          <button
-            type="button"
-            onClick={() => {
-              setPolicyDraft(sanitizePolicyConfig(config));
-              setIsPolicyModalOpen(true);
-            }}
-            className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition active:scale-95 shadow-sm"
-            title="Configure High Wealth Threshold & Fair Share Tax Rates"
-          >
-            <Settings className="w-3.5 h-3.5 text-amber-400" />
-            <span>Policy Calibration</span>
-          </button>
         </div>
       </div>
 
@@ -449,7 +613,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                 Continuous Fiscal Audit Active — Day-1 Provisional Baseline
               </span>
               <p className="text-[11px] text-slate-300 leading-relaxed">
-                Because this is the initial audit run without prior 7-day wealth snapshots, gross income is deduced from <strong>recent player market transactions (net sales margin)</strong>, <strong>company engine capacity</strong>, and <strong>direct treasury donations</strong>. Daily wealth snapshots are now continuously recorded to establish verified historical deltas. Click &quot;Audit&quot; on any citizen to inspect their individual cashflow and capacity breakdown.
+                Daily wealth snapshots are recorded to establish verified historical deltas. Click &quot;Audit&quot; on any citizen to inspect their full multi-channel cashflow ledger and company upgrade breakdown.
               </p>
             </div>
           </div>
@@ -464,84 +628,117 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
         </div>
       )}
 
-      {/* Quick Audit Category Filters */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
-        <button
-          type="button"
-          onClick={() => setFilterVerdict('all')}
-          className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
-            filterVerdict === 'all'
-              ? 'bg-amber-500 text-slate-950 shadow-md'
-              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
-          }`}
-        >
-          All Citizens ({profiles.length})
-        </button>
-        <button
-          type="button"
-          onClick={() => setFilterVerdict('slacker-evader')}
-          className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
-            filterVerdict === 'slacker-evader'
-              ? 'bg-red-500 text-white shadow-md'
-              : 'bg-slate-900 text-red-400 hover:bg-red-950/40 border border-red-900/40'
-          }`}
-        >
-          🚨 Identified Slackers ({verdictCounts['slacker-evader'] || 0})
-        </button>
-        <button
-          type="button"
-          onClick={() => setFilterVerdict('subsistence-worker')}
-          className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
-            filterVerdict === 'subsistence-worker'
-              ? 'bg-blue-500 text-white shadow-md'
-              : 'bg-slate-900 text-blue-400 hover:bg-blue-950/40 border border-blue-900/40'
-          }`}
-        >
-          🛡️ Subsistence Workers ({verdictCounts['subsistence-worker'] || 0})
-        </button>
-        <button
-          type="button"
-          onClick={() => setFilterVerdict('illiquid-asset-rich')}
-          className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
-            filterVerdict === 'illiquid-asset-rich'
-              ? 'bg-purple-500 text-white shadow-md'
-              : 'bg-slate-900 text-purple-400 hover:bg-purple-950/40 border border-purple-900/40'
-          }`}
-        >
-          🔒 Illiquid Combatants ({verdictCounts['illiquid-asset-rich'] || 0})
-        </button>
-        <button
-          type="button"
-          onClick={() => setFilterVerdict('patriotic-fulfiller')}
-          className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
-            filterVerdict === 'patriotic-fulfiller'
-              ? 'bg-emerald-500 text-slate-950 shadow-md'
-              : 'bg-slate-900 text-emerald-400 hover:bg-emerald-950/40 border border-emerald-900/40'
-          }`}
-        >
-          💎 Generous Patriots ({verdictCounts['patriotic-fulfiller'] || 0})
-        </button>
-      </div>
-
       {/* Citizen Economic Radar Table */}
-      <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/80 shadow-xl scrollbar-thin scrollbar-thumb-slate-700">
+      <div className="relative overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/80 shadow-xl scrollbar-thin scrollbar-thumb-slate-700">
+        {/* Automated Background Ledger Stream Banner */}
+        {streamState.isRunning ? (
+          <div className="bg-gradient-to-r from-cyan-950/90 via-slate-900 to-cyan-950/90 border-b border-cyan-800/60 px-4 py-2.5 flex items-center justify-between text-xs text-cyan-300 font-mono gap-3">
+            <div className="flex items-center gap-2.5 truncate">
+              <Zap className="w-4 h-4 text-cyan-400 shrink-0 animate-pulse" />
+              <span className="font-bold text-cyan-200">
+                Auto-Streaming Personal Receipts:
+              </span>
+              <span className="text-white font-bold">
+                {streamState.auditedCount} / {streamState.totalTargetCount} verified ({streamState.pct}%)
+              </span>
+              {streamState.currentCitizenName && (
+                <span className="text-slate-400 text-[11px] truncate hidden md:inline">
+                  • Currently: {streamState.currentCitizenName}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {streamState.isPaused ? (
+                <button
+                  type="button"
+                  onClick={() => auditStreamService.resume()}
+                  className="px-2.5 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                  title="Resume background ledger stream"
+                >
+                  <Play className="w-3 h-3" /> Resume
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => auditStreamService.pause()}
+                  className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                  title="Pause background ledger stream"
+                >
+                  <Pause className="w-3 h-3" /> Pause
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => auditStreamService.stop()}
+                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                title="Stop background streaming"
+              >
+                <Square className="w-3 h-3" /> Stop
+              </button>
+            </div>
+          </div>
+        ) : streamState.isPaused ? (
+          <div className="bg-amber-950/80 border-b border-amber-800/60 px-4 py-2 flex items-center justify-between text-xs text-amber-300 font-mono">
+            <span className="flex items-center gap-2">
+              <Pause className="w-3.5 h-3.5 text-amber-400" />
+              <span>Background Ledger Stream Paused ({streamState.auditedCount}/{streamState.totalTargetCount} verified)</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => auditStreamService.resume()}
+              className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+            >
+              <Play className="w-3 h-3" /> Resume Stream
+            </button>
+          </div>
+        ) : pendingAuditCount === 0 && profiles.length > 0 ? (
+          <div className="bg-emerald-950/60 border-b border-emerald-800/40 px-4 py-2 flex items-center justify-between text-xs text-emerald-300 font-mono">
+            <span className="flex items-center gap-2">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+              <span>100% Truth-Based: All {profiles.length} active citizens verified via live personal receipts</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => auditStreamService.startStream(profiles, apiKey, config, countryBenchmark, (up) => onUpdateProfile?.(up), true)}
+              className="px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+              title="Force re-audit of all citizen personal receipts"
+            >
+              <RefreshCw className="w-3 h-3" /> Re-Audit All
+            </button>
+          </div>
+        ) : (
+          Boolean(apiKey && apiKey.trim() && pendingAuditCount > 0) && (
+            <div className="bg-slate-900 border-b border-slate-800 px-4 py-2 flex items-center justify-between text-xs text-slate-300 font-mono">
+              <span className="flex items-center gap-2 text-slate-400">
+                <Clock className="w-3.5 h-3.5 text-cyan-400" />
+                <span>{pendingAuditCount} citizens pending personal receipt audit ({auditedCount}/{profiles.length} verified)</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => auditStreamService.startStream(profiles, apiKey, config, countryBenchmark, (up) => onUpdateProfile?.(up))}
+                className="px-3 py-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-[10px] font-bold flex items-center gap-1.5 transition shadow-sm"
+              >
+                <Zap className="w-3 h-3" /> Start Stream Now
+              </button>
+            </div>
+          )
+        )}
         <table className="w-full min-w-[960px] text-left border-collapse text-xs">
           <thead>
             <tr className="bg-slate-950/90 border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider text-[11px]">
               <th className="py-3.5 px-4">Citizen</th>
               <th className="py-3.5 px-4 text-right">Net Worth (BTC)</th>
-              <th className="py-3.5 px-4 text-right">Est. 7D Gross Income</th>
-              <th className="py-3.5 px-4 text-right">Total Donated (BTC)</th>
-              <th className="py-3.5 px-4 text-center">Leech / Contribution Ratio</th>
-              <th className="py-3.5 px-4 text-center">Skill Mode &amp; Build</th>
-              <th className="py-3.5 px-4 text-center">Minister Tag</th>
-              <th className="py-3.5 px-4 text-right">Diplomatic Action</th>
+              <th className="py-3.5 px-4 text-right">Gross Inflow &amp; Net Flow ({config?.analysisPeriodDays ?? 7}D)</th>
+              <th className="py-3.5 px-4 text-right">Donated ({config?.analysisPeriodDays ?? 7}D)</th>
+              <th className="py-3.5 px-4 text-center">Fiscal Assessment &amp; Ratio</th>
+              <th className="py-3.5 px-4 text-center">Playstyle &amp; Commitment ({config?.analysisPeriodDays ?? 7}d Respec)</th>
+              <th className="py-3.5 px-4 text-right">Diplomatic &amp; Audit Action</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/80 font-mono">
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-12 text-center text-slate-500 text-xs font-sans">
+                <td colSpan={7} className="py-12 text-center text-slate-500 text-xs font-sans">
                   No citizens match the active filters in {countryName}.
                 </td>
               </tr>
@@ -552,6 +749,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                 const isLeech = c.leechTier === 'critical-leech';
                 const isLow = c.leechTier === 'low-contributor';
                 const isPatriot = c.leechTier === 'sovereign-patriot';
+                const isPinned = c.manualTag && c.manualTag !== 'none';
 
                 return (
                   <tr key={c.userId} className="hover:bg-slate-800/40 transition group">
@@ -559,40 +757,34 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     <td className="py-3.5 px-4 font-sans">
                       <div className="flex items-center gap-3">
                         <div 
-                          onClick={() => setSelectedExplainerProfile(c)}
+                          onClick={() => setSelectedAuditProfile(c)}
                           className="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 overflow-hidden shrink-0 flex items-center justify-center font-bold text-slate-300 text-xs cursor-pointer hover:border-cyan-400 transition"
                           title="Click to view economic audit breakdown"
                         >
                           {c.avatarUrl ? (
-                            <img src={c.avatarUrl} alt={c.username} className="w-full h-full object-cover" />
+                            <img src={c.avatarUrl} alt={c.username || 'Citizen'} className="w-full h-full object-cover" onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }} />
                           ) : (
-                            c.username.slice(0, 2).toUpperCase()
+                            (c.username || c.userId || 'CZ').slice(0, 2).toUpperCase()
                           )}
                         </div>
                         <div className="truncate max-w-[150px] sm:max-w-[220px]">
                           <div className="flex items-center gap-1.5 flex-wrap">
                             <button
                               type="button"
-                              onClick={() => setSelectedExplainerProfile(c)}
+                              onClick={() => setSelectedAuditProfile(c)}
                               className="font-bold text-white hover:text-cyan-400 transition truncate text-xs inline-flex items-center gap-1 text-left"
-                              title="Click to inspect contribution ratio formula and in-game comparison"
+                              title="Click to inspect citizen full financial audit"
                             >
-                              <span>{c.username}</span>
+                              <span>{c.username || `Citizen #${(c.userId || '').slice(-6)}`}</span>
                               <HelpCircle className="w-3 h-3 text-cyan-400 shrink-0 opacity-70 hover:opacity-100" />
                             </button>
                             {c.isHistoricalTopDonor && (
-                              <span
-                                className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[9px] font-bold font-mono flex items-center gap-0.5"
-                                title={`Top ${c.historicalRank ? `#${c.historicalRank}` : '10'} Lifetime Donor of nation`}
-                              >
+                              <span className="text-[10px] text-amber-400 font-mono font-medium" title={`Top ${c.historicalRank ? `#${c.historicalRank}` : '10'} Lifetime Donor`}>
                                 ⭐ Top {c.historicalRank ? `#${c.historicalRank}` : '10'}
                               </span>
                             )}
                             {c.isInactiveDonor && !c.isHistoricalTopDonor && (
-                              <span
-                                className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[9px] font-bold font-mono"
-                                title={`Has not donated in ${c.daysSinceLastDonation} days`}
-                              >
+                              <span className="text-[10px] text-amber-400/80 font-mono font-medium" title={`Has not donated in ${c.daysSinceLastDonation} days`}>
                                 ⚠️ &gt;7d inactive
                               </span>
                             )}
@@ -604,51 +796,105 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                       </div>
                     </td>
 
-                    {/* Net Worth (Clickable Audit Breakdown) */}
-                    <td className="py-3.5 px-4 text-right">
+                    {/* Net Worth */}
+                    <td className="py-3 px-4 text-right">
                       <button
                         type="button"
-                        onClick={() => setSelectedIncomeBreakdownProfile(c)}
-                        className="group/nw text-right hover:bg-slate-800/60 p-1.5 rounded-xl transition border border-transparent hover:border-slate-700 inline-block"
-                        title="Click to view full asset portfolio & income audit calculation"
+                        onClick={() => setSelectedAuditProfile(c)}
+                        className="group/nw text-right hover:bg-slate-800/60 p-1 rounded-lg transition inline-block"
+                        title="Click to inspect full asset portfolio & income audit calculation"
                       >
                         <div className="font-bold text-slate-200 text-sm group-hover/nw:text-amber-300">
                           {formatBtc(c.wealthBtc)}
                         </div>
-                        <span className="text-[10px] text-slate-500 font-sans group-hover/nw:text-amber-400 block">
-                          assets in game
-                        </span>
+                        {typeof c.pastWealthBtc === 'number' && c.auditBaselineStatus === 'audited' ? (
+                          <span className={`text-[10px] font-mono font-bold block ${
+                            c.wealthBtc >= c.pastWealthBtc ? 'text-emerald-400' : 'text-rose-400'
+                          }`}>
+                            {c.wealthBtc >= c.pastWealthBtc ? '+' : ''}{formatBtc(c.wealthBtc - c.pastWealthBtc)} ({config?.analysisPeriodDays ?? 7}d)
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-slate-500 font-sans group-hover/nw:text-amber-400 block">
+                            assets in game
+                          </span>
+                        )}
                       </button>
                     </td>
 
-                    {/* Est. 7D Gross Income (Clickable Calculation Breakdown) */}
-                    <td className="py-3.5 px-4 text-right font-mono">
-                      <button
-                        type="button"
-                        onClick={() => setSelectedIncomeBreakdownProfile(c)}
-                        className="group/inc text-right hover:bg-cyan-950/40 p-1.5 rounded-xl transition border border-transparent hover:border-cyan-800/60 inline-block"
-                        title="Click to inspect how this income was calculated: wages, market sales, expenses, and margin"
-                      >
-                        <div className="font-bold text-cyan-300 text-sm flex items-center justify-end gap-1.5 group-hover/inc:text-cyan-200">
-                          <span>{formatBtc(c.grossIncomeBtc || 0)}</span>
-                          <Calculator className="w-3.5 h-3.5 text-cyan-400 opacity-60 group-hover/inc:opacity-100" />
-                        </div>
-                        <span className="text-[10px] text-slate-500 font-sans group-hover/inc:text-cyan-400 block">
-                          {c.playerCashflow?.dataSource === 'live-ledger' ? 'verified receipts' : 'baseline turnover'}
-                        </span>
-                      </button>
+                    {/* 7D Gross Inflow & Net Cashflow */}
+                    <td className="py-3 px-4 text-right font-mono">
+                      {c.auditBaselineStatus === 'audited' ? (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedAuditProfile(c)}
+                          className="group/inc text-right hover:bg-cyan-950/40 p-1.5 rounded-lg transition inline-block max-w-full"
+                          title="Click to inspect verified receipts: wages, trades, market orders, and net flow"
+                        >
+                          {/* Gross Inflow */}
+                          <div className="flex items-center justify-end gap-1.5 font-bold text-cyan-300 text-xs">
+                            <span className="text-[10px] uppercase font-mono text-cyan-500 font-semibold tracking-wider">Inflow</span>
+                            <span>+{formatBtc(c.grossInflowBtc ?? c.grossIncomeBtc ?? 0)}</span>
+                            <Calculator className="w-3 h-3 text-cyan-400 opacity-60 group-hover/inc:opacity-100" />
+                          </div>
+                          {/* Net Cashflow */}
+                          <div className="flex items-center justify-end gap-1.5 text-xs font-mono font-bold mt-0.5">
+                            <span className="text-[10px] uppercase font-mono text-slate-500 font-semibold tracking-wider">Net</span>
+                            <span className={(c.netCashflowBtc ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                              {(c.netCashflowBtc ?? 0) >= 0 ? '+' : ''}{formatBtc(c.netCashflowBtc ?? 0)}
+                            </span>
+                          </div>
+                          {/* Last checked timestamp & receipt count */}
+                          <div className="text-[9px] text-emerald-400/90 font-mono mt-0.5 flex flex-col items-end">
+                            <span>✓ {c.receiptCount ? `${c.receiptCount} receipts` : `Verified ${config?.analysisPeriodDays ?? 7}d`}</span>
+                            {c.auditedAt && (
+                              <span className="text-slate-400 font-sans text-[9px]">
+                                Last checked: {formatDateTimeDDMMYYYY(c.auditedAt)}
+                              </span>
+                            )}
+                          </div>
+                          {/* Audit Delta Explanation Badge */}
+                          {c.auditDeltaAlert && (
+                            <div
+                              className="mt-1 px-1.5 py-0.5 rounded bg-cyan-950/80 border border-cyan-500/40 text-[9px] text-cyan-300 font-sans text-right"
+                              title={`Updated from earlier audit: +${c.auditDeltaAlert.newReceiptsCount} new receipts found (${c.auditDeltaAlert.differenceBtc >= 0 ? '+' : ''}${formatBtc(c.auditDeltaAlert.differenceBtc)} BTC change)`}
+                            >
+                              <span>Updated: +{c.auditDeltaAlert.newReceiptsCount} receipts ({c.auditDeltaAlert.differenceBtc >= 0 ? '+' : ''}{formatBtc(c.auditDeltaAlert.differenceBtc)} BTC)</span>
+                            </div>
+                          )}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedAuditProfile(c)}
+                          className="group/pending text-right p-1.5 rounded-lg hover:bg-slate-800/60 transition inline-flex flex-col items-end"
+                          title="Unverified citizen. No estimates displayed. Click to audit live personal receipts."
+                        >
+                          <div className="px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-sans font-semibold flex items-center gap-1 group-hover/pending:bg-amber-500/20 group-hover/pending:border-amber-500/40 transition">
+                            <Clock className="w-2.5 h-2.5 text-amber-400" />
+                            <span>Not Yet Streamed · Pending Audit</span>
+                          </div>
+                          <span className="text-[9px] text-slate-500 font-sans mt-0.5 block">
+                            No estimates shown · Awaiting API stream
+                          </span>
+                        </button>
+                      )}
                     </td>
 
-                    {/* Total Donated */}
-                    <td className="py-3.5 px-4 text-right">
-                      <div className="font-bold text-amber-400 text-sm">
-                        {formatBtc(c.totalDonatedBtc)}
+                    {/* Period Donated */}
+                    <td className="py-3 px-4 text-right font-mono">
+                      <div className={`font-bold text-sm ${
+                        (c.periodDonatedBtc ?? c.directDonatedBtc ?? 0) > 0 ? 'text-amber-400' : 'text-slate-500'
+                      }`}>
+                        {formatBtc(c.periodDonatedBtc ?? c.directDonatedBtc ?? 0)}
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-sans">
+                        {formatBtc(c.totalDonatedBtc)} all-time
                       </div>
                       <div className="text-[10px] text-slate-500 font-sans">
                         {c.lastDonationAt ? (
-                          <span>Last: {new Date(c.lastDonationAt).toLocaleDateString()}</span>
+                          <span>Last: {formatDateDDMMYYYY(c.lastDonationAt)}</span>
                         ) : (
-                          <span className="text-red-400">0 donation events</span>
+                          <span className="text-red-400">0 donations</span>
                         )}
                       </div>
                       {typeof c.damageValueBtc === 'number' && c.damageValueBtc > 0 && (
@@ -658,125 +904,78 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                       )}
                     </td>
 
-                    {/* Leech Ratio & Tier */}
-                    <td className="py-3.5 px-4 text-center font-sans">
-                      <div className="flex flex-col items-center gap-1">
-                        <span
-                          className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                            isPillar
-                              ? 'bg-amber-400/20 text-amber-200 border border-amber-400/50 shadow-sm shadow-amber-500/10'
-                              : isCombatVeteran
-                              ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
-                              : isLeech
-                              ? 'bg-red-500/20 text-red-300 border border-red-500/40'
-                              : isLow
-                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                              : isPatriot
-                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                              : 'bg-slate-800 text-slate-300 border border-slate-700'
-                          }`}
-                        >
-                          {isPillar
-                            ? '🏛️ Historical Pillar'
-                            : isCombatVeteran
-                            ? '⚔️ Combat Hero'
-                            : isLeech
-                            ? '🚨 Critical Leech'
-                            : isLow
-                            ? 'Low Contributor'
-                            : isPatriot
-                            ? '🌟 Model Patriot'
-                            : 'Moderate'}
-                        </span>
-                        <span className="font-mono text-[10px] text-slate-300">
-                          {c.contributionRatio}% ratio
-                        </span>
-                        {/* Ministerial Verdict Badge */}
-                        {(() => {
-                          const v = c.ministerialVerdict || c.playerCashflow?.ministerialVerdict;
-                          if (!v) return null;
-                          return (
-                            <button
-                              type="button"
-                              onClick={() => setSelectedIncomeBreakdownProfile(c)}
-                              className={`px-2 py-0.5 rounded text-[9px] font-bold border transition hover:opacity-80 ${
-                                v === 'slacker-evader'
-                                  ? 'bg-red-950/60 text-red-300 border-red-700/60'
-                                  : v === 'subsistence-worker'
-                                  ? 'bg-blue-950/60 text-blue-300 border-blue-700/60'
-                                  : v === 'illiquid-asset-rich'
-                                  ? 'bg-purple-950/60 text-purple-300 border-purple-700/60'
-                                  : v === 'patriotic-fulfiller'
-                                  ? 'bg-emerald-950/60 text-emerald-300 border-emerald-700/60'
-                                  : 'bg-slate-800 text-slate-300 border-slate-700'
-                              }`}
-                              title={c.ministerialVerdictReason || c.playerCashflow?.ministerialVerdictReason || 'Click for audit details'}
-                            >
-                              {v === 'slacker-evader'
-                                ? '🚨 Evader / Slacker'
-                                : v === 'subsistence-worker'
-                                ? '🛡️ Subsistence Worker'
-                                : v === 'illiquid-asset-rich'
-                                ? '🔒 Illiquid Assets'
-                                : v === 'patriotic-fulfiller'
-                                ? '💎 Generous Patriot'
-                                : '🔵 Active Worker'}
-                            </button>
-                          );
-                        })()}
-                        <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${
-                          c.auditBaselineStatus === 'audited'
-                            ? 'bg-emerald-950/40 text-emerald-300 border-emerald-800/40'
-                            : 'bg-amber-950/40 text-amber-300 border-amber-800/40'
-                        }`}>
-                          {c.auditBaselineStatus === 'audited' ? '7D Verified' : 'Day-1 Baseline'}
-                        </span>
-                      </div>
-                    </td>
-
-                    {/* Playstyle Mode & Build Tenure */}
-                    <td className="py-3.5 px-4 text-center font-sans">
-                      <div className="flex flex-col items-center gap-1">
-                        <span className="text-xs font-semibold flex items-center gap-1 text-slate-300">
-                          {c.playstyle === 'pure-eco' ? (
+                    {/* Fiscal Assessment & Ratio */}
+                    <td className="py-3 px-4 text-center font-sans">
+                      <div className="flex flex-col items-center gap-0.5">
+                        <div className="text-xs font-bold flex items-center gap-1.5">
+                          {c.auditBaselineStatus !== 'audited' && !isPillar ? (
+                            <span className="text-amber-300/90 text-xs font-semibold flex items-center gap-1">
+                              <span>⏳ Pending Stream</span>
+                            </span>
+                          ) : isPillar ? (
+                            <span className="text-amber-300">🏛️ Historical Pillar</span>
+                          ) : isCombatVeteran ? (
+                            <span className="text-rose-300">⚔️ Frontline Hero</span>
+                          ) : isLeech ? (
+                            <span className="text-red-400">🚨 Critical Leech</span>
+                          ) : isLow ? (
+                            <span className="text-amber-400">⚠️ Low Contributor</span>
+                          ) : isPatriot ? (
+                            <span className="text-emerald-400">🟢 Model Patriot</span>
+                          ) : (
+                            <span className="text-slate-300">🔵 Moderate Contributor</span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
+                          {c.auditBaselineStatus === 'audited' ? (
                             <>
-                              <Sprout className="w-3.5 h-3.5 text-emerald-400" /> Eco Mode
-                            </>
-                          ) : c.playstyle === 'pure-war' ? (
-                            <>
-                              <Swords className="w-3.5 h-3.5 text-red-400" /> War Mode
+                              <span className="text-slate-200 font-bold">{c.contributionRatio}% ratio</span>
+                              <span>·</span>
+                              <span className="text-emerald-400 font-medium">Audited</span>
                             </>
                           ) : (
-                            <>
-                              <Scale className="w-3.5 h-3.5 text-amber-400" /> Hybrid
-                            </>
+                            <span className="text-slate-500 font-sans text-[10px]">
+                              Awaiting receipts
+                            </span>
                           )}
-                        </span>
-                        <span className="text-[10px] text-slate-400 font-mono">
-                          {c.ecoSkillPoints} eco · {c.warSkillPoints} war
-                        </span>
-                        {typeof c.daysInBuild === 'number' && c.daysInBuild >= 0 && (
-                          <span className="text-[9px] text-cyan-400 font-mono bg-cyan-950/40 px-1.5 py-0.2 rounded border border-cyan-800/40">
-                            {c.daysInBuild}d in build
-                          </span>
-                        )}
+                        </div>
                       </div>
                     </td>
 
-                    {/* Minister Tag & Notes */}
-                    <td className="py-3.5 px-4 text-center font-sans">
-                      <div className="relative inline-block text-left">
+                    {/* Playstyle & Commitment (7-day Respec Pin) */}
+                    <td className="py-3 px-4 text-center font-sans">
+                      <div className="flex flex-col items-center gap-1">
+                        <div className="text-xs font-bold text-slate-200 flex items-center gap-1">
+                          {isPinned ? (
+                            <span className={c.manualTag === 'perma-war' ? 'text-rose-300' : c.manualTag === 'perma-eco' ? 'text-emerald-300' : 'text-amber-300'}>
+                              {c.manualTag === 'perma-war' && '🛡️ Perma-War (Pinned)'}
+                              {c.manualTag === 'perma-eco' && '🌾 Perma-Eco (Pinned)'}
+                              {c.manualTag === 'mercenary' && '⚔️ Mercenary (Pinned)'}
+                              {c.manualTag === 'vip' && '⭐ VIP (Pinned)'}
+                              {c.manualTag === 'mixed-style' && '🔄 Mixed (Pinned)'}
+                            </span>
+                          ) : (
+                            <span>
+                              {c.playstyle === 'pure-eco' ? '🌾 Eco Build' : c.playstyle === 'pure-war' ? '⚔️ War Build' : '⚖️ Hybrid Build'}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-slate-500 font-mono">
+                          {c.ecoSkillPoints}E · {c.warSkillPoints}W {!isPinned && '(7d cooldown)'}
+                        </div>
+
+                        {/* Inline Respec Pin Selector */}
                         <select
                           value={c.manualTag}
                           onChange={(e) => onUpdateTag(c.userId, e.target.value as PlayerTag, c.notes)}
-                          className="px-2 py-1 bg-slate-950 border border-slate-800 rounded-lg text-[11px] font-semibold text-slate-300 focus:outline-none focus:border-amber-500 cursor-pointer"
+                          className="mt-0.5 px-2 py-0.5 bg-slate-950 border border-slate-800 rounded text-[10px] text-slate-400 hover:text-white hover:border-slate-700 focus:outline-none focus:border-amber-500 cursor-pointer"
+                          title="Set commitment pin: protects player from weekly 7-day cooldown skill point shifts"
                         >
-                          <option value="none">No Tag</option>
-                          <option value="perma-war">Perma War</option>
-                          <option value="perma-eco">Perma Eco</option>
-                          <option value="mixed-style">Mixed Style</option>
-                          <option value="mercenary">Mercenary</option>
-                          <option value="vip">VIP</option>
+                          <option value="none">Dynamic (Auto)</option>
+                          <option value="perma-war">Pin: Perma-War</option>
+                          <option value="perma-eco">Pin: Perma-Eco</option>
+                          <option value="mercenary">Pin: Mercenary</option>
+                          <option value="vip">Pin: VIP</option>
                         </select>
                       </div>
                     </td>
@@ -786,9 +985,9 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                       <div className="flex items-center justify-end gap-1.5">
                         <button
                           type="button"
-                          onClick={() => setSelectedExplainerProfile(c)}
-                          className="px-2.5 py-1.5 bg-cyan-950/60 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-800/60 font-semibold rounded-xl text-xs transition active:scale-95 inline-flex items-center gap-1"
-                          title="Click to view detailed formula, liquid BTC vs wealth, and why citizen received this classification"
+                          onClick={() => setSelectedAuditProfile(c)}
+                          className="px-2.5 py-1.5 bg-cyan-950/60 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-800/60 font-semibold rounded-xl text-xs transition active:scale-95 inline-flex items-center gap-1 shadow-sm"
+                          title="Open comprehensive forensic financial audit: multi-company inventory, wages, trades, and hoarding analysis"
                         >
                           <Calculator className="w-3.5 h-3.5 text-cyan-400" />
                           <span className="hidden sm:inline">Audit</span>
@@ -1497,23 +1696,49 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
         </div>
       )}
 
+      {/* Modal: Comprehensive Forensic Financial & Multi-Company Audit */}
+      {selectedAuditProfile && (
+        <ErrorBoundary fallbackTitle="Financial Audit Error" onReset={() => setSelectedAuditProfile(null)}>
+          <CitizenAuditModal
+            profile={selectedAuditProfile}
+            config={config}
+            countryName={countryName}
+            apiKey={apiKey}
+            countryBenchmark={countryBenchmark}
+            onClose={() => setSelectedAuditProfile(null)}
+            onUpdateProfile={onUpdateProfile}
+            onUpdateConfig={onUpdateConfig}
+          />
+        </ErrorBoundary>
+      )}
+
       {/* Modal: Citizen Calculation Breakdown & Audit Explainer */}
-      <CitizenCalculationExplainerModal
-        profile={selectedExplainerProfile}
-        config={config}
-        countryName={countryName}
-        onClose={() => setSelectedExplainerProfile(null)}
-      />
+      {selectedExplainerProfile && (
+        <ErrorBoundary fallbackTitle="Calculation Explainer Error" onReset={() => setSelectedExplainerProfile(null)}>
+          <CitizenCalculationExplainerModal
+            profile={selectedExplainerProfile}
+            config={config}
+            countryName={countryName}
+            countryBenchmark={countryBenchmark}
+            onClose={() => setSelectedExplainerProfile(null)}
+          />
+        </ErrorBoundary>
+      )}
 
       {/* Modal: Estimated Gross Income Itemized Calculation Breakdown */}
-      <GrossIncomeBreakdownModal
-        profile={selectedIncomeBreakdownProfile}
-        countryName={countryName}
-        config={config}
-        apiKey={apiKey}
-        onClose={() => setSelectedIncomeBreakdownProfile(null)}
-        onUpdateProfile={onUpdateProfile}
-      />
+      {selectedIncomeBreakdownProfile && (
+        <ErrorBoundary fallbackTitle="Gross Income Audit Error" onReset={() => setSelectedIncomeBreakdownProfile(null)}>
+          <GrossIncomeBreakdownModal
+            profile={selectedIncomeBreakdownProfile}
+            countryName={countryName}
+            config={config}
+            apiKey={apiKey}
+            countryBenchmark={countryBenchmark}
+            onClose={() => setSelectedIncomeBreakdownProfile(null)}
+            onUpdateProfile={onUpdateProfile}
+          />
+        </ErrorBoundary>
+      )}
     </div>
   );
 };

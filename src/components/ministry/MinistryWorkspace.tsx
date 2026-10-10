@@ -12,8 +12,11 @@ import {
   PlayerTag,
   MinistryConfig,
   WatchedCitizen,
+  WealthSnapshot,
+  CountryEconomicBenchmark,
 } from '../../types/ministry';
-import { WareraCountry } from '../../types/warera';
+import { WareraCountry, SyncProgress } from '../../types/warera';
+import { formatDateDDMMYYYY } from '../../utils/dateUtils';
 import {
   Shield,
   Coins,
@@ -42,6 +45,10 @@ import {
   Tag,
   Copy,
   ShieldAlert,
+  Camera,
+  Lock,
+  RefreshCw,
+  Loader2,
 } from 'lucide-react';
 import {
   generateMinisterialNudge,
@@ -62,6 +69,9 @@ interface MinistryWorkspaceProps {
   config?: MinistryConfig;
   apiKey?: string;
   isAuditingIncome?: boolean;
+  totalActiveCitizens?: number;
+  isSyncing?: boolean;
+  syncProgress?: SyncProgress | null;
   onUpdateConfig?: (cfg: MinistryConfig) => void;
   onUpdateTag: (userId: string, tag: PlayerTag, notes?: string) => void;
   onAddTransaction: (tx: NationalTransaction) => void;
@@ -73,6 +83,10 @@ interface MinistryWorkspaceProps {
   onRemoveFromWatch?: (userId: string) => void;
   onRunIncomeAudit?: () => void;
   onRestoreBackup?: () => void;
+  onOpenKeyModal?: () => void;
+  onOpenDiagnostics?: () => void;
+  countryBenchmark?: CountryEconomicBenchmark;
+  onUpdateProfile?: (updated: CitizenEconomicProfile) => void;
 }
 
 export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
@@ -88,6 +102,10 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
   config,
   apiKey,
   isAuditingIncome = false,
+  totalActiveCitizens,
+  isSyncing = false,
+  syncProgress = null,
+  countryBenchmark,
   onUpdateConfig,
   onUpdateTag,
   onAddTransaction,
@@ -99,6 +117,9 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
   onRemoveFromWatch,
   onRunIncomeAudit,
   onRestoreBackup,
+  onOpenKeyModal,
+  onOpenDiagnostics,
+  onUpdateProfile,
 }) => {
   const [activeTab, setActiveTab] = useState<'radar' | 'treasury' | 'stockpiles' | 'market' | 'watch'>('radar');
   const [watchSearch, setWatchSearch] = useState('');
@@ -112,6 +133,68 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   const [backupMessage, setBackupMessage] = useState<{ text: string; isError?: boolean } | null>(null);
   const [isProcessingBackup, setIsProcessingBackup] = useState(false);
+
+  // Active Citizens Snapshot State & Integrity Safeguards
+  const [isSnapshotModalOpen, setIsSnapshotModalOpen] = useState(false);
+  const [isTakingSnapshot, setIsTakingSnapshot] = useState(false);
+  const [snapshotProgress, setSnapshotProgress] = useState({ current: 0, total: 0, pct: 0, citizenName: '' });
+  const [snapshotResult, setSnapshotResult] = useState<{ count: number; timestamp: string } | null>(null);
+
+  // Authoritative Active Census Calculation
+  const authoritativeActiveCount = totalActiveCitizens && totalActiveCitizens > 0 ? totalActiveCitizens : profiles.length;
+  const isCensusAuditing = Boolean(isSyncing) || (totalActiveCitizens !== undefined && totalActiveCitizens > 0 && profiles.length < totalActiveCitizens);
+  const censusPct = authoritativeActiveCount > 0 ? Math.min(100, Math.round((profiles.length / authoritativeActiveCount) * 100)) : 100;
+
+  const handleStartSnapshotCapture = async () => {
+    if (isTakingSnapshot || profiles.length === 0) return;
+    setIsTakingSnapshot(true);
+    setSnapshotResult(null);
+    setSnapshotProgress({ current: 0, total: profiles.length, pct: 0, citizenName: 'Initializing database transaction...' });
+
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const now = Date.now();
+      const snapshotsToSave: WealthSnapshot[] = [];
+
+      for (let i = 0; i < profiles.length; i++) {
+        const p = profiles[i];
+        setSnapshotProgress({
+          current: i + 1,
+          total: profiles.length,
+          pct: Math.round(((i + 1) / profiles.length) * 100),
+          citizenName: p.username || `Citizen #${p.userId.slice(-6)}`,
+        });
+
+        const weeklyDmg = p.totalCombatDamage || 0;
+        const lifeDmg = p.lifetimeCombatDamage || weeklyDmg;
+
+        snapshotsToSave.push({
+          id: `${p.userId}_${today}`,
+          userId: p.userId,
+          countryId: p.countryId || countryId,
+          wealthBtc: p.wealthBtc || 0,
+          weeklyDamage: weeklyDmg,
+          lifetimeDamage: lifeDmg,
+          timestamp: now,
+          dateStr: today,
+        });
+
+        if (i % 20 === 0) {
+          await new Promise((r) => setTimeout(r, 10));
+        }
+      }
+
+      await storage.saveWealthSnapshotsBatch(snapshotsToSave);
+      setSnapshotResult({
+        count: snapshotsToSave.length,
+        timestamp: new Date().toLocaleTimeString(),
+      });
+    } catch (err: any) {
+      console.error('Failed to capture active citizen snapshots:', err);
+    } finally {
+      setIsTakingSnapshot(false);
+    }
+  };
 
   const watchedUserIds = new Set(watchedCitizens.map((w) => w.userId));
   const unacknowledgedAlerts = alerts.filter((a) => !a.acknowledged);
@@ -218,13 +301,28 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
               🏛️
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-xs font-bold text-amber-400 uppercase tracking-widest">
                   Executive Sovereign Command
                 </span>
                 <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-mono text-[10px] font-bold border border-emerald-500/30">
                   {countryName} Ministry of Economy
                 </span>
+                <span className="px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono text-[10px] font-bold border border-slate-700 flex items-center gap-1.5 shadow-sm">
+                  <Users className="w-3 h-3 text-amber-400" />
+                  {authoritativeActiveCount} Active Citizens (Lvl 10+)
+                </span>
+                {isCensusAuditing ? (
+                  <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-mono text-[10px] font-bold border border-amber-500/40 flex items-center gap-1.5 animate-pulse">
+                    <Loader2 className="w-3 h-3 animate-spin text-amber-400" />
+                    Auditing Census: {profiles.length}/{authoritativeActiveCount} ({censusPct}%)
+                  </span>
+                ) : (
+                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-mono text-[10px] font-bold border border-emerald-500/20 flex items-center gap-1.5">
+                    <CheckCircle className="w-3 h-3 text-emerald-400" />
+                    100% Census Audited
+                  </span>
+                )}
               </div>
               <h1 className="text-2xl font-black text-white mt-0.5">
                 National Treasury &amp; Economic Strategy Office
@@ -235,8 +333,31 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
             </div>
           </div>
 
-          {/* Header Actions: Export Digest & Backup Safeguards */}
+          {/* Header Actions: Export Digest, Snapshot & Backup Safeguards */}
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setIsSnapshotModalOpen(true);
+                if (!isTakingSnapshot) {
+                  handleStartSnapshotCapture();
+                }
+              }}
+              disabled={isTakingSnapshot}
+              className="px-4 py-2.5 bg-gradient-to-r from-sky-600 via-blue-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 text-white font-black rounded-2xl text-xs flex items-center gap-2.5 shadow-lg shadow-sky-500/20 border border-sky-400/40 transition transform active:scale-95 disabled:opacity-50"
+              title="Record timestamped wealth & combat damage snapshots for all active citizens in the country"
+            >
+              <div className="p-1 rounded-lg bg-black/20">
+                <Camera className="w-4 h-4 text-sky-200" />
+              </div>
+              <div className="text-left">
+                <div className="text-[10px] uppercase tracking-wider text-sky-200 font-bold leading-none">Historical Audit</div>
+                <div className="text-xs font-black text-white leading-tight">
+                  {isTakingSnapshot ? 'Recording...' : 'Take Citizen Snapshot'}
+                </div>
+              </div>
+            </button>
+
             <button
               type="button"
               onClick={handleExportExecutiveDigest}
@@ -373,8 +494,13 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
           onRemoveFromWatch={onRemoveFromWatch}
           onRunIncomeAudit={onRunIncomeAudit}
           isAuditing={isAuditingIncome}
+          totalActiveCitizens={totalActiveCitizens}
+          isSyncing={isSyncing}
+          syncProgress={syncProgress}
           onOpenBackup={() => setIsBackupModalOpen(true)}
           apiKey={apiKey}
+          countryBenchmark={countryBenchmark}
+          onUpdateProfile={onUpdateProfile}
         />
       )}
 
@@ -394,9 +520,14 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
       {activeTab === 'stockpiles' && (
         <StockpileTracker
           countryName={countryName}
+          countryId={countryId}
+          stateOrgId={countries?.find((c) => c._id === countryId)?.orgs?.[0]}
           stockpiles={stockpiles}
           commodities={commodities}
           onUpdateStockpile={onUpdateStockpile}
+          apiKey={apiKey}
+          onOpenKeyModal={onOpenKeyModal}
+          onOpenDiagnostics={onOpenDiagnostics}
         />
       )}
 
@@ -525,7 +656,7 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                         </td>
 
                         <td className="py-3.5 px-4 text-center font-sans text-slate-400 text-[11px]">
-                          {new Date(w.addedAt).toLocaleDateString()}
+                          {formatDateDDMMYYYY(w.addedAt)}
                         </td>
 
                         <td className="py-3.5 px-4 text-right font-sans">
@@ -585,7 +716,7 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                         <span className="text-amber-400">{alert.username}</span> shifted build: {alert.previousMode.toUpperCase()} ➔ {alert.newMode.toUpperCase()}
                       </div>
                       <div className="text-slate-400 font-mono text-[10px]">
-                        {alert.ecoPoints} Eco · {alert.warPoints} War · {new Date(alert.timestamp).toLocaleDateString()}
+                        {alert.ecoPoints} Eco · {alert.warPoints} War · {formatDateDDMMYYYY(alert.timestamp)}
                       </div>
                     </div>
 
@@ -952,6 +1083,107 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
               >
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Active Citizens Historical Snapshot with Safety Measures */}
+      {isSnapshotModalOpen && (
+        <div className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-sky-500/40 rounded-3xl max-w-lg w-full p-6 shadow-2xl relative space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-2xl bg-sky-500/20 text-sky-300 border border-sky-500/30">
+                  <Camera className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">
+                    Citizen Historical Snapshot
+                  </h3>
+                  <p className="text-xs text-slate-400 font-mono">
+                    Country: {countryName} ({authoritativeActiveCount} Active Citizens{isCensusAuditing ? ` • ${profiles.length} Audited` : ' • 100% Audited'})
+                  </p>
+                </div>
+              </div>
+              {!isTakingSnapshot && (
+                <button
+                  type="button"
+                  onClick={() => setIsSnapshotModalOpen(false)}
+                  className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            {/* Safety & Integrity Warning */}
+            <div className="p-3.5 bg-sky-950/40 border border-sky-800/40 rounded-2xl text-xs space-y-2">
+              <div className="flex items-center gap-2 text-sky-300 font-bold">
+                <Lock className="w-4 h-4 shrink-0 text-sky-400" />
+                <span>Active Safety Measures Enforced</span>
+              </div>
+              <p className="text-slate-300 text-[11px] leading-relaxed">
+                {isTakingSnapshot
+                  ? 'Country switching, tab changes, and background operations are strictly locked during capture to prevent database corruption. Please keep this window open until complete.'
+                  : 'Snapshots record exact timestamped wealth and weekly/lifetime damage for all active citizens. This enables honest 30-day combat damage tracking once snapshots span a full month.'}
+              </p>
+            </div>
+
+            {/* Progress Section */}
+            {isTakingSnapshot ? (
+              <div className="space-y-3 py-2">
+                <div className="flex items-center justify-between text-xs font-mono">
+                  <span className="text-slate-400 flex items-center gap-1.5">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-sky-400" />
+                    Recording citizen snapshots...
+                  </span>
+                  <span className="text-sky-300 font-bold">{snapshotProgress.pct}%</span>
+                </div>
+                <div className="w-full bg-slate-950 border border-slate-800 rounded-full h-3 overflow-hidden p-0.5">
+                  <div
+                    className="bg-gradient-to-r from-sky-500 to-indigo-500 h-full rounded-full transition-all duration-150"
+                    style={{ width: `${snapshotProgress.pct}%` }}
+                  />
+                </div>
+                <div className="flex items-center justify-between text-[11px] font-mono text-slate-500">
+                  <span className="truncate max-w-[240px]">Processing: <strong className="text-slate-300">{snapshotProgress.citizenName}</strong></span>
+                  <span>{snapshotProgress.current} / {snapshotProgress.total}</span>
+                </div>
+              </div>
+            ) : snapshotResult ? (
+              <div className="p-4 bg-emerald-950/30 border border-emerald-800/40 rounded-2xl text-center space-y-2">
+                <CheckCircle className="w-8 h-8 text-emerald-400 mx-auto" />
+                <div className="text-emerald-300 font-bold text-sm">
+                  Snapshot Successfully Recorded!
+                </div>
+                <p className="text-slate-300 text-xs">
+                  Recorded historical wealth and combat damage snapshots for <strong className="text-white">{snapshotResult.count}</strong> active citizens at {snapshotResult.timestamp}.
+                </p>
+              </div>
+            ) : null}
+
+            {/* Actions */}
+            <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+              {!isTakingSnapshot && (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleStartSnapshotCapture}
+                    className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 shadow-sm"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>{snapshotResult ? 'Retake Snapshot' : 'Begin Snapshot Capture'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsSnapshotModalOpen(false)}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-xl transition"
+                  >
+                    Close
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>

@@ -9,7 +9,9 @@ import {
   exportNationalTransactionsToCsv,
   parseNationalTransactionsCsv,
 } from '../../services/ministryService';
+import { formatDateDDMMYYYY } from '../../utils/dateUtils';
 import { fetchNationalTransfers } from '../../services/apiService';
+import { storage } from '../../services/storage';
 import {
   Coins,
   ArrowUpRight,
@@ -76,8 +78,25 @@ export const TreasuryLedger: React.FC<TreasuryLedgerProps> = ({
     });
   };
 
-  // Filtered transactions
+  const getFlagEmoji = (countryCode?: string) => {
+    if (!countryCode || countryCode.length !== 2) return '🌐';
+    const codePoints = countryCode
+      .toUpperCase()
+      .split('')
+      .map((char) => 127397 + char.charCodeAt(0));
+    return String.fromCodePoint(...codePoints);
+  };
+
+  // Filtered transactions (Strictly scoped to current nation)
   const filtered = transactions.filter((t) => {
+    const isCountryParticipant =
+      !countryId ||
+      t.sourceCountryId === countryId ||
+      t.targetCountryId === countryId ||
+      t.sourceCountryName.toLowerCase() === countryName.toLowerCase() ||
+      t.targetCountryName.toLowerCase() === countryName.toLowerCase();
+    if (!isCountryParticipant) return false;
+
     if (filterDirection !== 'all' && t.direction !== filterDirection) return false;
     if (periodFilter !== 'all') {
       const txMs = new Date(t.date || t.createdAt).getTime();
@@ -183,24 +202,31 @@ export const TreasuryLedger: React.FC<TreasuryLedgerProps> = ({
 
   // Sync state transfers from War Era API
   const handleSyncApi = async () => {
-    if (!apiKey || !apiKey.trim()) {
-      setSyncApiMessage('Please connect your War Era API Token in the header to auto-sync country transfers.');
-      setTimeout(() => setSyncApiMessage(null), 4500);
-      return;
-    }
-
     setIsSyncingApi(true);
     setSyncApiMessage(null);
     try {
-      const apiTxs = await fetchNationalTransfers(countryId, apiKey, countryName, countries);
+      let apiTxs: NationalTransaction[] = [];
+      if (apiKey && apiKey.trim()) {
+        apiTxs = await fetchNationalTransfers(countryId, apiKey.trim(), countryName, countries);
+      }
+      
       if (apiTxs.length > 0) {
         onImportTransactions(apiTxs);
         setSyncApiMessage(`Successfully imported ${apiTxs.length} country transfers from War Era API!`);
       } else {
-        setSyncApiMessage('No country transfers found in recent API records for this nation.');
+        // Fallback or seed from verified repository records
+        const localTxs = await storage.getNationalTransactions(countryId);
+        if (localTxs.length > 0) {
+          onImportTransactions(localTxs);
+          setSyncApiMessage(`Loaded ${localTxs.length} verified bilateral transfer(s) for ${countryName}.`);
+        } else {
+          setSyncApiMessage(
+            apiKey ? 'No country transfers found in recent API records.' : 'Connect API Token in Header to stream live transfers.'
+          );
+        }
       }
     } catch (err: any) {
-      setSyncApiMessage(`API sync error: ${err?.message || 'Failed to connect'}`);
+      setSyncApiMessage(`Sync error: ${err?.message || 'Failed to connect'}`);
     } finally {
       setIsSyncingApi(false);
       setTimeout(() => setSyncApiMessage(null), 4500);
@@ -414,12 +440,10 @@ export const TreasuryLedger: React.FC<TreasuryLedgerProps> = ({
               filtered.map((t) => {
                 const isSent = t.direction === 'sent';
 
-                // Robust country resolution using ID dictionary, stored names, and note detection (e.g. Malaysia / Malasya)
+                // Robust country resolution using ID dictionary, stored names, and note detection dynamically across all sovereign countries
                 const noteText = (t.referenceNote || '').toLowerCase();
                 let detectedAllyFromNote = '';
-                if (noteText.includes('malasya') || noteText.includes('malaysia')) {
-                  detectedAllyFromNote = 'Malaysia';
-                } else {
+                if (noteText) {
                   const matchC = countries.find((c) => c.name && c._id !== countryId && noteText.includes(c.name.toLowerCase()));
                   if (matchC) detectedAllyFromNote = matchC.name;
                 }
@@ -430,19 +454,26 @@ export const TreasuryLedger: React.FC<TreasuryLedgerProps> = ({
                 const validTargetName =
                   (t.targetCountryName && t.targetCountryName !== 'Foreign Ally' && t.targetCountryName !== 'Foreign Nation' && t.targetCountryName !== 'Target')
                     ? t.targetCountryName
-                    : (targetById || detectedAllyFromNote || (isSent ? 'Malaysia' : countryName));
+                    : (targetById || detectedAllyFromNote || (isSent ? 'Foreign Nation' : countryName));
 
                 const validSourceName =
                   (t.sourceCountryName && t.sourceCountryName !== 'Foreign Ally' && t.sourceCountryName !== 'Foreign Nation' && t.sourceCountryName !== 'Source')
                     ? t.sourceCountryName
-                    : (sourceById || (isSent ? countryName : (detectedAllyFromNote || 'Foreign Ally')));
+                    : (sourceById || (isSent ? countryName : (detectedAllyFromNote || 'Foreign Nation')));
 
-                const fromCountry = isSent ? countryName : (validSourceName || 'Foreign Ally');
-                const toCountry = isSent ? (validTargetName || 'Foreign Ally') : countryName;
+                const fromCountry = isSent ? countryName : (validSourceName || 'Foreign Nation');
+                const toCountry = isSent ? (validTargetName || 'Foreign Nation') : countryName;
+
+                const fromCountryObj = countries.find(
+                  (c) => c._id === t.sourceCountryId || c.name.toLowerCase() === fromCountry.toLowerCase()
+                );
+                const toCountryObj = countries.find(
+                  (c) => c._id === t.targetCountryId || c.name.toLowerCase() === toCountry.toLowerCase()
+                );
 
                 return (
                   <tr key={t.id} className="hover:bg-slate-800/40 transition">
-                    <td className="py-3.5 px-4 text-slate-400 font-sans whitespace-nowrap">{t.date}</td>
+                    <td className="py-3.5 px-4 text-slate-400 font-sans whitespace-nowrap">{formatDateDDMMYYYY(t.date)}</td>
                     
                     {/* Origin Nation */}
                     <td className="py-3.5 px-4 font-sans font-bold">
@@ -451,7 +482,9 @@ export const TreasuryLedger: React.FC<TreasuryLedgerProps> = ({
                           ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
                           : 'bg-slate-800 text-slate-200 border-slate-700'
                       }`}>
-                        <Globe className="w-3 h-3 text-slate-400 shrink-0" />
+                        <span className="text-sm shrink-0" role="img" aria-label="flag">
+                          {getFlagEmoji(fromCountryObj?.code)}
+                        </span>
                         <span>{fromCountry}</span>
                       </span>
                     </td>
@@ -484,7 +517,9 @@ export const TreasuryLedger: React.FC<TreasuryLedgerProps> = ({
                           ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
                           : 'bg-slate-800 text-slate-200 border-slate-700'
                       }`}>
-                        <Globe className="w-3 h-3 text-slate-400 shrink-0" />
+                        <span className="text-sm shrink-0" role="img" aria-label="flag">
+                          {getFlagEmoji(toCountryObj?.code)}
+                        </span>
                         <span>{toCountry}</span>
                       </span>
                     </td>

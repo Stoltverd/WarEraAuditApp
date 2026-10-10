@@ -132,6 +132,9 @@ export interface WareraTransaction {
   sellerId?: string;  // Seller user ID (for market/trade sales)
   buyerId?: string;   // Buyer user ID (for market/trade purchases)
   companyId?: string; // Employer or company ID (for wage/production)
+  senderId?: string;  // Payer / sender ID
+  recipientId?: string; // Beneficiary / recipient ID
+  action?: string;    // Action verb if present (work, buy, sell, etc.)
   item?: string;      // Canonical resource / item traded (Oil, Iron, Food, Munitions)
   resourceType?: string;
   countryId?: string; // Recipient/Origin country ID

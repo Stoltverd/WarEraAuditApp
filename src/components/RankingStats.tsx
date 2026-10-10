@@ -1,6 +1,7 @@
 import React from 'react';
 import { RankingSummary } from '../types/warera';
 import { Coins, Users, Trophy, ArrowUpRight, TrendingUp } from 'lucide-react';
+import { formatDateRangeDDMMYYYY } from '../utils/dateUtils';
 
 interface RankingStatsProps {
   summary: RankingSummary;
@@ -23,7 +24,7 @@ export const RankingStats: React.FC<RankingStatsProps> = ({
       : summary.timeframe === 'monthly'
       ? 'Past 30 Days'
       : summary.timeframe === 'custom'
-      ? `${new Date(summary.startDate).toLocaleDateString()} – ${new Date(summary.endDate).toLocaleDateString()}`
+      ? formatDateRangeDDMMYYYY(summary.startDate, summary.endDate)
       : 'All-Time Record';
 
   const formatBtc = (val: number) => {

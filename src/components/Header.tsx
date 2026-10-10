@@ -9,6 +9,8 @@ import {
   Coins,
   Key,
   ShieldCheck,
+  ShieldAlert,
+  Activity,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -20,6 +22,7 @@ interface HeaderProps {
   isOnline: boolean;
   apiKey: string;
   onOpenKeyModal: () => void;
+  onOpenDiagnostics?: () => void;
   activeMode: 'leaderboard' | 'ministry';
   onToggleMode: (mode: 'leaderboard' | 'ministry') => void;
 }
@@ -33,6 +36,7 @@ export const Header: React.FC<HeaderProps> = ({
   isOnline,
   apiKey,
   onOpenKeyModal,
+  onOpenDiagnostics,
   activeMode,
   onToggleMode,
 }) => {
@@ -220,15 +224,28 @@ export const Header: React.FC<HeaderProps> = ({
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition ${
               apiKey
                 ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25'
-                : 'bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-amber-500/25 animate-pulse'
+                : 'bg-rose-500/20 text-rose-300 border-rose-500/40 hover:bg-rose-500/30 animate-pulse'
             }`}
             title="Configure War Era API Token for live daily/weekly transaction streams"
           >
-            {apiKey ? <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> : <Key className="w-3.5 h-3.5 text-amber-400" />}
+            {apiKey ? <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> : <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />}
             <span className="hidden sm:inline">
               {apiKey ? 'API Key Active' : 'Connect API Token'}
             </span>
           </button>
+
+          {/* Diagnostics Inspector Button */}
+          {onOpenDiagnostics && (
+            <button
+              type="button"
+              onClick={onOpenDiagnostics}
+              className="p-1.5 sm:px-2.5 sm:py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-xs font-bold flex items-center gap-1 transition"
+              title="Open War Era API Outbound Request Diagnostics Inspector"
+            >
+              <Activity className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden lg:inline text-[11px]">Inspector</span>
+            </button>
+          )}
 
           {/* Online status */}
           <div

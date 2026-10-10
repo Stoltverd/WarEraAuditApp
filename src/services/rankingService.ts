@@ -559,7 +559,8 @@ export async function syncCountryData(
   countryId: string,
   countryName: string,
   apiKey: string,
-  onProgress?: (progress: SyncProgress) => void
+  onProgress?: (progress: SyncProgress) => void,
+  onChunkUsers?: (users: WareraUserLite[]) => void
 ): Promise<{
   transactions: WareraTransaction[];
   cumulative: WareraCumulativeDonation[];
@@ -643,32 +644,55 @@ export async function syncCountryData(
   // Combine and deduplicate top daily/weekly patrons + top cumulative patrons
   const eagerDonorIds = Array.from(new Set([...topRecentIds, ...topCumulativeIds]));
 
-  const totalKnownPatrons = Math.max(cumulative.length, txs.length);
+  // 4. Ingest full national citizen registry so active players reflect the entire nation, not only donors
+  onProgress?.({
+    status: 'syncing',
+    countryId,
+    countryName,
+    fetchedItems: cumulative.length + txs.length,
+    message: `Harvesting national citizen registry for ${countryName}...`,
+  });
+
+  let citizenIds: string[] = [];
+  try {
+    citizenIds = await fetchCountryCitizens(countryId);
+  } catch (err) {
+    console.warn('Failed to harvest country citizens:', err);
+  }
+
+  // Combine top patrons AND registered country citizens
+  const allNeededUserIds = Array.from(new Set([...eagerDonorIds, ...citizenIds]));
+  const totalKnownPatrons = Math.max(cumulative.length, txs.length, allNeededUserIds.length);
 
   onProgress?.({
     status: 'syncing',
     countryId,
     countryName,
     fetchedItems: cumulative.length + txs.length,
-    message: `Verifying top leaderboard patrons for ${countryName}...`,
+    message: `Verifying national citizen profiles for ${countryName}...`,
   });
 
-  const users = await batchResolveUsers(eagerDonorIds, (done, total) => {
-    onProgress?.({
-      status: 'syncing',
-      countryId,
-      countryName,
-      fetchedItems: cumulative.length + txs.length,
-      message: `Verified ${done} of ${total} top patrons...`,
-    });
-  });
+  const users = await batchResolveUsers(
+    allNeededUserIds,
+    (done, total) => {
+      onProgress?.({
+        status: 'syncing',
+        countryId,
+        countryName,
+        fetchedItems: cumulative.length + txs.length,
+        message: `Verified ${done} of ${total} national citizens...`,
+      });
+    },
+    onChunkUsers,
+    countryId
+  );
 
   onProgress?.({
     status: 'completed',
     countryId,
     countryName,
     fetchedItems: cumulative.length + txs.length,
-    message: `Sync complete: ${totalKnownPatrons} patrons ledger verified!`,
+    message: `Sync complete: ${totalKnownPatrons} national records verified!`,
   });
 
   return {

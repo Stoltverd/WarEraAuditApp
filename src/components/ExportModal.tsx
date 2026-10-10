@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { RankingSummary } from '../types/warera';
 import { Download, Copy, Check, FileText, Code, MessageSquare, X } from 'lucide-react';
+import { formatDateDDMMYYYY, formatDateRangeDDMMYYYY } from '../utils/dateUtils';
 
 interface ExportModalProps {
   summary: RankingSummary;
@@ -19,7 +20,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   // Generate Discord Markdown table
   const generateDiscordMarkdown = () => {
     const header = `🏆 **${countryName.toUpperCase()} — ${summary.timeframe.toUpperCase()} BTC DONATION RANKING**\n` +
-      `📅 Period: ${new Date(summary.startDate).toLocaleDateString()} - ${new Date(summary.endDate).toLocaleDateString()}\n` +
+      `📅 Period: ${formatDateRangeDDMMYYYY(summary.startDate, summary.endDate, ' - ')}\n` +
       `💰 Total Donated: **${summary.totalAmountDonated.toLocaleString()} BTC** | 👥 Patrons: **${summary.totalDonors}**\n\n` +
       '```\n' +
       'Rank | Citizen                 | BTC Donated  | Records\n' +
@@ -45,7 +46,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       d.userId,
       d.totalAmount,
       d.donations.length,
-      `"${d.lastDonationAt}"`,
+      `"${formatDateDDMMYYYY(d.lastDonationAt, '')}"`,
     ]);
     return [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
   };

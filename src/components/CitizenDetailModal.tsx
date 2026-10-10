@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { DonorRankingItem, RankingTimeframe } from '../types/warera';
 import { Coins, Clock, X, Shield, Calendar, Check, Copy, Info, Swords, ShieldCheck } from 'lucide-react';
+import { formatDateDDMMYYYY } from '../utils/dateUtils';
 
 interface CitizenDetailModalProps {
   donor: DonorRankingItem | null;
@@ -46,21 +47,21 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
               {donor.avatarUrl ? (
                 <img
                   src={donor.avatarUrl}
-                  alt={donor.username}
+                  alt={donor.username || 'Citizen'}
                   className="w-full h-full object-cover"
                   onError={(e) => {
                     (e.currentTarget as HTMLElement).style.display = 'none';
                   }}
                 />
               ) : (
-                donor.username.slice(0, 2).toUpperCase()
+                (donor.username || donor.userId || 'CZ').slice(0, 2).toUpperCase()
               )}
             </div>
 
             <div>
               <div className="flex items-center gap-2.5 flex-wrap">
                 <h3 className="text-2xl sm:text-3xl lg:text-4xl font-black text-white tracking-tight">
-                  {donor.username}
+                  {donor.username || `Citizen #${donor.userId.slice(-6)}`}
                 </h3>
                 <span className="px-3 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs sm:text-sm font-mono font-black shadow-sm">
                   Rank #{donor.rank}
@@ -140,7 +141,7 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
             <div className="text-xs text-slate-400 mt-1 font-mono">
               {timeframe === 'all'
                 ? `Official lifetime treasury transfer for ${countryName}`
-                : `${donor.transactionCount || donor.transactions.length} verified donations for ${countryName}`}
+                : `${donor.transactionCount || (donor.transactions || []).length} verified donations for ${countryName}`}
             </div>
           </div>
 
@@ -236,11 +237,7 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
                   </div>
                   <div className="text-slate-400 font-mono text-xs mt-1">
                     {donor.lastDonationAt
-                      ? new Date(donor.lastDonationAt).toLocaleDateString(undefined, {
-                          year: 'numeric',
-                          month: 'short',
-                          day: 'numeric',
-                        })
+                      ? formatDateDDMMYYYY(donor.lastDonationAt)
                       : 'Historical ledger'}
                   </div>
                 </div>
@@ -306,40 +303,49 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
               )}
 
               {/* Direct individual transactions */}
-              {donor.transactions.length === 0 && (
+              {(!donor.transactions || donor.transactions.length === 0) && (
                 <div className="p-4 bg-slate-800/40 border border-slate-700/40 rounded-2xl text-center text-xs sm:text-sm text-slate-400">
                   <span>This citizen contributed exclusively through combat support in War Mode. No direct treasury cash donations recorded.</span>
                 </div>
               )}
 
-              {donor.transactions.map((tx) => (
-                <div
-                  key={tx._id}
-                  className="bg-slate-800/60 border border-slate-700/50 rounded-2xl p-4 flex items-center justify-between text-xs sm:text-sm"
-                >
-                  <div>
-                    <div className="font-bold text-amber-400 font-mono text-sm sm:text-base flex items-center gap-2.5">
-                      <span>+{formatBtc(Number(tx.money || tx.amount || 0))} BTC</span>
-                      <span className="text-xs px-2.5 py-0.5 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-300 uppercase font-mono font-bold">
-                        {tx.transactionType || 'Direct Donation'}
-                      </span>
-                    </div>
-                    <div className="text-xs text-slate-500 font-mono mt-1">
-                      Tx ID: {tx._id}
-                    </div>
-                  </div>
+              {(donor.transactions || []).map((tx) => {
+                const txDate = tx.createdAt ? new Date(tx.createdAt) : null;
+                const isValidDate = txDate && !isNaN(txDate.getTime());
+                const dateStr = isValidDate ? formatDateDDMMYYYY(txDate) : 'Recent';
+                const timeStr = isValidDate ? txDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
 
-                  <div className="text-right text-slate-400 font-mono text-xs">
-                    <div className="flex items-center gap-1.5 justify-end font-semibold text-slate-200">
-                      <Clock className="w-3.5 h-3.5 text-slate-400" />
-                      <span>{new Date(tx.createdAt).toLocaleDateString()}</span>
+                return (
+                  <div
+                    key={tx._id}
+                    className="bg-slate-800/60 border border-slate-700/50 rounded-2xl p-4 flex items-center justify-between text-xs sm:text-sm"
+                  >
+                    <div>
+                      <div className="font-bold text-amber-400 font-mono text-sm sm:text-base flex items-center gap-2.5">
+                        <span>+{formatBtc(Number(tx.money || tx.amount || 0))} BTC</span>
+                        <span className="text-xs px-2.5 py-0.5 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-300 uppercase font-mono font-bold">
+                          {String(tx.transactionType || 'Direct Donation')}
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-500 font-mono mt-1">
+                        Tx ID: {String(tx._id || '')}
+                      </div>
                     </div>
-                    <div className="text-slate-400 mt-0.5">
-                      {new Date(tx.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+
+                    <div className="text-right text-slate-400 font-mono text-xs">
+                      <div className="flex items-center gap-1.5 justify-end font-semibold text-slate-200">
+                        <Clock className="w-3.5 h-3.5 text-slate-400" />
+                        <span>{dateStr}</span>
+                      </div>
+                      {timeStr && (
+                        <div className="text-slate-400 mt-0.5">
+                          {timeStr}
+                        </div>
+                      )}
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}

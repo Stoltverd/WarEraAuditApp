@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { CitizenEconomicProfile, MinistryConfig } from '../../types/ministry';
+import { CitizenEconomicProfile, MinistryConfig, CountryEconomicBenchmark } from '../../types/ministry';
 import { WareraUserLite } from '../../types/warera';
 import { fetchUserTransactions } from '../../services/apiService';
 import { calculatePlayerCashflowSummary, evaluateLeechTier } from '../../services/ministryService';
@@ -21,6 +21,7 @@ import {
   Briefcase,
   AlertCircle,
   CheckCircle2,
+  Users,
 } from 'lucide-react';
 
 interface GrossIncomeBreakdownModalProps {
@@ -28,6 +29,7 @@ interface GrossIncomeBreakdownModalProps {
   countryName: string;
   config?: MinistryConfig;
   apiKey?: string;
+  countryBenchmark?: CountryEconomicBenchmark;
   onClose: () => void;
   onUpdateProfile?: (updated: CitizenEconomicProfile) => void;
 }
@@ -37,6 +39,7 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
   countryName,
   config,
   apiKey,
+  countryBenchmark,
   onClose,
   onUpdateProfile,
 }) => {
@@ -49,6 +52,29 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
     setSyncStatusMsg(null);
   }, [profile]);
 
+  React.useEffect(() => {
+    const originalOverflow = document.body.style.overflow;
+    const originalTouchAction = document.body.style.touchAction;
+    const originalOverscroll = document.body.style.overscrollBehavior;
+    document.body.style.overflow = 'hidden';
+    document.body.style.touchAction = 'none';
+    document.body.style.overscrollBehavior = 'none';
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = originalOverflow;
+      document.body.style.touchAction = originalTouchAction;
+      document.body.style.overscrollBehavior = originalOverscroll;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [onClose]);
+
   if (!localProfile) return null;
 
   const currentProfile = localProfile;
@@ -60,6 +86,8 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
 
   const wagesEarned = cashflow?.wagesEarnedBtc ?? cashflow?.salariesEarnedBtc ?? 0;
   const wagesCount = cashflow?.wagesCount ?? 0;
+  const wagesPaid = cashflow?.wagesPaidBtc ?? 0;
+  const wagesPaidCount = cashflow?.wagesPaidCount ?? 0;
   const salesVolume = cashflow?.salesVolumeBtc ?? 0;
   const salesCount = cashflow?.salesCount ?? 0;
   const purchasesVolume = cashflow?.purchasesVolumeBtc ?? 0;
@@ -77,7 +105,7 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
   const dismantleExpenses = cashflow?.dismantleExpensesBtc ?? 0;
   const caseOpeningExpenses = cashflow?.caseOpeningExpensesBtc ?? 0;
   const applicationFees = cashflow?.applicationFeesBtc ?? 0;
-  const netDisposableIncome = cashflow?.netDisposableIncomeBtc ?? Math.max(0, wagesEarned + netTradeMargin + tipsReceived - craftingExpenses - applicationFees);
+  const netDisposableIncome = cashflow?.netDisposableIncomeBtc ?? Math.max(0, wagesEarned + netTradeMargin + tipsReceived - wagesPaid - craftingExpenses - applicationFees);
 
   const verdict = currentProfile.ministerialVerdict || cashflow?.ministerialVerdict || 'moderate-contributor';
   const verdictReason = currentProfile.ministerialVerdictReason || cashflow?.ministerialVerdictReason || 'Evaluated against national ministerial policy.';
@@ -148,13 +176,16 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
           currentProfile.isHistoricalTopDonor,
           currentProfile.historicalRank,
           currentProfile.isNationalHeavyHitter,
-          currentProfile.heavyHitterRank
+          currentProfile.heavyHitterRank,
+          countryBenchmark
         );
 
         const updatedProfile: CitizenEconomicProfile = {
           ...currentProfile,
           playerCashflow: recalculated.summary,
           grossIncomeBtc: newGross,
+          grossInflowBtc: recalculated.summary.grossInflowBtc,
+          netCashflowBtc: recalculated.summary.netCashflowBtc ?? recalculated.summary.netDisposableIncomeBtc,
           contributionRatio: tierEval.ratio,
           leechTier: tierEval.tier,
           damageValueBtc: tierEval.damageValueBtc,
@@ -179,8 +210,14 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md animate-fade-in">
-      <div className="bg-slate-900 border border-slate-700/80 rounded-3xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden text-slate-200">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className="bg-slate-900 border border-slate-700/80 rounded-3xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden text-slate-200"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header with prominent Avatar */}
         <div className="p-5 border-b border-slate-800 flex items-start justify-between bg-slate-950/80">
           <div className="flex items-center gap-3.5">
@@ -188,14 +225,14 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
               {currentProfile.avatarUrl ? (
                 <img
                   src={currentProfile.avatarUrl}
-                  alt={currentProfile.username}
+                  alt={currentProfile.username || 'Citizen'}
                   className="w-full h-full object-cover"
                   onError={(e) => {
                     (e.target as HTMLElement).style.display = 'none';
                   }}
                 />
               ) : (
-                currentProfile.username.slice(0, 2).toUpperCase()
+                (currentProfile.username || currentProfile.userId || 'CZ').slice(0, 2).toUpperCase()
               )}
               <div className="absolute -bottom-1 -right-1 bg-slate-900 border border-cyan-500/50 px-1 py-0.2 rounded text-[9px] font-mono text-cyan-300 font-bold">
                 Lv{currentProfile.level}
@@ -203,7 +240,9 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
             </div>
             <div>
               <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="text-lg font-black text-white">{currentProfile.username}</h3>
+                <h3 className="text-lg font-black text-white">
+                  {currentProfile.username || `Citizen #${(currentProfile.userId || '').slice(-6)}`}
+                </h3>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
                   {countryName}
                 </span>
@@ -286,7 +325,7 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
             <div className="sm:border-l sm:border-slate-800 sm:pl-4">
               <div className="flex items-center gap-2 text-xs font-bold text-emerald-400 uppercase tracking-wider">
                 <Coins className="w-4 h-4 text-emerald-400" />
-                <span>Net Disposable Cashflow</span>
+                <span>Net Cashflow</span>
               </div>
               <div className="text-2xl font-black font-mono text-emerald-300 mt-1">
                 {formatBtc(netDisposableIncome)} <span className="text-xs text-emerald-400 font-bold">BTC</span>
@@ -358,6 +397,30 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
                 </div>
               </div>
 
+              {/* Stream: Employee Payroll Paid Out */}
+              {wagesPaid > 0 && (
+                <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-2xl flex items-center justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold text-white flex items-center gap-1.5">
+                        <Users className="w-4 h-4 text-rose-400" /> Employee Payroll Expenses
+                      </span>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
+                        {wagesPaidCount} wage payouts
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      Real salary disbursed to workers employed across citizen&apos;s factories.
+                    </p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="text-lg font-black font-mono text-rose-400">
+                      -{formatBtc(wagesPaid)} <span className="text-xs text-rose-500">BTC</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Stream 2: Commercial Item & Equipment Market Sales */}
               <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-2">
                 <div className="flex items-center justify-between gap-3">
@@ -371,7 +434,7 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-400">
-                      Liquid Bitcoin received when citizen acts as the seller (left side of <strong className="text-slate-300">⇄</strong> in <strong className="text-slate-300">Trading</strong> &amp; <strong className="text-slate-300">Item Market</strong>).
+                      Liquid BTC received when citizen acts as the seller (left side of <strong className="text-slate-300">⇄</strong> in <strong className="text-slate-300">Trading</strong> &amp; <strong className="text-slate-300">Item Market</strong>).
                     </p>
                   </div>
                   <div className="text-right shrink-0">
@@ -410,7 +473,7 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-400">
-                      Liquid Bitcoin spent when citizen acts as the buyer (right side of <strong className="text-slate-300">⇄</strong> for gear, pills, food, munitions).
+                      Liquid BTC spent when citizen acts as the buyer (right side of <strong className="text-slate-300">⇄</strong> for gear, pills, food, munitions).
                     </p>
                   </div>
                   <div className="text-right shrink-0">
@@ -618,7 +681,7 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
                   {formatBtc(companyEquity)}
                 </div>
                 <div className="text-[9px] text-slate-500 font-sans mt-0.5">
-                  {currentProfile.activeCompaniesCount ?? 0} active / {currentProfile.companiesCount ?? 0} owned
+                  {currentProfile.activeCompaniesCount ?? 0} active / {currentProfile.companiesCount ?? 0} owned · Lv {currentProfile.automationLevelEst ?? 7} Auto · Lv {currentProfile.storageLevelEst ?? 5} Storage
                 </div>
               </div>
 

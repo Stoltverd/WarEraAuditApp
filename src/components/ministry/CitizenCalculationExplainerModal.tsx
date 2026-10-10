@@ -3,6 +3,7 @@ import {
   CitizenEconomicProfile,
   MinistryConfig,
   DEFAULT_MINISTRY_CONFIG,
+  CountryEconomicBenchmark,
 } from '../../types/ministry';
 import { WareraCompany } from '../../types/warera';
 import { fetchUserCompanies } from '../../services/apiService';
@@ -34,6 +35,7 @@ interface CitizenCalculationExplainerModalProps {
   profile: CitizenEconomicProfile | null;
   config: MinistryConfig;
   countryName: string;
+  countryBenchmark?: CountryEconomicBenchmark;
   onClose: () => void;
 }
 
@@ -41,6 +43,7 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
   profile,
   config = DEFAULT_MINISTRY_CONFIG,
   countryName,
+  countryBenchmark,
   onClose,
 }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'cashflow' | 'companies' | 'defense'>('overview');
@@ -66,6 +69,29 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
     }
   }, [profile?.userId, activeTab]);
 
+  useEffect(() => {
+    const originalOverflow = document.body.style.overflow;
+    const originalTouchAction = document.body.style.touchAction;
+    const originalOverscroll = document.body.style.overscrollBehavior;
+    document.body.style.overflow = 'hidden';
+    document.body.style.touchAction = 'none';
+    document.body.style.overscrollBehavior = 'none';
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = originalOverflow;
+      document.body.style.touchAction = originalTouchAction;
+      document.body.style.overscrollBehavior = originalOverscroll;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [onClose]);
+
   if (!profile) return null;
 
   const periodDays = config.analysisPeriodDays || 7;
@@ -79,10 +105,17 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
   const weaponsWealth = profile.weaponsWealthBtc || 0;
   const pastWealth = profile.pastWealthBtc ?? totalWealth;
 
-  // Real 7-day period donations (strictly within window)
   const periodDonated = profile.periodDonatedBtc ?? profile.directDonatedBtc ?? 0;
-  const grossIncome = profile.grossIncomeBtc ?? Math.max(periodDonated, 20);
+  const grossIncome = profile.auditBaselineStatus === 'audited'
+    ? (profile.grossInflowBtc ?? profile.grossIncomeBtc ?? 0)
+    : undefined;
   const ratio = profile.contributionRatio;
+
+  // Combat Credit
+  const damageCredit = typeof profile.damageValueBtc === 'number' && config.includeDamageInLeechCalculation
+    ? profile.damageValueBtc
+    : 0;
+  const effectiveContribution = periodDonated + damageCredit;
 
   // Mode thresholds
   let patriotPct: number;
@@ -121,14 +154,14 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
     profile.leechTier === 'historical-pillar'
       ? '🏛️ Historical Pillar'
       : profile.leechTier === 'combat-veteran'
-      ? '⚔️ Combat Hero'
+      ? '⚔️ Frontline Hero'
       : profile.leechTier === 'sovereign-patriot'
-      ? '🌟 Model Patriot'
+      ? '🟢 Model Patriot'
       : profile.leechTier === 'moderate'
-      ? '🔵 Moderate Donor'
+      ? '🔵 Moderate Contributor'
       : profile.leechTier === 'low-contributor'
-      ? '🟡 Low Contributor'
-      : '🚨 Critical / Leech';
+      ? '⚠️ Low Contributor'
+      : '🚨 Critical Leech';
 
   const toggleTooltip = (key: string) => {
     setActiveTooltip((prev) => (prev === key ? null : key));
@@ -137,8 +170,14 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
   const isDayOneBaseline = profile.auditBaselineStatus !== 'audited';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-      <div className="bg-slate-900 border border-slate-700/80 rounded-3xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className="bg-slate-900 border border-slate-700/80 rounded-3xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="p-5 border-b border-slate-800 flex items-start justify-between bg-slate-950/60">
           <div className="flex items-center gap-3">
@@ -146,19 +185,21 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
               {profile.avatarUrl ? (
                 <img
                   src={profile.avatarUrl}
-                  alt={profile.username}
+                  alt={profile.username || 'Citizen'}
                   className="w-full h-full object-cover"
                   onError={(e) => {
                     (e.target as HTMLElement).style.display = 'none';
                   }}
                 />
               ) : (
-                profile.username.slice(0, 2).toUpperCase()
+                (profile.username || profile.userId || 'CZ').slice(0, 2).toUpperCase()
               )}
             </div>
             <div>
               <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="text-lg font-black text-white">{profile.username}</h3>
+                <h3 className="text-lg font-black text-white">
+                  {profile.username || `Citizen #${(profile.userId || '').slice(-6)}`}
+                </h3>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
                   Level {profile.level}
                 </span>
@@ -339,7 +380,10 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
                 <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-2 relative">
                   <div className="flex items-center justify-between text-xs text-slate-400">
                     <span className="flex items-center gap-1.5 font-semibold text-cyan-300">
-                      <TrendingUp className="w-3.5 h-3.5 text-cyan-400" /> Estimated Gross Income ({periodDays}D)
+                      <TrendingUp className="w-3.5 h-3.5 text-cyan-400" />
+                      {profile.auditBaselineStatus === 'audited'
+                        ? `Verified Gross Inflow (${periodDays}D)`
+                        : `Gross Inflow (${periodDays}D)`}
                     </span>
                     <button
                       type="button"
@@ -352,7 +396,11 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
                     </button>
                   </div>
                   <div className="text-xl font-black font-mono text-cyan-300 flex items-center justify-between">
-                    <span>{formatBtc(grossIncome)} <span className="text-xs text-cyan-400 font-bold">BTC</span></span>
+                    {typeof grossIncome === 'number' ? (
+                      <span>{formatBtc(grossIncome)} <span className="text-xs text-cyan-400 font-bold">BTC</span></span>
+                    ) : (
+                      <span className="text-sm font-sans font-bold text-amber-400">Pending Live Receipt Audit</span>
+                    )}
                     <button
                       type="button"
                       onClick={() => setShowIncomeBreakdown(true)}
@@ -362,7 +410,7 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
                     </button>
                   </div>
                   <div className="text-[11px] text-slate-500">
-                    {profile.auditMethodologyNote || `Baseline: ${formatBtc(pastWealth)} BTC start`}
+                    {profile.auditMethodologyNote || (profile.auditBaselineStatus === 'audited' ? 'Verified from live receipts' : 'Queued for live ledger streaming')}
                   </div>
                   {activeTooltip === 'growth' && (
                     <div className="p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-[11px] text-slate-300 absolute z-20 left-2 right-2 top-12 shadow-xl">
@@ -450,25 +498,41 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
                 </div>
 
                 {/* Visual Formula Callout */}
-                <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl font-mono text-xs flex flex-col sm:flex-row items-center justify-between gap-3 text-slate-200">
-                  <div className="flex items-center gap-2">
-                    <div className="text-center">
-                      <div className="text-emerald-400 font-black">{formatBtc(periodDonated)} BTC (7D Donated)</div>
-                      <div className="h-0.5 bg-slate-700 my-0.5" />
-                      <div className="text-amber-400 font-black">{formatBtc(grossIncome)} BTC (7D Income)</div>
+                <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-xl font-mono text-xs space-y-3 text-slate-200">
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <div className="text-center">
+                        <div className="text-emerald-400 font-black">
+                          {formatBtc(effectiveContribution)} BTC {damageCredit > 0 ? '(Donations + Military Credit)' : '(7D Donated)'}
+                        </div>
+                        <div className="text-amber-400 font-black">
+                          {typeof grossIncome === 'number' ? `${formatBtc(grossIncome)} BTC` : 'Pending Live Audit'} ({periodDays}D Gross Inflow)
+                        </div>
+                      </div>
+                      <span className="text-slate-400 font-bold">&times; 100%</span>
                     </div>
-                    <span className="text-slate-400 font-bold">&times; 100%</span>
+
+                    <div className="text-sm font-black text-white px-3.5 py-1.5 bg-emerald-500/20 border border-emerald-500/40 rounded-xl">
+                      = {ratio}% Contribution Ratio
+                    </div>
                   </div>
 
-                  <div className="text-sm font-black text-white px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 rounded-lg">
-                    = {ratio}% Contribution Ratio
-                  </div>
+                  {damageCredit > 0 && (
+                    <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] font-sans text-slate-400">
+                      <span>Direct Donations: <strong className="text-emerald-300 font-mono">{formatBtc(periodDonated)} BTC</strong></span>
+                      <span>Military Defense Credit: <strong className="text-rose-300 font-mono">+{formatBtc(damageCredit)} BTC</strong></span>
+                      <span>Total Sovereign Tithe: <strong className="text-white font-mono">{formatBtc(effectiveContribution)} BTC</strong></span>
+                    </div>
+                  )}
                 </div>
 
                 {showFormulaHelp && (
-                  <div className="p-3.5 bg-cyan-950/20 border border-cyan-800/40 rounded-xl text-xs text-cyan-200/90 space-y-1.5 animate-fade-in text-[11px] leading-relaxed">
+                  <div className="p-3.5 bg-cyan-950/20 border border-cyan-800/40 rounded-xl text-xs text-cyan-200/90 space-y-2 animate-fade-in text-[11px] leading-relaxed">
                     <p>
-                      <strong>Fiscal Rule:</strong> Quotas evaluate real 7-day flow. Lifetime contributions protect veterans through national charter grace.
+                      <strong>Fiscal Rule:</strong> Quotas evaluate real 7-day flow. Direct treasury donations build sovereign liquidity, while frontline military damage converts to defense credit under national policy.
+                    </p>
+                    <p className="text-slate-400">
+                      <strong>Industrial Solvency Buffer:</strong> Citizens with substantial sunk capital in factory licenses and automation engines are protected by the solvency buffer from false leech branding, recognizing their continuous wage and production output.
                     </p>
                   </div>
                 )}
@@ -571,7 +635,7 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
                   <div className="flex items-center gap-2">
                     <Building2 className="w-4 h-4 text-indigo-400" />
                     <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                      Industrial Enterprises &amp; Engine Capacity
+                      Companies
                     </h4>
                   </div>
                 </div>
@@ -603,16 +667,18 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
                     </p>
                   </div>
 
-                  {/* Internal Automation */}
+                  {/* Automation & Storage Upgrades */}
                   <div className="p-3 bg-slate-900/90 rounded-xl border border-slate-800 space-y-1">
-                    <div className="text-xs text-indigo-300 font-semibold">
-                      Internal Automation Upgrade
+                    <div className="text-xs text-indigo-300 font-semibold flex items-center justify-between">
+                      <span>Factory Upgrades Profile</span>
+                      <span className="text-[10px] text-slate-400 font-mono">Storage &amp; Engine</span>
                     </div>
-                    <div className="text-lg font-black font-mono text-indigo-300">
-                      Level {profile.automationLevelEst ?? 7} <span className="text-xs text-slate-400">/ 7 max</span>
+                    <div className="text-base font-black font-mono text-indigo-300 flex items-center gap-3">
+                      <span>⚙️ Auto: Lv {profile.automationLevelEst ?? 7}</span>
+                      <span className="text-amber-300">🏭 Store: Lv {profile.storageLevelEst ?? 5}</span>
                     </div>
                     <p className="text-[10px] text-slate-400">
-                      Produces 1 to 7 Production Points (PP) per hour per active company.
+                      Automation produces 1-7 PP/hr per operational company; storage expands capacity up to 100k items.
                     </p>
                   </div>
 
@@ -625,7 +691,7 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
                       {formatBtc(resourceWealth)} <span className="text-xs text-amber-400">BTC</span>
                     </div>
                     <p className="text-[10px] text-slate-400">
-                      Active company production accumulates as physical items in inventory, transforming into liquid Bitcoin only upon Item Market sale.
+                      Active company production accumulates as physical items in inventory, transforming into liquid BTC only upon Item Market sale.
                     </p>
                   </div>
                 </div>
@@ -823,6 +889,8 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
         <GrossIncomeBreakdownModal
           profile={profile}
           countryName={countryName}
+          config={config}
+          countryBenchmark={countryBenchmark}
           onClose={() => setShowIncomeBreakdown(false)}
         />
       )}

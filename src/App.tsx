@@ -13,7 +13,8 @@ import {
   DonorRankingItem,
 } from './types/warera';
 import { storage } from './services/storage';
-import { getCountries, ensureDonorsDamageStats, fetchCountryCitizens, batchResolveUsers } from './services/apiService';
+import { getCountries, ensureDonorsDamageStats, fetchCountryCitizens, batchResolveUsers, fetchNationalTransfers, fetchCountryInventory, fetchCountryInventoryDetailed } from './services/apiService';
+import { fetchAllCommoditiesMarket, buildSovereignStockpileMatrix } from './services/marketService';
 import {
   calculateGranularRankings,
   calculateCumulativeRankings,
@@ -27,16 +28,20 @@ import { LeaderboardTable } from './components/LeaderboardTable';
 import { CitizenDetailModal } from './components/CitizenDetailModal';
 import { ExportModal } from './components/ExportModal';
 import { ApiKeyModal } from './components/ApiKeyModal';
+import { ApiDiagnosticsModal } from './components/ApiDiagnosticsModal';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { MinistryWorkspace } from './components/ministry/MinistryWorkspace';
 import {
   CitizenEconomicProfile,
   NationalTransaction,
   ResourceReserveItem,
+  CommodityTrend,
   RespecAlert,
   PlayerTag,
   MinistryConfig,
   WatchedCitizen,
   DEFAULT_MINISTRY_CONFIG,
+  CountryEconomicBenchmark,
 } from './types/ministry';
 import {
   calculateWarSkillPoints,
@@ -48,6 +53,7 @@ import {
   synthesizeCountryMinistryConfig,
   auditCitizensIncomeGrowth,
   detectCitizenRespecAlerts,
+  resolveMasterCitizenStanding,
   DEFAULT_COMMODITIES,
   DEFAULT_STOCKPILES,
 } from './services/ministryService';
@@ -64,6 +70,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { CustomDateRange, DamageDonationConfig } from './types/warera';
+import { formatDateRangeDDMMYYYY } from './utils/dateUtils';
 
 export default function App() {
   const [countries, setCountries] = useState<WareraCountry[]>([]);
@@ -75,6 +82,7 @@ export default function App() {
   const [timeframe, setTimeframe] = useState<RankingTimeframe>('daily');
   const [apiKey, setApiKey] = useState<string>(() => storage.getApiKey());
   const [isKeyModalOpen, setIsKeyModalOpen] = useState<boolean>(false);
+  const [isDiagnosticsModalOpen, setIsDiagnosticsModalOpen] = useState<boolean>(false);
   const [isGranularActive, setIsGranularActive] = useState<boolean>(false);
 
   // Helper date strings for Custom Range (defaults to last 14 days)
@@ -132,6 +140,7 @@ export default function App() {
   const [playerTags, setPlayerTags] = useState<Record<string, { tag: PlayerTag; notes?: string }>>({});
   const [nationalTransactions, setNationalTransactions] = useState<NationalTransaction[]>([]);
   const [stockpiles, setStockpiles] = useState<ResourceReserveItem[]>(DEFAULT_STOCKPILES);
+  const [marketCommodities, setMarketCommodities] = useState<CommodityTrend[]>(DEFAULT_COMMODITIES);
   const [respecAlerts, setRespecAlerts] = useState<RespecAlert[]>([]);
   const [watchedCitizens, setWatchedCitizens] = useState<WatchedCitizen[]>([]);
   const [isAuditingIncome, setIsAuditingIncome] = useState<boolean>(false);
@@ -174,27 +183,62 @@ export default function App() {
 
   // Load Ministry data from storage on startup and on country switch
   useEffect(() => {
+    // Immediately clear previous country's transactions to prevent cross-contamination
+    setNationalTransactions([]);
+
     async function loadMinistryData() {
       try {
         const countryId = selectedCountry?._id;
-        const [tags, txs, stocks, alerts, watched] = await Promise.all([
+        const [tags, txs, stocks, alerts, watched, liveTrends] = await Promise.all([
           storage.getPlayerTags(),
           storage.getNationalTransactions(countryId),
           storage.getStockpiles(countryId),
           storage.getRespecAlerts(),
           storage.getWatchedCitizens(countryId),
+          fetchAllCommoditiesMarket(false).catch(() => DEFAULT_COMMODITIES),
         ]);
         setPlayerTags(tags);
         setNationalTransactions(txs);
-        setStockpiles(stocks && stocks.length > 0 ? stocks : DEFAULT_STOCKPILES);
         if (alerts.length > 0) setRespecAlerts(alerts);
         setWatchedCitizens(watched);
+
+        const savedAudits = storage.getAuditedProfiles(countryId);
+        if (savedAudits && Object.keys(savedAudits).length > 0) {
+          setAuditedProfilesMap(savedAudits);
+        }
+
+        const effectiveTrends = liveTrends && liveTrends.length > 0 ? liveTrends : DEFAULT_COMMODITIES;
+        setMarketCommodities(effectiveTrends);
+
+        // Build stock dictionary from persisted stockpile
+        const stockDict: Record<string, number> = {};
+        if (stocks && stocks.length > 0) {
+          stocks.forEach((s) => {
+            stockDict[s.id] = s.currentStock;
+          });
+        }
+
+        const mergedStockpiles = buildSovereignStockpileMatrix(stockDict, effectiveTrends);
+        setStockpiles(mergedStockpiles);
+
+        // If authenticated with API key and countryId is valid, query official inventory
+        if (countryId) {
+          const orgId = selectedCountry?.orgs?.[0];
+          fetchCountryInventoryDetailed(countryId, apiKey, orgId).then((res) => {
+            if (res.status === 'synced' && Object.keys(res.inventory).length > 0) {
+              Object.assign(stockDict, res.inventory);
+              const updated = buildSovereignStockpileMatrix(stockDict, effectiveTrends, true);
+              setStockpiles(updated);
+              storage.saveStockpiles(updated, countryId);
+            }
+          }).catch(() => {});
+        }
       } catch (err) {
         console.warn('Failed to load ministry state from storage:', err);
       }
     }
     loadMinistryData();
-  }, [selectedCountry?._id]);
+  }, [selectedCountry?._id, apiKey]);
 
   // Load countries on startup and restore/reconcile last viewed country
   useEffect(() => {
@@ -226,12 +270,37 @@ export default function App() {
     loadCountryList();
   }, []);
 
+  // Ensure API Key modal is presented on first launch if unconfigured
+  useEffect(() => {
+    if (!apiKey || !apiKey.trim()) {
+      setIsKeyModalOpen(true);
+    }
+  }, []);
+
+  // Listen for unauthorized 401 events from upstream War Era API
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      setIsKeyModalOpen(true);
+      setSyncError('War Era API key is invalid or unauthorized (HTTP 401). Please check and re-enter your key.');
+    };
+    window.addEventListener('warera:unauthorized-key', handleUnauthorized);
+    return () => window.removeEventListener('warera:unauthorized-key', handleUnauthorized);
+  }, []);
+
   const syncRequestIdRef = useRef<number>(0);
 
   // Sync execution with race condition protection and immediate country state reset
   const executeSync = useCallback(
     async (country: WareraCountry, currentKey: string) => {
       const currentSyncId = ++syncRequestIdRef.current;
+
+      if (!currentKey || !currentKey.trim()) {
+        setIsKeyModalOpen(true);
+        setSyncError('A War Era API Key is required to run scans and resolve sovereign citizens.');
+        setIsSyncing(false);
+        return;
+      }
+
       setIsSyncing(true);
       setSyncError(null);
 
@@ -248,6 +317,17 @@ export default function App() {
           (progress) => {
             if (currentSyncId === syncRequestIdRef.current) {
               setSyncProgress(progress);
+            }
+          },
+          (chunkUsers) => {
+            if (currentSyncId === syncRequestIdRef.current) {
+              setUsersMap((prev) => {
+                const next = { ...prev };
+                chunkUsers.forEach((u) => {
+                  next[u._id] = u;
+                });
+                return next;
+              });
             }
           }
         );
@@ -285,9 +365,26 @@ export default function App() {
           }
         });
 
-        const benchmark = calculateCountryEconomicBenchmark(country._id, activeCitizens, cumMap);
+        const benchmark = calculateCountryEconomicBenchmark(
+          country._id,
+          activeCitizens,
+          cumMap,
+          undefined,
+          country.rankings?.countryActivePopulation?.value
+        );
         const dynamicPolicy = synthesizeCountryMinistryConfig(benchmark, ministryConfig);
         setMinistryConfig(dynamicPolicy);
+
+        // Auto-sync state-level inter-state transfers with live upstream API
+        try {
+          const liveTransfers = await fetchNationalTransfers(country._id, currentKey, country.name, countries);
+          if (liveTransfers && liveTransfers.length > 0 && currentSyncId === syncRequestIdRef.current) {
+            setNationalTransactions(liveTransfers);
+            await storage.saveNationalTransactions(liveTransfers, country._id);
+          }
+        } catch (txErr) {
+          console.warn('Failed to auto-sync national transfers:', txErr);
+        }
       } catch (err: any) {
         if (currentSyncId !== syncRequestIdRef.current) return;
         setSyncError(err?.message || 'Sync failed');
@@ -336,8 +433,13 @@ export default function App() {
   };
 
   const handleSaveApiKey = (newKey: string) => {
-    storage.setApiKey(newKey);
-    setApiKey(newKey);
+    const trimmed = newKey.trim();
+    storage.setApiKey(trimmed);
+    setApiKey(trimmed);
+    setSyncError(null);
+    if (trimmed && selectedCountry) {
+      executeSync(selectedCountry, trimmed);
+    }
   };
 
   const setPresetDays = (days: number) => {
@@ -529,12 +631,60 @@ export default function App() {
       case 'monthly':
         return 'in the last month';
       case 'custom':
-        return `between ${customRange.startDate} and ${customRange.endDate}`;
+        return `between ${formatDateRangeDDMMYYYY(customRange.startDate, customRange.endDate, ' and ')}`;
       case 'all':
       default:
         return 'across all recorded history';
     }
   }, [timeframe, customRange.startDate, customRange.endDate]);
+
+  // Dynamically compute country-proportional statistical benchmarks shared across overview & audit
+  const countryBenchmark = useMemo<CountryEconomicBenchmark>(() => {
+    const countryId = selectedCountry?._id || '';
+    const allTimeCumulativeMap = new Map<string, { totalAmount: number; lastDonationAt?: string }>();
+    cumulative.forEach((c) => {
+      if (c.userId) {
+        allTimeCumulativeMap.set(c.userId, {
+          totalAmount: Number(c.amount || 0),
+          lastDonationAt: c.updatedAt || c.createdAt,
+        });
+      }
+    });
+
+    transactions.forEach((tx) => {
+      if (tx.userId) {
+        const existing = allTimeCumulativeMap.get(tx.userId);
+        const txAmt = Number(tx.money || tx.amount || 0);
+        if (!existing) {
+          allTimeCumulativeMap.set(tx.userId, {
+            totalAmount: txAmt,
+            lastDonationAt: tx.createdAt,
+          });
+        }
+      }
+    });
+
+    const activeCountryCitizens = Object.values(usersMap).filter((user) => {
+      if (!user || !user._id) return false;
+      if (selectedCountry) {
+        const userCountryId = normalizeCountryId(user);
+        if (userCountryId && userCountryId !== selectedCountry._id) {
+          return false;
+        }
+      }
+      const isActive = Boolean(user.isActive !== undefined ? user.isActive : true);
+      const level = Number(user.leveling?.level ?? user.level ?? 0);
+      return isActive && level >= 10;
+    });
+
+    return calculateCountryEconomicBenchmark(
+      countryId,
+      activeCountryCitizens,
+      allTimeCumulativeMap,
+      undefined,
+      selectedCountry?.rankings?.countryActivePopulation?.value
+    );
+  }, [selectedCountry, cumulative, transactions, usersMap]);
 
   // Ministry of Economy: Citizen Economic Profiles
   const citizenEconomicProfiles: CitizenEconomicProfile[] = useMemo(() => {
@@ -600,14 +750,7 @@ export default function App() {
       return isActive && level >= 10;
     });
 
-    // 4. Dynamically compute country-proportional statistical benchmarks
-    const countryBenchmark = calculateCountryEconomicBenchmark(
-      countryId,
-      activeCountryCitizens,
-      allTimeCumulativeMap
-    );
-
-    // 5. Determine country-relative Heavy Hitters in active combat mobilization
+    // 4. Determine country-relative Heavy Hitters in active combat mobilization
     const fightersList = activeCountryCitizens
       .map((u) => {
         const donor = donorStatsMap[u._id];
@@ -728,10 +871,12 @@ export default function App() {
         equipmentsWealthBtc: equipmentsWealth,
         weaponsWealthBtc: weaponsWealth,
         pastWealthBtc: audited?.pastWealthBtc,
-        grossIncomeBtc: audited?.grossIncomeBtc,
-        periodDonatedBtc: audited?.periodDonatedBtc !== undefined ? audited.periodDonatedBtc : direct,
+        grossIncomeBtc: audited?.auditBaselineStatus === 'audited' ? audited.grossIncomeBtc : undefined,
+        grossInflowBtc: audited?.auditBaselineStatus === 'audited' ? (audited.grossInflowBtc ?? audited.grossIncomeBtc) : undefined,
+        netCashflowBtc: audited?.auditBaselineStatus === 'audited' ? audited.netCashflowBtc : undefined,
+        periodDonatedBtc: audited?.auditBaselineStatus === 'audited' && audited.periodDonatedBtc !== undefined ? audited.periodDonatedBtc : direct,
         totalDonatedBtc: totalDonated,
-        directDonatedBtc: direct,
+        directDonatedBtc: audited?.auditBaselineStatus === 'audited' && audited.directDonatedBtc !== undefined ? audited.directDonatedBtc : direct,
         damageDonatedBtc: damageDonated,
         damageValueBtc: audited?.damageValueBtc !== undefined ? audited.damageValueBtc : damageValueBtc,
         totalCombatDamage: weeklyCombatDamage,
@@ -740,11 +885,17 @@ export default function App() {
         historicalRank,
         isNationalHeavyHitter,
         heavyHitterRank,
-        tierReasonBadge: audited?.tierReasonBadge || reason,
+        tierReasonBadge: audited?.auditBaselineStatus === 'audited' ? (audited.tierReasonBadge || reason) : (reason || 'Pending personal audit'),
         donationCount,
         lastDonationAt: effectiveLastDonation,
-        contributionRatio: audited ? audited.contributionRatio : ratio,
-        leechTier: audited ? audited.leechTier : tier,
+        contributionRatio: audited?.auditBaselineStatus === 'audited' ? audited.contributionRatio : 0,
+        leechTier: audited?.auditBaselineStatus === 'audited' ? audited.leechTier : tier,
+        economicStanding: resolveMasterCitizenStanding(
+          audited?.auditBaselineStatus === 'audited' ? audited.leechTier : tier,
+          audited?.ministerialVerdict,
+          isHistoricalTopDonor,
+          isNationalHeavyHitter
+        ),
         warSkillPoints: warPoints,
         ecoSkillPoints: ecoPoints,
         playstyle,
@@ -756,11 +907,14 @@ export default function App() {
         isInactiveDonor,
         isOnWatch: Boolean(watchedItem),
         watchReason: watchedItem?.reasonNote,
-        auditBaselineStatus: audited?.auditBaselineStatus,
-        auditMethodologyNote: audited?.auditMethodologyNote,
+        auditBaselineStatus: audited?.auditBaselineStatus === 'audited' ? 'audited' : 'pending-audit',
+        auditedAt: audited?.auditedAt,
+        receiptCount: audited?.receiptCount,
+        auditDeltaAlert: audited?.auditDeltaAlert,
+        auditMethodologyNote: audited?.auditBaselineStatus === 'audited' ? audited.auditMethodologyNote : 'Pending live personal receipt stream.',
         ministerialVerdict: audited?.ministerialVerdict,
         ministerialVerdictReason: audited?.ministerialVerdictReason,
-        playerCashflow: audited?.playerCashflow,
+        playerCashflow: audited?.auditBaselineStatus === 'audited' ? audited.playerCashflow : undefined,
         companiesCount: audited?.companiesCount ?? Number(user.skills?.companies?.value ?? user.skills?.companies?.level ?? 2),
         activeCompaniesCount: audited?.activeCompaniesCount ?? Number(user.skills?.companies?.value ?? 2),
         maxCompaniesCap: audited?.maxCompaniesCap ?? Number(user.skills?.companies?.value ?? 2),
@@ -773,41 +927,31 @@ export default function App() {
     });
 
     return list;
-  }, [summary.leaderboard, cumulative, transactions, usersMap, selectedCountry, playerTags, ministryConfig, watchedCitizens, auditedProfilesMap]);
+  }, [summary.leaderboard, cumulative, transactions, usersMap, selectedCountry, playerTags, ministryConfig, watchedCitizens, auditedProfilesMap, countryBenchmark]);
 
   // Income Growth Audit Action
   const handleRunIncomeAudit = async (customConfig?: MinistryConfig) => {
     setIsAuditingIncome(true);
     const cfg = customConfig || ministryConfig;
     try {
-      const activeCitizens = Object.values(usersMap).filter((user) => {
-        if (!user || !user._id) return false;
-        if (selectedCountry && user.country && typeof user.country === 'string' && user.country !== selectedCountry._id) {
-          return false;
+      const profilesForAudit = citizenEconomicProfiles.map((p) => {
+        let periodDirect = p.directDonatedBtc;
+        if (transactions && transactions.length > 0) {
+          const periodMs = (cfg.analysisPeriodDays || 7) * 24 * 60 * 60 * 1000;
+          const cutoffTime = Date.now() - periodMs;
+          periodDirect = transactions
+            .filter((t) => t.userId === p.userId && new Date(t.createdAt).getTime() >= cutoffTime)
+            .reduce((sum, t) => sum + Number(t.money || t.amount || 0), 0);
         }
-        const isActive = Boolean(user.isActive !== undefined ? user.isActive : true);
-        const level = Number(user.leveling?.level ?? user.level ?? 0);
-        return isActive && level >= 10;
+        return {
+          ...p,
+          periodDonatedBtc: periodDirect,
+          directDonatedBtc: periodDirect,
+        };
       });
-
-      const allTimeCumulativeMap = new Map<string, { totalAmount: number; lastDonationAt?: string }>();
-      cumulative.forEach((c) => {
-        if (c.userId) {
-          allTimeCumulativeMap.set(c.userId, {
-            totalAmount: Number(c.amount || 0),
-            lastDonationAt: c.updatedAt || c.createdAt,
-          });
-        }
-      });
-
-      const countryBenchmark = calculateCountryEconomicBenchmark(
-        selectedCountry?._id || '',
-        activeCitizens,
-        allTimeCumulativeMap
-      );
 
       const audited = await auditCitizensIncomeGrowth(
-        citizenEconomicProfiles,
+        profilesForAudit,
         cfg,
         storage.getClosestWealthSnapshot.bind(storage),
         storage.saveWealthSnapshotsBatch.bind(storage),
@@ -820,6 +964,7 @@ export default function App() {
         map[a.userId] = a;
       });
       setAuditedProfilesMap(map);
+      storage.saveAuditedProfilesMap(selectedCountry?._id, map);
 
       // Phase 4: Detect playstyle respecs and register alerts
       const priorPlaystyles = storage.getCitizenPlaystyles();
@@ -839,6 +984,15 @@ export default function App() {
     } finally {
       setIsAuditingIncome(false);
     }
+  };
+
+  const handleUpdateProfile = (updatedProfile: CitizenEconomicProfile) => {
+    storage.saveAuditedProfile(updatedProfile);
+    setAuditedProfilesMap((prev) => {
+      const next = { ...prev, [updatedProfile.userId]: updatedProfile };
+      storage.saveAuditedProfilesMap(selectedCountry?._id, next);
+      return next;
+    });
   };
 
   const handleUpdateMinistryConfig = async (cfg: MinistryConfig) => {
@@ -879,9 +1033,16 @@ export default function App() {
   };
 
   const handleImportNationalTransactions = async (imported: NationalTransaction[]) => {
-    const existingIds = new Set(nationalTransactions.map((t) => t.id));
-    const newItems = imported.filter((t) => !existingIds.has(t.id));
-    const merged = [...newItems, ...nationalTransactions];
+    const map = new Map<string, NationalTransaction>();
+    for (const t of nationalTransactions) {
+      map.set(t.id, t);
+    }
+    for (const t of imported) {
+      map.set(t.id, t);
+    }
+    const merged = Array.from(map.values()).sort(
+      (a, b) => new Date(b.date || b.createdAt).getTime() - new Date(a.date || a.createdAt).getTime()
+    );
     setNationalTransactions(merged);
     await storage.saveNationalTransactions(merged, selectedCountry?._id);
   };
@@ -935,6 +1096,7 @@ export default function App() {
         isOnline={isOnline}
         apiKey={apiKey}
         onOpenKeyModal={() => setIsKeyModalOpen(true)}
+        onOpenDiagnostics={() => setIsDiagnosticsModalOpen(true)}
         activeMode={activeMode}
         onToggleMode={(mode) => setActiveMode(mode)}
       />
@@ -1033,12 +1195,15 @@ export default function App() {
             profiles={citizenEconomicProfiles}
             transactions={nationalTransactions}
             stockpiles={stockpiles}
-            commodities={DEFAULT_COMMODITIES}
+            commodities={marketCommodities}
             alerts={respecAlerts}
             watchedCitizens={watchedCitizens}
             config={ministryConfig}
             apiKey={apiKey}
             isAuditingIncome={isAuditingIncome}
+            totalActiveCitizens={totalActiveCitizens}
+            isSyncing={isSyncing}
+            syncProgress={syncProgress}
             onUpdateConfig={handleUpdateMinistryConfig}
             onUpdateTag={handleUpdatePlayerTag}
             onAddTransaction={handleAddNationalTransaction}
@@ -1050,6 +1215,10 @@ export default function App() {
             onRemoveFromWatch={handleRemoveFromWatch}
             onRunIncomeAudit={handleRunIncomeAudit}
             onRestoreBackup={handleRestoreBackup}
+            onOpenKeyModal={() => setIsKeyModalOpen(true)}
+            onOpenDiagnostics={() => setIsDiagnosticsModalOpen(true)}
+            countryBenchmark={countryBenchmark}
+            onUpdateProfile={handleUpdateProfile}
           />
         ) : (
           <>
@@ -1413,7 +1582,7 @@ export default function App() {
                   : timeframe === 'monthly'
                   ? 'in the last month'
                   : timeframe === 'custom'
-                  ? `between ${customRange.startDate} and ${customRange.endDate}`
+                  ? `between ${formatDateRangeDDMMYYYY(customRange.startDate, customRange.endDate, ' and ')}`
                   : 'All-Time Record'
               }
             />
@@ -1425,13 +1594,15 @@ export default function App() {
 
       {/* Citizen Drill-down Audit Modal */}
       {selectedDonorId && (
-        <CitizenDetailModal
-          donor={selectedDonor}
-          onClose={() => setSelectedDonorId(null)}
-          countryName={selectedCountry?.name || 'Country'}
-          hasApiKey={Boolean(apiKey)}
-          timeframe={timeframe}
-        />
+        <ErrorBoundary fallbackTitle="Patron Audit Detail Error" onReset={() => setSelectedDonorId(null)}>
+          <CitizenDetailModal
+            donor={selectedDonor}
+            onClose={() => setSelectedDonorId(null)}
+            countryName={selectedCountry?.name || 'Country'}
+            hasApiKey={Boolean(apiKey)}
+            timeframe={timeframe}
+          />
+        </ErrorBoundary>
       )}
 
       {/* Export Report Modal */}
@@ -1449,6 +1620,17 @@ export default function App() {
         onClose={() => setIsKeyModalOpen(false)}
         apiKey={apiKey}
         onSaveApiKey={handleSaveApiKey}
+      />
+
+      {/* API Diagnostics Inspector Modal */}
+      <ApiDiagnosticsModal
+        isOpen={isDiagnosticsModalOpen}
+        onClose={() => setIsDiagnosticsModalOpen(false)}
+        apiKey={apiKey}
+        onOpenKeyModal={() => {
+          setIsDiagnosticsModalOpen(false);
+          setIsKeyModalOpen(true);
+        }}
       />
 
       {/* Footer */}

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Key, X, AlertCircle, Check, Trash2, ExternalLink } from 'lucide-react';
+import { Key, X, AlertCircle, Check, Trash2, ExternalLink, RefreshCw, CheckCircle2, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { testWarEraApiConnection } from '../services/apiService';
 
 interface ApiKeyModalProps {
   isOpen: boolean;
@@ -16,15 +17,50 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
 }) => {
   const [inputKey, setInputKey] = useState(apiKey);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [testFeedback, setTestFeedback] = useState<{
+    success: boolean;
+    status: number;
+    message: string;
+    durationMs?: number;
+    itemsCount?: number;
+  } | null>(null);
 
   useEffect(() => {
     if (isOpen) {
       setInputKey(apiKey);
       setSavedSuccess(false);
+      setTestFeedback(null);
     }
   }, [isOpen, apiKey]);
 
   if (!isOpen) return null;
+
+  const handleTestKey = async () => {
+    if (!inputKey.trim()) {
+      setTestFeedback({
+        success: false,
+        status: 0,
+        message: 'Please paste your token first before testing.',
+      });
+      return;
+    }
+
+    setIsTesting(true);
+    setTestFeedback(null);
+    try {
+      const res = await testWarEraApiConnection(inputKey.trim());
+      setTestFeedback({
+        success: res.authOk,
+        status: res.authStatus,
+        message: res.message,
+        durationMs: res.durationMs,
+        itemsCount: res.itemsCount,
+      });
+    } finally {
+      setIsTesting(false);
+    }
+  };
 
   const handleSave = () => {
     onSaveApiKey(inputKey.trim());
@@ -39,6 +75,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
     setInputKey('');
     onSaveApiKey('');
     setSavedSuccess(false);
+    setTestFeedback(null);
   };
 
   return (
@@ -61,7 +98,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
             </div>
             <div>
               <h3 className="text-base sm:text-lg font-black text-white">War Era API Token</h3>
-              <p className="text-[11px] text-slate-400">Authenticate for live daily & weekly transaction logs</p>
+              <p className="text-[11px] text-slate-400">Directly powers state warehouses & citizen audits</p>
             </div>
           </div>
           <button
@@ -76,32 +113,84 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
         {/* Modal Body */}
         <div className="flex-1 overflow-y-auto pr-1 my-4 space-y-4">
           <p className="text-xs text-slate-300 leading-relaxed">
-            Connecting your War Era API token unlocks <strong>accurate 24-hour daily</strong> and{' '}
-            <strong>7-day weekly</strong> rankings by streaming individual transaction receipts directly from{' '}
+            Connecting your War Era API token enables live verification against{' '}
             <code className="text-amber-400 bg-slate-800 px-1.5 py-0.5 rounded font-mono text-[11px]">
-              transaction.getPaginatedTransactions
+              https://api2.warera.io
             </code>
-            .
+            . No fallback data will mask missing or invalid keys.
           </p>
 
           <div>
-            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
-              Your Private API Token
-            </label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                Your Private API Token
+              </label>
+              {inputKey.trim() && (
+                <button
+                  type="button"
+                  onClick={handleTestKey}
+                  disabled={isTesting}
+                  className="text-xs font-bold text-amber-400 hover:text-amber-300 flex items-center gap-1 transition"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isTesting ? 'animate-spin' : ''}`} />
+                  <span>{isTesting ? 'Testing...' : 'Test Token'}</span>
+                </button>
+              )}
+            </div>
             <input
               type="password"
               placeholder="Paste your War Era API token here..."
               value={inputKey}
-              onChange={(e) => setInputKey(e.target.value)}
+              onChange={(e) => {
+                setInputKey(e.target.value);
+                setTestFeedback(null);
+              }}
               className="w-full bg-slate-800/90 border border-slate-700 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-amber-400 font-mono tracking-wide shadow-inner"
               autoFocus
             />
           </div>
 
+          {/* Test Feedback */}
+          {testFeedback && (
+            <div
+              className={`p-3 rounded-xl border text-xs font-bold flex items-start gap-2 animate-in fade-in ${
+                testFeedback.success
+                  ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                  : 'bg-rose-500/15 border-rose-500/30 text-rose-300'
+              }`}
+            >
+              {testFeedback.success ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+              ) : (
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              )}
+              <div className="flex-1">
+                <div>{testFeedback.message}</div>
+                <div className="flex items-center gap-2 mt-1">
+                  {testFeedback.status > 0 && (
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/40 border border-current opacity-80">
+                      HTTP {testFeedback.status}
+                    </span>
+                  )}
+                  {testFeedback.durationMs !== undefined && (
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/40 border border-current opacity-80">
+                      {testFeedback.durationMs}ms
+                    </span>
+                  )}
+                  {testFeedback.itemsCount !== undefined && testFeedback.itemsCount > 0 && (
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/40 border border-current opacity-80">
+                      {testFeedback.itemsCount} live records
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {savedSuccess && (
             <div className="p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-bold flex items-center gap-2 animate-in fade-in">
               <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span>API Token successfully saved! Updating donation logs...</span>
+              <span>API Token successfully saved! Updating queries...</span>
             </div>
           )}
 
@@ -110,7 +199,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
             <div className="leading-relaxed">
               <span className="font-bold text-slate-200 block mb-0.5">Where do I find my API key?</span>
               Go to <strong className="text-white">War Era</strong> &rarr; Profile / Settings &rarr;{' '}
-              <strong className="text-white">API Access</strong>. Your key is stored locally on this device in browser storage and is never exposed publicly.
+              <strong className="text-white">API Access</strong>. Your key is kept strictly in local device storage and sent via <code className="text-amber-400 bg-slate-900 px-1 rounded font-mono">X-API-Key</code> header for authenticated War Era tRPC procedures.
             </div>
           </div>
         </div>

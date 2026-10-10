@@ -30,11 +30,11 @@ export function registerKnownCountryIds(countries: WareraCountry[]): void {
 
 // =========================================================================
 // Centralized Rate-Limiting Queue Dispatcher for War Era API
-// Enforces max concurrency of 3 and responsive 90ms spacing with 429 auto-backoff
+// Enforces max concurrency of 8 and responsive 25ms spacing with 429 auto-backoff
 // =========================================================================
 let activeRequests = 0;
-const MAX_CONCURRENT_REQUESTS = 3; // Tuned safe concurrency ceiling
-const MIN_REQUEST_INTERVAL_MS = 90; // Responsive spacing between queries
+const MAX_CONCURRENT_REQUESTS = 8; // High-throughput concurrency ceiling
+const MIN_REQUEST_INTERVAL_MS = 25; // Responsive spacing between queries
 let lastRequestTimestamp = 0;
 const requestQueue: Array<() => void> = [];
 
@@ -55,38 +55,144 @@ function pumpQueue(): void {
   }
 }
 
+export interface ApiDiagnosticLog {
+  id: string;
+  timestamp: string;
+  url: string;
+  endpoint: string;
+  method: string;
+  hasApiKey: boolean;
+  apiKeyPreview: string;
+  status: number;
+  statusText: string;
+  durationMs: number;
+  headersSent: Record<string, string>;
+  error?: string;
+}
+
+export const apiDiagnosticsLogStore: ApiDiagnosticLog[] = [];
+export const MAX_DIAGNOSTIC_LOGS = 60;
+
+export function addDiagnosticLog(entry: ApiDiagnosticLog): void {
+  apiDiagnosticsLogStore.unshift(entry);
+  if (apiDiagnosticsLogStore.length > MAX_DIAGNOSTIC_LOGS) {
+    apiDiagnosticsLogStore.pop();
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('warera:diagnostic-logged', { detail: entry }));
+  }
+}
+
+export function getDiagnosticLogs(): ApiDiagnosticLog[] {
+  return [...apiDiagnosticsLogStore];
+}
+
+export function clearDiagnosticLogs(): void {
+  apiDiagnosticsLogStore.length = 0;
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('warera:diagnostic-logged', { detail: null }));
+  }
+}
+
 export async function rateLimitedFetch(
   url: string,
   options?: RequestInit,
   retries = 3
 ): Promise<Response> {
+  const startTs = Date.now();
+  const currentKey = storage.getApiKey()?.trim();
+  const rawHeaders = (options?.headers as Record<string, string>) || {};
+  const mergedHeaders: Record<string, string> = {
+    Accept: 'application/json',
+    ...rawHeaders,
+  };
+
+  // Attach single canonical X-API-Key header to avoid duplicate header concatenation
+  if (currentKey) {
+    mergedHeaders['X-API-Key'] = currentKey;
+  }
+
+  const mergedOptions: RequestInit = {
+    ...options,
+    headers: mergedHeaders,
+  };
+
+  const endpointName = url.replace('https://api2.warera.io/trpc/', '').split('?')[0] || url;
+  const keyPreview = currentKey ? `${currentKey.slice(0, 4)}...${currentKey.slice(-4)}` : 'None';
+
   return new Promise<Response>((resolve, reject) => {
     const execute = async () => {
       try {
-        const res = await fetch(url, options);
+        const res = await fetch(url, mergedOptions);
+        const durationMs = Date.now() - startTs;
+
+        addDiagnosticLog({
+          id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          timestamp: new Date().toLocaleTimeString(),
+          url,
+          endpoint: endpointName,
+          method: options?.method || 'GET',
+          hasApiKey: Boolean(currentKey),
+          apiKeyPreview: keyPreview,
+          status: res.status,
+          statusText: res.statusText || (res.ok ? 'OK' : 'Error'),
+          durationMs,
+          headersSent: {
+            Accept: mergedHeaders.Accept || 'application/json',
+            'X-API-Key': currentKey ? `${currentKey.slice(0, 4)}...` : 'None',
+            Authorization: currentKey ? `Bearer ${currentKey.slice(0, 4)}...` : 'None',
+          },
+        });
+
+        if (res.status === 401) {
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(
+              new CustomEvent('warera:unauthorized-key', { detail: { url, endpoint: endpointName } })
+            );
+          }
+        }
 
         if (res.status === 429 && retries > 0) {
           // Upstream API rate limit hit: pause queue and back off exponentially
           const retryHeader = res.headers.get('Retry-After');
           const backoffDelay = retryHeader
             ? Math.max(1500, parseInt(retryHeader, 10) * 1000)
-            : (4 - retries) * 1800; // 1.8s, 3.6s, 5.4s
+            : (4 - retries) * 1800;
 
-          console.warn(`[War Era Rate-Limiter] HTTP 429 detected. Pacing queue for ${backoffDelay}ms (attempt ${4 - retries}/3)...`);
+          console.warn(`[War Era Rate-Limiter] HTTP 429 detected on ${endpointName}. Pacing queue for ${backoffDelay}ms (attempt ${4 - retries}/3)...`);
           await new Promise((r) => setTimeout(r, backoffDelay));
 
           activeRequests = Math.max(0, activeRequests - 1);
           pumpQueue();
 
           // Re-queue with one fewer retry
-          resolve(rateLimitedFetch(url, options, retries - 1));
+          resolve(rateLimitedFetch(url, mergedOptions, retries - 1));
           return;
         }
 
         activeRequests = Math.max(0, activeRequests - 1);
         pumpQueue();
         resolve(res);
-      } catch (err) {
+      } catch (err: any) {
+        const durationMs = Date.now() - startTs;
+        addDiagnosticLog({
+          id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          timestamp: new Date().toLocaleTimeString(),
+          url,
+          endpoint: endpointName,
+          method: options?.method || 'GET',
+          hasApiKey: Boolean(currentKey),
+          apiKeyPreview: keyPreview,
+          status: 0,
+          statusText: 'Network / CORS Failure',
+          durationMs,
+          headersSent: {
+            Accept: mergedHeaders.Accept || 'application/json',
+            'X-API-Key': currentKey ? `${currentKey.slice(0, 4)}...` : 'None',
+          },
+          error: err?.message || String(err),
+        });
+
         activeRequests = Math.max(0, activeRequests - 1);
         pumpQueue();
         reject(err);
@@ -134,8 +240,7 @@ export async function getCountries(): Promise<WareraCountry[]> {
   }
 }
 
-export function normalizeTransactionTimestamp(val: any): string {
-  if (!val) return new Date().toISOString();
+export function normalizeTransactionTimestamp(val: any, fallbackIso?: string): string {
   if (typeof val === 'number') {
     // If Unix timestamp in seconds (less than 10^11), convert to milliseconds
     const ms = val < 100000000000 ? val * 1000 : val;
@@ -150,9 +255,44 @@ export function normalizeTransactionTimestamp(val: any): string {
     }
     const d = new Date(trimmed);
     if (!isNaN(d.getTime())) return d.toISOString();
+    // Parse MongoDB ObjectId timestamp (first 8 hex chars = seconds)
+    if (trimmed.length >= 8 && /^[0-9a-fA-F]{8}/.test(trimmed)) {
+      const tsSec = parseInt(trimmed.slice(0, 8), 16);
+      if (!isNaN(tsSec) && tsSec > 1500000000 && tsSec < 2500000000) {
+        return new Date(tsSec * 1000).toISOString();
+      }
+    }
   }
   if (val instanceof Date) return val.toISOString();
-  return new Date().toISOString();
+  return fallbackIso || '';
+}
+
+export function extractItemTimestampMs(item: any): number {
+  if (!item) return NaN;
+  const raw = item.createdAt ?? item.timestamp ?? item.date ?? item.updatedAt ?? item.time;
+  if (raw !== undefined && raw !== null) {
+    if (typeof raw === 'number') {
+      return raw < 100000000000 ? raw * 1000 : raw;
+    }
+    if (typeof raw === 'string') {
+      const num = Number(raw.trim());
+      if (!isNaN(num) && num > 0) {
+        return num < 100000000000 ? num * 1000 : num;
+      }
+      const t = new Date(raw.trim()).getTime();
+      if (!isNaN(t)) return t;
+    }
+    if (raw instanceof Date) return raw.getTime();
+  }
+  // Extract timestamp from MongoDB ObjectId (_id)
+  const idStr = typeof item._id === 'string' ? item._id : (typeof item.id === 'string' ? item.id : '');
+  if (idStr.length >= 8 && /^[0-9a-fA-F]{8}/.test(idStr)) {
+    const tsSec = parseInt(idStr.slice(0, 8), 16);
+    if (!isNaN(tsSec) && tsSec > 1500000000 && tsSec < 2500000000) {
+      return tsSec * 1000;
+    }
+  }
+  return NaN;
 }
 
 export function normalizeTransactionType(rawType?: string): string {
@@ -180,6 +320,15 @@ export function normalizeTransactionType(rawType?: string): string {
   // Citizen-to-treasury transfer in War Era is a donation
   if (lower.includes('transfer')) return 'donation';
   return rawType;
+}
+
+export function extractItemString(val: any): string {
+  if (!val) return '';
+  if (typeof val === 'string') return val.trim();
+  if (typeof val === 'object') {
+    return String(val.name || val.code || val.type || val.title || val.itemCode || val.resourceType || val._id || '').trim();
+  }
+  return String(val).trim();
 }
 
 /**
@@ -460,8 +609,11 @@ export async function fetchGranularDonationTransactions(
 
         const itemCountryId = item.countryId || item.targetCountryId || item.recipientCountryId || item.toCountryId;
 
-        const createdAtNorm = normalizeTransactionTimestamp(item.createdAt || item.timestamp || item.date);
-        const updatedAtNorm = item.updatedAt ? normalizeTransactionTimestamp(item.updatedAt) : createdAtNorm;
+        const rawTimeMs = extractItemTimestampMs(item);
+        const createdAtNorm = !isNaN(rawTimeMs)
+          ? new Date(rawTimeMs).toISOString()
+          : normalizeTransactionTimestamp(item.createdAt || item.timestamp || item.date || item.updatedAt, new Date().toISOString());
+        const updatedAtNorm = item.updatedAt ? normalizeTransactionTimestamp(item.updatedAt, createdAtNorm) : createdAtNorm;
 
         return {
           _id: item._id,
@@ -472,8 +624,8 @@ export async function fetchGranularDonationTransactions(
           sellerId: item.sellerId || (tType === 'market' || tType === 'itemMarket' ? citizenId : undefined),
           buyerId: item.buyerId,
           companyId: item.companyId || item.employerId || item.employer?._id,
-          item: item.item || item.commodity || item.resource || item.resourceType,
-          resourceType: item.resourceType || item.item,
+          item: extractItemString(item.item || item.commodity || item.resource || item.resourceType),
+          resourceType: extractItemString(item.resourceType || item.item),
           countryId: itemCountryId || countryId,
           createdAt: createdAtNorm,
           updatedAt: updatedAtNorm,
@@ -511,20 +663,26 @@ export async function fetchGranularDonationTransactions(
 export async function fetchUserTransactions(
   userId: string,
   apiKey: string,
-  onProgress?: (loaded: number) => void
+  onProgress?: (loaded: number, page: number) => void,
+  signal?: AbortSignal,
+  daysLimit = 35
 ): Promise<WareraTransaction[]> {
   if (!apiKey || !apiKey.trim() || !userId) {
     return [];
   }
 
   const allTransactions: WareraTransaction[] = [];
+  const seenIds = new Set<string>();
   let cursor: string | undefined = undefined;
   let hasMore = true;
   let page = 0;
-  const maxPages = 20; // up to 1,000 transactions
-  const monthlyCutoff = Date.now() - 35 * 24 * 60 * 60 * 1000;
+  const maxPages = 30; // up to 1,500 transactions (stops early once date window is reached)
+  const effectiveCutoff = Date.now() - (daysLimit + 1) * 24 * 60 * 60 * 1000;
 
   while (hasMore && page < maxPages) {
+    if (signal?.aborted) {
+      break;
+    }
     page++;
     const queryInput: Record<string, any> = {
       userId,
@@ -562,7 +720,18 @@ export async function fetchUserTransactions(
         return '';
       };
 
-      const items: WareraTransaction[] = rawItems.map((item) => {
+      const items: WareraTransaction[] = rawItems
+        .filter((item) => {
+          const rawTypeStr = (item.transactionType || item.type || item.action || '').toLowerCase();
+          const moneyVal = Number(item.money || item.amount || 0);
+          // Filter out zero-BTC non-monetary operations (e.g. dismantling items or crafting without BTC fee)
+          // so they do not choke the financial audit or swamp the transaction ledger
+          if (moneyVal === 0 && (rawTypeStr.includes('dismantle') || rawTypeStr.includes('craft') || rawTypeStr.includes('upgrade'))) {
+            return false;
+          }
+          return true;
+        })
+        .map((item) => {
         const rawTypeStr = (item.transactionType || item.type || item.action || '').toLowerCase();
         const tType = normalizeTransactionType(rawTypeStr);
         const { citizenId, embeddedProfile } = extractCitizenFromTransaction(item);
@@ -599,8 +768,15 @@ export async function fetchUserTransactions(
             resolvedBuyerId = userId;
           }
         } else if (tType === 'wage') {
-          // In wages: worker receives salary
-          if (rawCompanyId && (rawRecipientId === userId || effectiveUserId === userId)) {
+          // In wages: worker receives salary; company employer pays salary
+          if (rawRecipientId === userId || item.workerId === userId || (rawRecipientId && rawRecipientId === effectiveUserId)) {
+            resolvedSellerId = userId; // worker (earner)
+            resolvedBuyerId = rawSenderId || rawCompanyId || undefined;
+          } else if (rawSenderId === userId || rawBuyerId === userId || item.employerId === userId) {
+            resolvedBuyerId = userId; // employer (paying wages out)
+            resolvedSellerId = rawRecipientId || undefined;
+          } else if (rawCompanyId && (rawRecipientId === userId || effectiveUserId === userId)) {
+            resolvedSellerId = userId;
             resolvedBuyerId = undefined;
           }
         }
@@ -618,8 +794,11 @@ export async function fetchUserTransactions(
           }
         }
 
-        const createdAtNorm = normalizeTransactionTimestamp(item.createdAt || item.timestamp || item.date);
-        const updatedAtNorm = item.updatedAt ? normalizeTransactionTimestamp(item.updatedAt) : createdAtNorm;
+        const rawTimeMs = extractItemTimestampMs(item);
+        const createdAtNorm = !isNaN(rawTimeMs)
+          ? new Date(rawTimeMs).toISOString()
+          : normalizeTransactionTimestamp(item.createdAt || item.timestamp || item.date || item.updatedAt, new Date().toISOString());
+        const updatedAtNorm = item.updatedAt ? normalizeTransactionTimestamp(item.updatedAt, createdAtNorm) : createdAtNorm;
 
         return {
           _id: item._id,
@@ -630,20 +809,29 @@ export async function fetchUserTransactions(
           sellerId: resolvedSellerId,
           buyerId: resolvedBuyerId,
           companyId: resolvedCompanyId,
-          item: item.item || item.commodity || item.resource || item.resourceType,
-          resourceType: item.resourceType || item.item,
+          senderId: rawSenderId,
+          recipientId: rawRecipientId,
+          action: item.action || rawTypeStr,
+          item: extractItemString(item.item || item.commodity || item.resource || item.resourceType),
+          resourceType: extractItemString(item.resourceType || item.item),
           countryId: item.countryId,
           createdAt: createdAtNorm,
           updatedAt: updatedAtNorm,
         };
       });
 
-      allTransactions.push(...items);
-      onProgress?.(allTransactions.length);
+      for (const it of items) {
+        if (!seenIds.has(it._id)) {
+          seenIds.add(it._id);
+          allTransactions.push(it);
+        }
+      }
+      onProgress?.(allTransactions.length, page);
 
       const oldestRaw = rawItems[rawItems.length - 1];
-      const oldestTime = new Date(normalizeTransactionTimestamp(oldestRaw?.createdAt || oldestRaw?.timestamp || oldestRaw?.date)).getTime();
-      if (oldestRaw && oldestTime < monthlyCutoff) {
+      const oldestTime = extractItemTimestampMs(oldestRaw);
+      // Stop paging only when the tail of the page is definitively past the analysis window
+      if (!isNaN(oldestTime) && oldestTime < effectiveCutoff) {
         hasMore = false;
         break;
       }
@@ -759,8 +947,9 @@ const memoryUserCache: Record<string, WareraUserLite> = {};
  * Fetch User Lite public profile
  */
 export async function fetchUserLite(userId: string, forceRefresh = false): Promise<WareraUserLite | null> {
-  if (!forceRefresh && memoryUserCache[userId] && memoryUserCache[userId].skills) {
-    return memoryUserCache[userId];
+  const cached = memoryUserCache[userId];
+  if (!forceRefresh && cached && cached.skills && cached.level !== undefined && !cached.username?.startsWith('Citizen #')) {
+    return cached;
   }
 
   try {
@@ -774,6 +963,13 @@ export async function fetchUserLite(userId: string, forceRefresh = false): Promi
       res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/user.getUserLite?input=${encoded}`, {
         headers: { 'Accept': 'application/json' },
       });
+      // 1-time retry with backoff if initial attempts failed
+      if (!res.ok) {
+        await new Promise((r) => setTimeout(r, 200));
+        res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/user.getUserLite?input=${encoded}`, {
+          headers: { 'Accept': 'application/json' },
+        });
+      }
     }
     if (!res.ok || !res.headers.get('content-type')?.includes('application/json')) return null;
 
@@ -786,9 +982,11 @@ export async function fetchUserLite(userId: string, forceRefresh = false): Promi
         username: data.username || `Citizen #${data._id.slice(-6)}`,
         avatarUrl: data.avatarUrl || data.avatar,
         country: data.country,
+        countryId: typeof data.country === 'string' ? data.country : (data.country?._id || data.country),
         leveling: data.leveling,
+        level: Number(data.leveling?.level ?? data.level ?? 0),
         militaryRank: data.militaryRank,
-        isActive: Boolean(data.isActive),
+        isActive: Boolean(data.isActive !== undefined ? data.isActive : true),
         createdAt: data.createdAt,
         dates: data.dates,
         skills: data.skills,
@@ -811,19 +1009,25 @@ export async function fetchUserLite(userId: string, forceRefresh = false): Promi
 export async function batchResolveUsers(
   userIds: string[],
   onBatchProgress?: (completed: number, total: number) => void,
-  onChunkResolved?: (chunkUsers: WareraUserLite[]) => void
+  onChunkResolved?: (chunkUsers: WareraUserLite[]) => void,
+  countryId?: string
 ): Promise<Record<string, WareraUserLite>> {
   const existingMap = await storage.getAllUsers();
   Object.assign(memoryUserCache, existingMap);
 
-  // Filter missing: query users who have no record or have a temporary placeholder
+  // Filter missing: query users who have no record or have a temporary placeholder/unresolved level
   const missingIds = userIds.filter((id) => {
     const cached = memoryUserCache[id];
-    return !cached || !cached.username || cached.username.startsWith('Citizen #');
+    return (
+      !cached ||
+      !cached.username ||
+      cached.username.startsWith('Citizen #') ||
+      cached.level === undefined
+    );
   });
 
   const newUsers: WareraUserLite[] = [];
-  const chunkSize = 2; // Strict concurrency ceiling of 2
+  const chunkSize = 16; // High-throughput concurrency chunk
   for (let i = 0; i < missingIds.length; i += chunkSize) {
     const chunk = missingIds.slice(i, i + chunkSize);
     const results = await Promise.all(chunk.map((uid) => fetchUserLite(uid, false)));
@@ -831,26 +1035,39 @@ export async function batchResolveUsers(
     results.forEach((u, idx) => {
       const uid = chunk[idx];
       if (u) {
+        if (!u.country && countryId) {
+          u.country = countryId;
+          u.countryId = countryId;
+        }
         newUsers.push(u);
         chunkUsers.push(u);
       } else {
+        // Fallback placeholder if upstream timed out
+        const existing = memoryUserCache[uid];
         const placeholder: WareraUserLite = {
           _id: uid,
-          username: `Citizen #${uid.slice(-6)}`,
-          isActive: false,
+          username: existing?.username || `Citizen #${uid.slice(-6)}`,
+          country: existing?.country || countryId,
+          countryId: existing?.countryId || countryId,
+          isActive: existing?.isActive !== undefined ? existing.isActive : true,
+          level: existing?.level !== undefined ? existing.level : 10,
         };
         memoryUserCache[uid] = placeholder;
         chunkUsers.push(placeholder);
       }
     });
 
-    if (chunkUsers.length > 0 && onChunkResolved) {
-      onChunkResolved(chunkUsers);
+    if (chunkUsers.length > 0) {
+      // Progressively persist chunk users to IndexedDB so partial progress is never lost
+      storage.saveUsers(chunkUsers).catch((err) => console.warn('Failed to progressively save users:', err));
+      if (onChunkResolved) {
+        onChunkResolved(chunkUsers);
+      }
     }
 
     onBatchProgress?.(Math.min(i + chunkSize, missingIds.length), missingIds.length);
     if (i + chunkSize < missingIds.length) {
-      await new Promise((r) => setTimeout(r, 120));
+      await new Promise((r) => setTimeout(r, 30));
     }
   }
 
@@ -1005,7 +1222,7 @@ export async function fetchUserCompanies(userId: string, forceRefresh = false): 
  */
 export async function fetchCountryCitizens(
   countryId: string,
-  maxPages = 5
+  maxPages = 25
 ): Promise<string[]> {
   const allCitizenIds: string[] = [];
   const harvestedUsers: WareraUserLite[] = [];
@@ -1036,31 +1253,36 @@ export async function fetchCountryCitizens(
         allCitizenIds.push(uid);
 
         const wealthObj = typeof item.stats?.wealth === 'object' ? item.stats.wealth : null;
-        const user: WareraUserLite = {
-          _id: uid,
-          username: item.username || `Citizen #${uid.slice(-6)}`,
-          avatarUrl: item.avatarUrl || item.avatar,
-          country: item.country || countryId,
-          countryId: typeof item.country === 'string' ? item.country : (item.country?._id || countryId),
-          leveling: item.leveling,
-          level: Number(item.leveling?.level ?? item.level ?? 0),
-          militaryRank: item.militaryRank,
-          isActive: item.isActive !== undefined ? Boolean(item.isActive) : true,
-          createdAt: item.createdAt,
-          dates: item.dates,
-          skills: item.skills,
-          rankings: item.rankings,
-          stats: item.stats,
-          money: wealthObj?.money !== undefined ? wealthObj.money : item.money,
-        };
+        const existing = memoryUserCache[uid];
 
-        memoryUserCache[uid] = { ...(memoryUserCache[uid] || {}), ...user };
-        harvestedUsers.push(user);
+        // Only register placeholder if user does not already have an established profile with valid level
+        if (!existing || existing.level === undefined || existing.username?.startsWith('Citizen #')) {
+          const user: WareraUserLite = {
+            _id: uid,
+            username: item.username || existing?.username || `Citizen #${uid.slice(-6)}`,
+            avatarUrl: item.avatarUrl || item.avatar || existing?.avatarUrl,
+            country: item.country || countryId,
+            countryId: typeof item.country === 'string' ? item.country : (item.country?._id || countryId),
+            leveling: item.leveling || existing?.leveling,
+            level: Number(item.leveling?.level ?? item.level ?? existing?.level ?? 0),
+            militaryRank: item.militaryRank ?? existing?.militaryRank,
+            isActive: item.isActive !== undefined ? Boolean(item.isActive) : (existing?.isActive ?? true),
+            createdAt: item.createdAt || existing?.createdAt,
+            dates: item.dates || existing?.dates,
+            skills: item.skills || existing?.skills,
+            rankings: item.rankings || existing?.rankings,
+            stats: item.stats || existing?.stats,
+            money: wealthObj?.money !== undefined ? wealthObj.money : (item.money ?? existing?.money),
+          };
+
+          memoryUserCache[uid] = user;
+          harvestedUsers.push(user);
+        }
       });
 
       cursor = rawData?.nextCursor;
       if (!cursor || rawItems.length < 100) break;
-      await new Promise((r) => setTimeout(r, 150));
+      await new Promise((r) => setTimeout(r, 80));
     }
 
     if (harvestedUsers.length > 0) {
@@ -1082,26 +1304,48 @@ export async function fetchNationalTransfers(
   countryName = 'Country',
   countries: WareraCountry[] = []
 ): Promise<NationalTransaction[]> {
-  if (!apiKey || !apiKey.trim()) return [];
+  if (!apiKey || !apiKey.trim()) {
+    return storage.getNationalTransactions(countryId);
+  }
 
   try {
-    const queryInput: Record<string, any> = {
-      countryId,
-      limit: 50,
-    };
-    const encoded = encodeURIComponent(JSON.stringify(queryInput));
-    const res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/transaction.getPaginatedTransactions?input=${encoded}`, {
-      headers: {
-        'Accept': 'application/json',
-        'X-API-Key': apiKey.trim(),
-      },
-    });
+    const rawItems: any[] = [];
+    let cursor: string | undefined = undefined;
+    let page = 0;
+    const maxPages = 20; // Deep pagination up to 1,000 country money transfers
 
-    if (!res.ok) return [];
-    const json = await res.json();
-    const rawItems: any[] = Array.isArray(json?.result?.data)
-      ? json.result.data
-      : json?.result?.data?.items || [];
+    while (page < maxPages) {
+      page++;
+      const queryInput: Record<string, any> = {
+        countryId,
+        transactionType: 'countryMoneyTransfer',
+        limit: 50,
+      };
+      if (cursor) {
+        queryInput.cursor = cursor;
+      }
+
+      const encoded = encodeURIComponent(JSON.stringify(queryInput));
+      const res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/transaction.getPaginatedTransactions?input=${encoded}`, {
+        headers: {
+          'Accept': 'application/json',
+          'X-API-Key': apiKey.trim(),
+        },
+      });
+
+      if (!res.ok) break;
+      const json = await res.json();
+      const pageItems: any[] = Array.isArray(json?.result?.data)
+        ? json.result.data
+        : json?.result?.data?.items || [];
+
+      if (!pageItems || pageItems.length === 0) break;
+      rawItems.push(...pageItems);
+
+      cursor = json?.result?.data?.nextCursor;
+      if (!cursor) break;
+      await new Promise((r) => setTimeout(r, 40));
+    }
 
     // Ensure comprehensive country dictionary is available for resolution
     let allCountries = countries;
@@ -1113,14 +1357,13 @@ export async function fetchNationalTransfers(
       }
     }
 
-    const countryNameMap: Record<string, string> = {
-      '6813b6d546e731854c7ac85f': 'Colombia',
-      '683ddd2c24b5a2e114af15d9': 'Malaysia',
-    };
+    const countryNameMap: Record<string, string> = {};
     allCountries.forEach((c) => {
       if (c._id && c.name) countryNameMap[c._id] = c.name;
     });
-    countryNameMap[countryId] = countryName;
+    if (countryId && countryName) {
+      countryNameMap[countryId] = countryName;
+    }
 
     const transfers: NationalTransaction[] = [];
     rawItems.forEach((item, index) => {
@@ -1128,136 +1371,436 @@ export async function fetchNationalTransfers(
       if (rawAmount === 0) return;
       const amount = Math.abs(rawAmount);
 
-      const txType = (item.transactionType || item.type || item.action || '').toLowerCase();
-      
-      // Handle object or string references
-      const targetObj = typeof item.targetCountry === 'object' ? item.targetCountry : null;
-      const partnerObj = typeof item.partner === 'object' ? item.partner : null;
-      const recipientObj = typeof item.recipient === 'object' ? item.recipient : null;
-      const destinationObj = typeof item.destination === 'object' ? item.destination : null;
-
-      const targetCId =
-        targetObj?._id ||
-        (typeof item.targetCountry === 'string' ? item.targetCountry : null) ||
-        item.targetCountryId ||
-        item.recipientCountryId ||
-        item.destinationCountryId ||
-        item.toCountryId ||
-        item.toCountry ||
-        item.receiverId;
-
-      const sourceCId =
-        (typeof item.sourceCountry === 'object' ? item.sourceCountry?._id : null) ||
-        (typeof item.sourceCountry === 'string' ? item.sourceCountry : null) ||
+      // In War Era upstream data model for countryMoneyTransfer:
+      // item.sellerCountryId is the Origin / Sender Country
+      // item.buyerCountryId is the Destination / Receiver Country
+      const sellerCId =
+        item.sellerCountryId ||
+        (typeof item.sourceCountry === 'object' ? item.sourceCountry?._id : item.sourceCountry) ||
         item.sourceCountryId ||
         item.fromCountryId ||
         item.senderCountryId ||
         item.senderId;
 
-      const otherCId = (item.countryId && item.countryId !== countryId) ? item.countryId : null;
-      const partnerCId =
-        partnerObj?._id ||
-        item.partnerId ||
-        item.partnerCountryId ||
-        item.counterpartId ||
-        (recipientObj?._id || (typeof item.recipientId === 'string' ? item.recipientId : null));
+      const buyerCId =
+        item.buyerCountryId ||
+        (typeof item.targetCountry === 'object' ? item.targetCountry?._id : item.targetCountry) ||
+        item.targetCountryId ||
+        item.recipientCountryId ||
+        item.destinationCountryId ||
+        item.toCountryId ||
+        item.receiverId;
 
-      const foreignCountryId = 
-        (targetCId && targetCId !== countryId ? targetCId : null) ||
-        (sourceCId && sourceCId !== countryId ? sourceCId : null) ||
-        otherCId ||
-        partnerCId ||
-        (item.sellerId && countryNameMap[item.sellerId] && item.sellerId !== countryId ? item.sellerId : null) ||
-        (item.buyerId && countryNameMap[item.buyerId] && item.buyerId !== countryId ? item.buyerId : null);
+      // Determine flow direction accurately:
+      // If sellerCountryId === countryId => selected country SENT the funds (OUTGOING)
+      // If buyerCountryId === countryId => selected country RECEIVED the funds (INCOMING)
+      let direction: 'sent' | 'received' = 'sent';
+      const itemDirection = (item.direction || '').toLowerCase();
 
-      // Distinguish state-level transfers from personal donations
-      const isStateTransfer =
-        txType.includes('transfer') ||
-        txType.includes('country') ||
-        txType.includes('state') ||
-        txType.includes('national') ||
-        Boolean(foreignCountryId) ||
-        Boolean(item.targetCountryName || item.sourceCountryName || item.partnerName || item.destinationName);
-
-      if (isStateTransfer) {
-        // Resolve counterpart nation name
-        const partnerId = foreignCountryId || 'foreign';
-        
-        // Scan notes or descriptions for mentions of foreign nations (e.g. Malaysia / Malasya)
-        const itemNoteText = (item.note || item.referenceNote || item.comment || item.description || '').toLowerCase();
-        let detectedNameFromNote = '';
-        if (itemNoteText.includes('malasya') || itemNoteText.includes('malaysia')) {
-          detectedNameFromNote = 'Malaysia';
-        } else {
-          const foundAlly = allCountries.find((c) => c.name && c._id !== countryId && itemNoteText.includes(c.name.toLowerCase()));
-          if (foundAlly) detectedNameFromNote = foundAlly.name;
-        }
-
-        const partnerName =
-          (partnerId && countryNameMap[partnerId]) ||
-          targetObj?.name ||
-          partnerObj?.name ||
-          recipientObj?.name ||
-          destinationObj?.name ||
-          item.targetCountryName ||
-          item.recipientCountryName ||
-          item.destinationName ||
-          item.sourceCountryName ||
-          item.partnerName ||
-          item.counterpartName ||
-          detectedNameFromNote ||
-          (partnerId !== 'foreign' && countryNameMap[partnerId] ? countryNameMap[partnerId] : (partnerId !== 'foreign' ? `Nation (${partnerId.slice(-6)})` : 'Foreign Ally'));
-
-        // Determine direction accurately:
-        // When Colombia initiates a transfer to Malaysia (targetCId !== countryId), it is SENT
-        let direction: 'sent' | 'received' = 'sent';
-        const itemDirection = (item.direction || '').toLowerCase();
-
-        if (targetCId && targetCId !== countryId) {
-          direction = 'sent';
-        } else if (sourceCId && sourceCId !== countryId) {
-          direction = 'received';
-        } else if (itemDirection === 'out' || itemDirection === 'outgoing' || itemDirection === 'sent') {
-          direction = 'sent';
-        } else if (itemDirection === 'in' || itemDirection === 'incoming' || itemDirection === 'received') {
-          direction = 'received';
-        } else if (rawAmount < 0) {
-          direction = 'sent';
-        } else if (item.senderCountryId && item.senderCountryId !== countryId) {
-          direction = 'received';
-        } else if (item.receiverId && item.receiverId === countryId) {
-          direction = 'received';
-        } else {
-          direction = 'sent';
-        }
-
-        const sourceName = direction === 'sent' ? countryName : partnerName;
-        const targetName = direction === 'sent' ? partnerName : countryName;
-
-        transfers.push({
-          id: item._id || `api-tx-${Date.now()}-${index}`,
-          date: (item.createdAt || new Date().toISOString()).split('T')[0],
-          sourceCountryId: direction === 'sent' ? countryId : partnerId,
-          sourceCountryName: sourceName,
-          targetCountryId: direction === 'sent' ? partnerId : countryId,
-          targetCountryName: targetName,
-          direction,
-          category: (item.category as any) || 'ayuda',
-          amountBtc: amount,
-          referenceNote:
-            item.note ||
-            item.referenceNote ||
-            item.comment ||
-            item.description ||
-            `State bilateral transfer: ${sourceName} ➔ ${targetName}`,
-          createdAt: item.createdAt || new Date().toISOString(),
-        });
+      if (sellerCId && String(sellerCId).trim() === countryId) {
+        direction = 'sent';
+      } else if (buyerCId && String(buyerCId).trim() === countryId) {
+        direction = 'received';
+      } else if (itemDirection === 'in' || itemDirection === 'incoming' || itemDirection === 'received') {
+        direction = 'received';
+      } else if (itemDirection === 'out' || itemDirection === 'outgoing' || itemDirection === 'sent') {
+        direction = 'sent';
+      } else if (rawAmount < 0) {
+        direction = 'sent';
+      } else {
+        direction = 'sent';
       }
+
+      const counterpartId = direction === 'sent' ? buyerCId : sellerCId;
+      const originId = direction === 'sent' ? countryId : (sellerCId || counterpartId || 'foreign');
+      const destinationId = direction === 'sent' ? (buyerCId || counterpartId || 'foreign') : countryId;
+
+      // Scan notes for ally references as a secondary fallback
+      const itemNoteText = (item.note || item.referenceNote || item.comment || item.description || '').toLowerCase();
+      let detectedNameFromNote = '';
+      if (itemNoteText) {
+        const foundAlly = allCountries.find((c) => c.name && c._id !== countryId && itemNoteText.includes(c.name.toLowerCase()));
+        if (foundAlly) detectedNameFromNote = foundAlly.name;
+      }
+
+      const counterpartName =
+        (counterpartId && countryNameMap[counterpartId]) ||
+        allCountries.find((c) => c._id === counterpartId)?.name ||
+        detectedNameFromNote ||
+        (counterpartId && counterpartId !== 'foreign' ? `Nation (${String(counterpartId).slice(-6)})` : 'Foreign Nation');
+
+      const sourceName = direction === 'sent' ? countryName : counterpartName;
+      const targetName = direction === 'sent' ? counterpartName : countryName;
+
+      transfers.push({
+        id: item._id || `api-tx-${Date.now()}-${index}`,
+        date: (item.createdAt || new Date().toISOString()).split('T')[0],
+        sourceCountryId: originId,
+        sourceCountryName: sourceName,
+        targetCountryId: destinationId,
+        targetCountryName: targetName,
+        direction,
+        category: (item.category as any) || 'ayuda',
+        amountBtc: amount,
+        referenceNote:
+          item.note ||
+          item.referenceNote ||
+          item.comment ||
+          item.description ||
+          `State bilateral transfer: ${sourceName} ➔ ${targetName}`,
+        createdAt: item.createdAt || new Date().toISOString(),
+      });
     });
 
+    if (transfers.length > 0) {
+      await storage.saveNationalTransactions(transfers, countryId);
+    }
     return transfers;
   } catch (err) {
     console.warn('Failed to fetch country transfers from API:', err);
-    return [];
+    return storage.getNationalTransactions(countryId);
   }
+}
+
+export interface CountryInventorySyncResult {
+  inventory: Record<string, number>;
+  isAuthorized: boolean;
+  status: 'synced' | 'unauthorized' | 'error' | 'empty' | 'no_api_key';
+  message: string;
+  orgId?: string;
+  syncedAt?: string;
+  httpStatus?: number;
+}
+
+/**
+ * Live API connection test utility that directly verifies connectivity and token validity against api2.warera.io
+ */
+export async function testWarEraApiConnection(keyToTest?: string): Promise<{
+  success: boolean;
+  publicOk: boolean;
+  authOk: boolean;
+  publicStatus: number;
+  authStatus: number;
+  message: string;
+  authEndpoint: string;
+  testedKeyPreview: string;
+  durationMs?: number;
+  itemsCount?: number;
+  authResponseBody?: any;
+}> {
+  const token = (keyToTest ?? storage.getApiKey() ?? '').trim();
+  const testedKeyPreview = token ? `${token.slice(0, 4)}...${token.slice(-4)}` : 'None';
+
+  // 1. Test public endpoint
+  let publicOk = false;
+  let publicStatus = 0;
+  try {
+    const pubRes = await fetch(`${WARERA_TRPC_BASE}/country.getAllCountries`);
+    publicStatus = pubRes.status;
+    publicOk = pubRes.ok;
+  } catch {
+    publicStatus = 0;
+  }
+
+  if (!token) {
+    return {
+      success: false,
+      publicOk,
+      authOk: false,
+      publicStatus,
+      authStatus: 0,
+      message: 'No API Key configured. War Era API requires a valid token.',
+      authEndpoint: 'transaction.getPaginatedTransactions',
+      testedKeyPreview: 'None',
+    };
+  }
+
+  // 2. Test authenticated endpoint with War Era API token via X-API-Key
+  const authHeaders: Record<string, string> = {
+    Accept: 'application/json',
+    'X-API-Key': token,
+  };
+
+  const startTime = Date.now();
+  const inputParam = encodeURIComponent(JSON.stringify({ page: 1 }));
+  const probeUrl = `${WARERA_TRPC_BASE}/transaction.getPaginatedTransactions?input=${inputParam}`;
+
+  try {
+    const authRes = await fetch(probeUrl, {
+      headers: authHeaders,
+    });
+    const durationMs = Date.now() - startTime;
+    const authStatus = authRes.status;
+    const authResponseBody = await authRes.json().catch(() => null);
+
+    const isSuccess = authRes.ok || authStatus === 200;
+    const itemsCount = authResponseBody?.result?.data?.items?.length ?? 0;
+
+    let message = '';
+    if (isSuccess) {
+      message = `Successfully authenticated with War Era API! Live transaction stream verified (${itemsCount} live records received in ${durationMs}ms).`;
+    } else if (authStatus === 401) {
+      message = `War Era API returned HTTP 401 Unauthorized. Key was rejected ("${authResponseBody?.error?.message || 'API token required'}").`;
+    } else if (authStatus === 429) {
+      message = 'War Era API rate limit reached (HTTP 429). Please wait a few seconds and try again.';
+    } else {
+      message = `War Era API returned HTTP ${authStatus}: ${authResponseBody?.error?.message || authRes.statusText}`;
+    }
+
+    addDiagnosticLog({
+      id: `diag-test-${Date.now()}`,
+      timestamp: new Date().toLocaleTimeString(),
+      url: probeUrl,
+      endpoint: 'transaction.getPaginatedTransactions',
+      method: 'GET',
+      hasApiKey: true,
+      apiKeyPreview: testedKeyPreview,
+      status: authStatus,
+      statusText: authRes.statusText || (isSuccess ? 'OK' : 'Error'),
+      durationMs,
+      headersSent: { 'X-API-Key': testedKeyPreview },
+      error: isSuccess ? undefined : message,
+    });
+
+    return {
+      success: isSuccess,
+      publicOk,
+      authOk: isSuccess,
+      publicStatus,
+      authStatus,
+      durationMs,
+      itemsCount,
+      message,
+      authEndpoint: 'transaction.getPaginatedTransactions',
+      testedKeyPreview,
+      authResponseBody,
+    };
+  } catch (err: any) {
+    const durationMs = Date.now() - startTime;
+    return {
+      success: false,
+      publicOk,
+      authOk: false,
+      publicStatus,
+      authStatus: 0,
+      durationMs,
+      message: `Failed to contact api2.warera.io: ${err?.message || 'Network error'}`,
+      authEndpoint: 'transaction.getPaginatedTransactions',
+      testedKeyPreview,
+    };
+  }
+}
+
+/**
+ * Detailed sovereign inventory fetcher with support for national state organizations,
+ * multiple TRPC schema variations, and clear authorization diagnostics.
+ */
+export async function fetchCountryInventoryDetailed(
+  countryId: string,
+  providedApiKey?: string,
+  stateOrgId?: string
+): Promise<CountryInventorySyncResult> {
+  if (!countryId) {
+    return { inventory: {}, isAuthorized: false, status: 'empty', message: 'No country selected' };
+  }
+
+  const effectiveKey = (providedApiKey || storage.getApiKey() || '').trim();
+  const orgCandidate = stateOrgId?.trim();
+
+  if (!effectiveKey) {
+    return {
+      inventory: {},
+      isAuthorized: false,
+      status: 'no_api_key',
+      orgId: orgCandidate,
+      message: 'War Era API Key Missing: An authenticated API token is required to query live national warehouses from https://api2.warera.io.',
+    };
+  }
+
+  const authHeaders: Record<string, string> = {
+    Accept: 'application/json',
+    'X-API-Key': effectiveKey,
+  };
+
+  // Attempt prioritized list of endpoints and payloads
+  const attempts: Array<{ path: string; input: Record<string, any> }> = [];
+  if (orgCandidate) {
+    attempts.push({ path: 'inventory.getInventory', input: { orgId: orgCandidate } });
+    attempts.push({ path: 'inventory.getById', input: { id: orgCandidate } });
+    attempts.push({ path: 'inventory.getById', input: { orgId: orgCandidate } });
+  }
+  attempts.push({ path: 'inventory.getById', input: { countryId } });
+  attempts.push({ path: 'inventory.getById', input: { id: countryId } });
+  attempts.push({ path: 'inventory.getInventory', input: { countryId } });
+
+  let sawUnauthorized = false;
+
+  for (const attempt of attempts) {
+    try {
+      const encoded = encodeURIComponent(JSON.stringify(attempt.input));
+      const res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/${attempt.path}?input=${encoded}`, {
+        headers: authHeaders,
+      });
+
+      if (res.status === 401 || res.status === 403) {
+        sawUnauthorized = true;
+        continue;
+      }
+
+      if (!res.ok) continue;
+
+      const json = await res.json();
+      const rawData = json?.result?.data;
+      if (!rawData) continue;
+
+      // Extract dictionary of commodity items from various schema layouts
+      let itemsDict: Record<string, number> = {};
+      if (rawData.items && typeof rawData.items === 'object') {
+        if (rawData.items.basics && typeof rawData.items.basics === 'object') {
+          itemsDict = rawData.items.basics;
+        } else {
+          itemsDict = rawData.items;
+        }
+      } else if (rawData.basics && typeof rawData.basics === 'object') {
+        itemsDict = rawData.basics;
+      } else if (typeof rawData === 'object') {
+        // Look for items array or direct properties
+        if (Array.isArray(rawData)) {
+          rawData.forEach((entry: any) => {
+            if (entry?.itemCode && typeof entry?.quantity === 'number') {
+              itemsDict[entry.itemCode] = entry.quantity;
+            }
+          });
+        }
+      }
+
+      if (itemsDict && Object.keys(itemsDict).length > 0) {
+        const cleaned: Record<string, number> = {};
+        for (const [key, val] of Object.entries(itemsDict)) {
+          if (typeof val === 'number') cleaned[key] = val;
+        }
+        return {
+          inventory: cleaned,
+          isAuthorized: true,
+          status: 'synced',
+          orgId: orgCandidate,
+          syncedAt: new Date().toISOString(),
+          message: 'Successfully synchronized from War Era state warehouse',
+        };
+      }
+    } catch {
+      // Continue to next attempt
+    }
+  }
+
+  if (sawUnauthorized) {
+    return {
+      inventory: {},
+      isAuthorized: false,
+      status: 'unauthorized',
+      httpStatus: 401,
+      orgId: orgCandidate,
+      message: 'HTTP 401 Unauthorized: War Era API rejected the provided key for national warehouse access.',
+    };
+  }
+
+  return {
+    inventory: {},
+    isAuthorized: true,
+    status: 'empty',
+    orgId: orgCandidate,
+    message: 'War Era warehouse endpoint reached, but 0 commodities are currently recorded for this nation.',
+  };
+}
+
+/**
+ * Fetch official state inventory of commodities (petroleum, paper, bread, etc.)
+ */
+export async function fetchCountryInventory(
+  countryId: string,
+  apiKey?: string,
+  orgId?: string
+): Promise<Record<string, number>> {
+  if (!countryId) return {};
+  const res = await fetchCountryInventoryDetailed(countryId, apiKey, orgId);
+  return res.inventory;
+}
+
+/**
+ * Fetch state commodity purchase and sale movement transactions via itemMarket & trading
+ */
+export async function fetchCountryCommodityTransactions(
+  countryId: string,
+  apiKey: string
+): Promise<Array<{
+  id: string;
+  itemCode: string;
+  type: 'buy' | 'sell';
+  quantity: number;
+  unitPriceBtc: number;
+  totalBtc: number;
+  createdAt: string;
+  counterpartName?: string;
+}>> {
+  if (!apiKey || !apiKey.trim() || !countryId) return [];
+  const results: Array<{
+    id: string;
+    itemCode: string;
+    type: 'buy' | 'sell';
+    quantity: number;
+    unitPriceBtc: number;
+    totalBtc: number;
+    createdAt: string;
+    counterpartName?: string;
+  }> = [];
+
+  const types = ['itemMarket', 'trading'];
+  for (const tType of types) {
+    try {
+      const queryInput = {
+        countryId,
+        transactionType: tType,
+        limit: 50,
+      };
+      const encoded = encodeURIComponent(JSON.stringify(queryInput));
+      const res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/transaction.getPaginatedTransactions?input=${encoded}`, {
+        headers: {
+          Accept: 'application/json',
+          'X-API-Key': apiKey.trim(),
+        },
+      });
+      if (!res.ok) continue;
+      const json = await res.json();
+      const pageItems: any[] = Array.isArray(json?.result?.data)
+        ? json.result.data
+        : json?.result?.data?.items || [];
+
+      pageItems.forEach((tx) => {
+        const itemCode = tx.itemCode || tx.item || '';
+        if (!itemCode) return;
+        const qty = Number(tx.quantity || 1);
+        const totalMoney = Math.abs(Number(tx.money || tx.price || 0));
+        const unitPrice = qty > 0 ? totalMoney / qty : totalMoney;
+
+        const isSell =
+          tx.sellerCountryId === countryId ||
+          (tx.direction === 'out' || tx.direction === 'outgoing');
+
+        results.push({
+          id: tx._id || `tx-${Date.now()}-${Math.random()}`,
+          itemCode,
+          type: isSell ? 'sell' : 'buy',
+          quantity: qty,
+          unitPriceBtc: unitPrice,
+          totalBtc: totalMoney,
+          createdAt: tx.createdAt || new Date().toISOString(),
+          counterpartName: tx.buyerCountryId || tx.sellerCountryId || undefined,
+        });
+      });
+    } catch (err) {
+      console.warn(`Failed to fetch commodity transactions for ${tType}:`, err);
+    }
+  }
+
+  return results.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }

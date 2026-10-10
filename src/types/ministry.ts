@@ -18,13 +18,23 @@ export type MinisterialVerdict =
 
 export type PlaystyleMode = 'pure-eco' | 'pure-war' | 'hybrid';
 
-export type PlayerTag = 'perma-war' | 'perma-eco' | 'mixed-style' | 'mercenary' | 'vip' | 'none';
+export type PlayerTag = 'perma-war' | 'perma-eco' | 'weekly-cycler' | 'mixed-style' | 'mercenary' | 'vip' | 'none';
+
+export type CitizenEconomicStanding =
+  | 'evader-leech'
+  | 'subsistence-worker'
+  | 'illiquid-fighter'
+  | 'sovereign-patriot'
+  | 'historical-pillar'
+  | 'standard-contributor';
 
 export interface PlayerTransactionSummary {
   userId: string;
   // 1. Employment Wages (Wage transactions)
   wagesEarnedBtc: number; // Real salary received from working in domestic & foreign companies
   wagesCount: number;
+  wagesPaidBtc?: number; // Salaries paid out to employees by company owner
+  wagesPaidCount?: number;
   // 2. Commercial Market (Trading & Item Market transactions)
   salesVolumeBtc: number; // Total gross market sales revenue (Trading commodities + Item Market equipment)
   salesCount: number;
@@ -50,6 +60,7 @@ export interface PlayerTransactionSummary {
   grossInflowBtc: number; // Total gross money coming into citizen wallet (Wages + All Sales + Tips Received)
   totalTradingCOGSBtc: number; // Cost of commodities & equipment bought
   operatingOutflowsBtc: number; // Fees, crafting, dismantling, crate openings
+  totalOutflowsBtc?: number; // Total real period outflows (Purchases + Wages Paid + Operating Outflows + Tips Sent + Donations)
   netDisposableIncomeBtc: number; // Wages + Net Trade Profit + Tips - Operating Outflows
   // 7. Aggregate Real Cashflow & Metadata
   salariesEarnedBtc: number; // Alias for wagesEarnedBtc for backwards compatibility
@@ -76,7 +87,9 @@ export interface CitizenEconomicProfile {
   equipmentsWealthBtc?: number; // Equipment valuation
   weaponsWealthBtc?: number; // Weapons valuation
   pastWealthBtc?: number; // Wealth at start of analysis period
-  grossIncomeBtc?: number; // Gross income = max(0, wealthNow - pastWealth) + periodDonations
+  grossIncomeBtc?: number; // Verified Gross Inflow (wages + market sales + tips)
+  grossInflowBtc?: number; // Verified Gross Inflow (Wages + All Sales + Tips Received)
+  netCashflowBtc?: number; // Verified Net Cashflow (Gross Inflow - Purchases - Payroll - Operating Outflows)
   periodDonatedBtc?: number; // Donations within analysis period
   totalDonatedBtc: number;
   directDonatedBtc: number;
@@ -93,6 +106,7 @@ export interface CitizenEconomicProfile {
   lastDonationAt?: string;
   contributionRatio: number; // Percentage of gross income donated (e.g. 15%)
   leechTier: LeechTier;
+  economicStanding?: CitizenEconomicStanding;
   warSkillPoints: number;
   ecoSkillPoints: number;
   playstyle: PlaystyleMode;
@@ -105,7 +119,15 @@ export interface CitizenEconomicProfile {
   isInactiveDonor?: boolean;
   isOnWatch?: boolean;
   watchReason?: string;
-  auditBaselineStatus?: 'audited' | 'baseline-today';
+  auditBaselineStatus?: 'audited' | 'pending-audit' | 'baseline-today';
+  auditedAt?: string; // ISO timestamp of when live personal receipts were verified
+  receiptCount?: number; // Total verified in-game receipts in citizen ledger
+  auditDeltaAlert?: {
+    previousGrossInflowBtc: number;
+    differenceBtc: number;
+    newReceiptsCount: number;
+    previousAuditedAt?: string;
+  };
   auditMethodologyNote?: string;
   ministerialVerdict?: MinisterialVerdict;
   ministerialVerdictReason?: string;
@@ -214,6 +236,8 @@ export interface WealthSnapshot {
   userId: string;
   countryId: string;
   wealthBtc: number;
+  weeklyDamage?: number;
+  lifetimeDamage?: number;
   timestamp: number;
   dateStr: string;
 }
@@ -248,18 +272,41 @@ export interface NationalTransaction {
   createdAt: string;
 }
 
+export type CommoditySector =
+  | 'cases'
+  | 'craft'
+  | 'buffs'
+  | 'ammo'
+  | 'food'
+  | 'construction'
+  | 'strategic';
+
 export interface ResourceReserveItem {
-  id: string;
-  name: string;
-  code: string;
-  category: 'munitions' | 'food' | 'raw-materials' | 'narcotics' | 'medical';
+  id: string; // itemCode e.g. 'petroleum', 'paper', 'cocain'
+  name: string; // Display name e.g. 'Petroleum', 'Paper', 'Pill'
+  code: string; // Short code e.g. 'PE', 'PP', 'PILL'
+  category: 'munitions' | 'food' | 'raw-materials' | 'narcotics' | 'medical' | 'cases' | 'craft' | 'buffs' | 'ammo' | 'construction' | 'strategic';
+  sector: CommoditySector;
   unit: string;
   currentStock: number;
   netBoughtPeriod: number;
   netSoldPeriod: number;
   avgCostBtc: number;
   currentMarketPriceBtc: number;
+  avg7dBtc?: number;
+  min7dBtc?: number;
+  max7dBtc?: number;
+  stdDev?: number;
+  zScore?: number;
+  pctDev?: number;
+  spreadPct?: number;
+  highestBid?: number;
+  lowestAsk?: number;
+  advisory?: MarketAdvisory;
+  advisoryReason?: string;
   notes?: string;
+  isStockVerified?: boolean;
+  stockStatus?: 'synced' | 'unverified' | 'custom';
 }
 
 export type MarketAdvisory = 'strong-buy' | 'buy' | 'hold' | 'sell' | 'strong-sell';
@@ -268,16 +315,44 @@ export interface CommodityTrend {
   id: string;
   name: string;
   category: string;
+  sector: CommoditySector;
   unit: string;
   currentPrice: number;
   change24h: number;
   avg7d: number;
   min7d: number;
   max7d: number;
+  stdDev?: number;
+  zScore?: number;
+  pctDev?: number;
+  spreadPct?: number;
+  highestBid?: number;
+  lowestAsk?: number;
   volume24h?: number;
   volumeChange24h?: number;
   advisory: MarketAdvisory;
   advisoryReason: string;
+  topBuys?: Array<{ price: number; qty: number }>;
+  topSells?: Array<{ price: number; qty: number }>;
+  historyPoints?: Array<{ date: string; price: number; volume: number }>;
+}
+
+export interface CommodityMovementItem {
+  id: string;
+  itemCode: string;
+  itemName: string;
+  sector: CommoditySector;
+  type: 'buy' | 'sell' | 'donation' | 'transfer-in' | 'transfer-out';
+  quantity: number;
+  unit: string;
+  unitPriceBtc: number;
+  totalBtc: number;
+  date: string;
+  createdAt: string;
+  counterpartName?: string;
+  counterpartCountryId?: string;
+  counterpartUserId?: string;
+  referenceNote?: string;
 }
 
 export interface RespecAlert {
