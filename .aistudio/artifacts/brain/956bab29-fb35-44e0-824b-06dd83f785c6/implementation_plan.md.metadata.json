@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan to resolve the 3 National Census and Background Audit lifecycle issues: (1) background audit starting mid-census before citizen hydration completes, (2) the National Census getting stuck permanently at 95/98 (97%) due to server-side countryActivePopulation vs Level 10+ cohort filtering, and (3) audited citizens like N3V1T5 showing 0.0 BTC / 0 receipts despite having 2,993 cached personal receipts due to stripped auditSchemaVersion in App.tsx, swallowed AbortErrors in fetchUserTransactions, and unawaited IndexedDB cache reads in CitizenAuditModal.",
-  "updatedAt":  "2026-10-28T21:17:17.541691763Z",
+  "summary":  "Revised implementation plan for fixing the Policy & Leech Calibration modal scroll bleed and dynamic multi-country Spanish localization (ensuring {countryName} is 100% dynamic for any nation), integrating official WarEra country flags (flagcdn.com), and integrating all official WarEra item & equipment icons (media.warera.io). Includes 3 comparative architectural proposals, edge case mitigations, and tiered phased task decomposition.",
+  "updatedAt":  "2026-10-28T22:01:16.234903952Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

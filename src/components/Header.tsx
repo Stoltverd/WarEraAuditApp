@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { useI18n } from '../i18n/I18nContext';
 import { useTheme } from '../theme/ThemeContext';
+import { WareraCountryFlag } from './common/WareraCountryFlag';
 
 interface HeaderProps {
   countries: WareraCountry[];
@@ -73,15 +74,6 @@ export const Header: React.FC<HeaderProps> = ({
       c.code.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const getFlagEmoji = (countryCode: string) => {
-    if (!countryCode || countryCode.length !== 2) return '🌐';
-    const codePoints = countryCode
-      .toUpperCase()
-      .split('')
-      .map((char) => 127397 + char.charCodeAt(0));
-    return String.fromCodePoint(...codePoints);
-  };
-
   const formatBtc = (val?: number) => {
     if (val === undefined || val === null) return '0 BTC';
     if (val >= 1_000_000) {
@@ -135,9 +127,15 @@ export const Header: React.FC<HeaderProps> = ({
             }`}
           >
             <div className="flex items-center gap-3 truncate">
-              <span className="text-2xl">
-                {selectedCountry ? getFlagEmoji(selectedCountry.code) : '🌐'}
-              </span>
+              {selectedCountry ? (
+                <WareraCountryFlag
+                  countryName={selectedCountry.name}
+                  countryCode={selectedCountry.code}
+                  size="lg"
+                />
+              ) : (
+                <Globe className="w-5 h-5 text-amber-400 shrink-0" />
+              )}
               <span className={`truncate ${!selectedCountry ? 'font-black text-amber-300' : 'font-extrabold text-slate-100'}`}>
                 {selectedCountry ? selectedCountry.name : tx('Choose Country to Audit...', 'Elegir País a Auditar...')}
               </span>
@@ -196,11 +194,12 @@ export const Header: React.FC<HeaderProps> = ({
                         }`}
                       >
                         <div className="flex items-center gap-2.5 truncate">
-                          <span className="text-lg shrink-0">{getFlagEmoji(c.code)}</span>
+                          <WareraCountryFlag
+                            countryName={c.name}
+                            countryCode={c.code}
+                            size="md"
+                          />
                           <span className="truncate">{c.name}</span>
-                          <span className="text-xs text-slate-400 uppercase font-mono">
-                            {c.code}
-                          </span>
                         </div>
                         <span className="text-xs sm:text-sm text-amber-400/90 font-mono font-bold shrink-0 ml-2">
                           {formatBtc(wealth)}

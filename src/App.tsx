@@ -1350,7 +1350,7 @@ export default function App() {
 
         {activeMode === 'ministry' ? (
           <MinistryWorkspace
-            countryName={selectedCountry?.name || 'Colombia'}
+            countryName={selectedCountry?.name || 'State'}
             countryId={selectedCountry?._id || ''}
             countries={countries}
             profiles={citizenEconomicProfiles}

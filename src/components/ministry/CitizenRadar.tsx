@@ -28,6 +28,7 @@ import { CitizenCalculationExplainerModal } from './CitizenCalculationExplainerM
 import { GrossIncomeBreakdownModal } from './GrossIncomeBreakdownModal';
 import { AuditProgressDock } from './AuditProgressDock';
 import { ErrorBoundary } from '../common/ErrorBoundary';
+import { useI18n } from '../../i18n/I18nContext';
 import {
   Search,
   Filter,
@@ -114,6 +115,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
   onUpdateProfile,
   onUpdateProfilesBatch,
 }) => {
+  const { tx } = useI18n();
   const [search, setSearch] = useState('');
   const [filterFiscalStanding, setFilterFiscalStanding] = useState<string>('all');
   const [filterBuild, setFilterBuild] = useState<string>('all');
@@ -1667,443 +1669,584 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
       {/* Modal: Ministerial Policy Threshold Calibration */}
       {isPolicyModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
-          <div className="bg-slate-900 border border-slate-700 rounded-3xl max-w-xl w-full p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-800 sticky top-0 bg-slate-900 z-10">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20">
+          <div className="bg-slate-900 border border-slate-700 rounded-3xl max-w-xl w-full shadow-2xl relative max-h-[90vh] flex flex-col overflow-hidden">
+            {/* Fixed Top Header Banner — isolated from scroll body so content never bleeds above or behind it */}
+            <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-slate-800 bg-slate-900 shrink-0 z-20">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20 shrink-0">
                   <SlidersHorizontal className="w-4 h-4" />
                 </div>
-                <div>
-                  <h3 className="text-base font-bold text-white">Sovereign Policy &amp; Leech Calibration</h3>
-                  <p className="text-xs text-slate-400">Customizable income donation ratios by playstyle for {countryName}</p>
+                <div className="min-w-0">
+                  <h3 className="text-base font-bold text-white truncate">
+                    {tx('Sovereign Policy & Leech Calibration', 'Calibración de Políticas Soberanas y Leeches')}
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    {tx(
+                      `Customizable income donation ratios by playstyle for ${countryName}`,
+                      `Proporciones personalizables de donación de ingresos según estilo de juego para ${countryName}`
+                    )}
+                  </p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0 ml-2">
                 <button
                   type="button"
                   onClick={() => setShowPolicyHelp((prev) => !prev)}
                   className="text-xs text-amber-300 hover:text-white bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1.5 transition"
-                  title="Toggle Policy Guide & Rules"
+                  title={tx('Toggle Policy Guide & Rules', 'Mostrar/Ocultar Guía de Políticas y Reglas')}
                 >
-                  <HelpCircle className="w-3.5 h-3.5 text-amber-400" />
-                  <span>{showPolicyHelp ? 'Hide Guide' : 'Policy Guide'}</span>
+                  <HelpCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <span>
+                    {showPolicyHelp
+                      ? tx('Hide Guide', 'Ocultar Guía')
+                      : tx('Policy Guide', 'Guía de Políticas')}
+                  </span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setIsPolicyModalOpen(false)}
                   className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition"
+                  title={tx('Close', 'Cerrar')}
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
             </div>
 
-            {/* Comprehensive Help & Calibration Guide Drawer */}
-            {showPolicyHelp && (
-              <div className="mt-4 p-4 rounded-2xl bg-cyan-950/30 border border-cyan-800/40 text-xs text-slate-300 space-y-2.5 animate-fade-in">
-                <div className="font-bold text-cyan-300 flex items-center gap-1.5">
-                  <Info className="w-4 h-4 text-cyan-400" />
-                  <span>How Policy Calibration Works in War Era</span>
-                </div>
-                <p className="text-[11px] leading-relaxed text-slate-300">
-                  <strong>Income Quotas (%):</strong> Set the minimum percentage of weekly BTC earnings a citizen must donate to earn each tier. For example, a Patriot quota of 15% means a citizen earning 1,000 BTC must donate &ge;150 BTC to receive Model Patriot status.
-                </p>
-                <p className="text-[11px] leading-relaxed text-slate-300">
-                  <strong>Playstyle Roles:</strong> Soldiers fighting on the frontlines in <strong>War Mode</strong> spend heavily on tanks and munitions; their quotas are lower (e.g. 5% Patriot / 2.5% Moderate / 1% Low). Industrialists in <strong>Eco Mode</strong> reap passive company dividends; their quotas are higher (e.g. 15% / 10% / 5%).
-                </p>
-                <p className="text-[11px] leading-relaxed text-slate-300">
-                  <strong>Veteran Grace Floor:</strong> Citizens ranked in the nation&apos;s Top Lifetime Donors who meet this lifetime contribution floor are honored as Historical Pillars and protected from Critical Leech designation during active military campaigns.
-                </p>
-                <p className="text-[11px] leading-relaxed text-slate-300">
-                  <strong>Immediate Effect:</strong> Saving your policy updates recalculates citizen audits and contribution ratios instantly!
-                </p>
-              </div>
-            )}
-
-            {!isPolicyValid && (
-              <div className="mt-4 p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-xs flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
-                <span>
-                  <strong>Invalid Quota Hierarchy:</strong> Quotas must satisfy <strong>Patriot &gt; Moderate &gt; Low Contributor</strong> for each playstyle.
-                </span>
-              </div>
-            )}
-
-            <form noValidate onSubmit={handleSavePolicy} className="mt-5 space-y-5 text-xs font-sans">
-              {/* Analysis Period */}
-              <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-2xl">
-                <label className="block text-slate-300 font-bold mb-1">
-                  Analysis Period Window (Days)
-                </label>
-                <p className="text-[11px] text-slate-500 mb-2 leading-relaxed">
-                  Timeframe over which citizen BTC income growth is audited (default: 7 days / 1 week).
-                </p>
-                <div className="grid grid-cols-5 gap-1.5 mb-2">
-                  {[1, 3, 7, 14, 30].map((d) => (
-                    <button
-                      key={d}
-                      type="button"
-                      onClick={() => setPolicyDraft((prev) => ({ ...prev, analysisPeriodDays: d }))}
-                      className={`py-1.5 rounded-lg text-xs font-bold border transition ${
-                        policyDraft.analysisPeriodDays === d
-                          ? 'bg-amber-500 text-slate-950 border-amber-400 font-black'
-                          : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-700'
-                      }`}
-                    >
-                      {d} {d === 1 ? 'Day' : 'Days'}
-                    </button>
-                  ))}
-                </div>
-                <input
-                  type="number"
-                  min="1"
-                  max="90"
-                  step="1"
-                  value={policyDraft.analysisPeriodDays ?? 7}
-                  onChange={(e) =>
-                    setPolicyDraft((prev) => ({
-                      ...prev,
-                      analysisPeriodDays: Math.max(1, parseInt(e.target.value) || 7),
-                    }))
-                  }
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono focus:outline-none focus:border-amber-400"
-                />
-              </div>
-
-              {/* Standard General Quotas */}
-              <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-2.5">
-                <div className="font-bold text-white flex items-center gap-1.5">
-                  <Scale className="w-3.5 h-3.5 text-amber-400" />
-                  <span>General Default Income Quotas (%)</span>
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <div>
-                    <label className="block text-emerald-400 text-[11px] font-bold mb-1">Patriot &ge;</label>
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      value={policyDraft.patriotIncomeRatePct ?? 15}
-                      onChange={(e) => setPolicyDraft((prev) => ({ ...prev, patriotIncomeRatePct: parseFloat(e.target.value) || 0 }))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
-                    />
+            <form noValidate onSubmit={handleSavePolicy} className="flex flex-col flex-1 min-h-0 text-xs font-sans">
+              {/* Dedicated Scrollable Body */}
+              <div className="p-6 overflow-y-auto flex-1 space-y-5">
+                {/* Comprehensive Help & Calibration Guide Drawer */}
+                {showPolicyHelp && (
+                  <div className="p-4 rounded-2xl bg-cyan-950/30 border border-cyan-800/40 text-xs text-slate-300 space-y-2.5 animate-fade-in">
+                    <div className="font-bold text-cyan-300 flex items-center gap-1.5">
+                      <Info className="w-4 h-4 text-cyan-400 shrink-0" />
+                      <span>
+                        {tx('How Policy Calibration Works in War Era', 'Cómo Funciona la Calibración de Políticas en War Era')}
+                      </span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-slate-300">
+                      <strong>{tx('Income Quotas (%):', 'Cuotas de Ingreso (%):')}</strong>{' '}
+                      {tx(
+                        'Set the minimum percentage of weekly BTC earnings a citizen must donate to earn each tier. For example, a Patriot quota of 15% means a citizen earning 1,000 BTC must donate ≥150 BTC to receive Model Patriot status.',
+                        'Define el porcentaje mínimo de ingresos semanales en BTC que un ciudadano debe donar para alcanzar cada nivel. Por ejemplo, una cuota Patriota del 15% significa que un ciudadano que gana 1,000 BTC debe donar ≥150 BTC para recibir el estatus de Patriota Modelo.'
+                      )}
+                    </p>
+                    <p className="text-[11px] leading-relaxed text-slate-300">
+                      <strong>{tx('Playstyle Roles:', 'Roles por Estilo de Juego:')}</strong>{' '}
+                      {tx(
+                        'Soldiers fighting on the frontlines in',
+                        'Los soldados que combaten en primera línea en'
+                      )}{' '}
+                      <strong>{tx('War Mode', 'Modo War')}</strong>{' '}
+                      {tx(
+                        'spend heavily on tanks and munitions; their quotas are lower (e.g. 5% Patriot / 2.5% Moderate / 1% Low). Industrialists in',
+                        'gastan fuertemente en tanques y municiones; sus cuotas son menores (ej. 5% Patriota / 2.5% Moderado / 1% Bajo). Los industriales en'
+                      )}{' '}
+                      <strong>{tx('Eco Mode', 'Modo Eco')}</strong>{' '}
+                      {tx(
+                        'reap passive company dividends; their quotas are higher (e.g. 15% / 10% / 5%).',
+                        'obtienen dividendos pasivos de sus empresas; sus cuotas son mayores (ej. 15% / 10% / 5%).'
+                      )}
+                    </p>
+                    <p className="text-[11px] leading-relaxed text-slate-300">
+                      <strong>{tx('Veteran Grace Floor:', 'Piso de Gracia para Veteranos:')}</strong>{' '}
+                      {tx(
+                        "Citizens ranked in the nation's Top Lifetime Donors who meet this lifetime contribution floor are honored as Historical Pillars and protected from Critical Leech designation during active military campaigns.",
+                        'Los ciudadanos ubicados en el Top de Donantes Históricos de la nación que alcancen este piso acumulado son honrados como Pilares Históricos y protegidos de ser clasificados como Leeches Críticos durante campañas militares activas.'
+                      )}
+                    </p>
+                    <p className="text-[11px] leading-relaxed text-slate-300">
+                      <strong>{tx('Immediate Effect:', 'Efecto Inmediato:')}</strong>{' '}
+                      {tx(
+                        'Saving your policy updates recalculates citizen audits and contribution ratios instantly!',
+                        '¡Guardar tus cambios de política recalcula las auditorías ciudadanas y las tasas de contribución al instante!'
+                      )}
+                    </p>
                   </div>
-                  <div>
-                    <label className="block text-blue-400 text-[11px] font-bold mb-1">Moderate &ge;</label>
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      value={policyDraft.moderateIncomeRatePct ?? 10}
-                      onChange={(e) => setPolicyDraft((prev) => ({ ...prev, moderateIncomeRatePct: parseFloat(e.target.value) || 0 }))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-amber-400 text-[11px] font-bold mb-1">Low Contributor &ge;</label>
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      value={policyDraft.lowContributorIncomeRatePct ?? 5}
-                      onChange={(e) => setPolicyDraft((prev) => ({ ...prev, lowContributorIncomeRatePct: parseFloat(e.target.value) || 0 }))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
-                    />
-                  </div>
-                </div>
-              </div>
+                )}
 
-              {/* War Mode Specific Quotas */}
-              <div className="p-3.5 bg-slate-950/70 border border-red-900/30 rounded-2xl space-y-2.5">
-                <div className="font-bold text-red-300 flex items-center justify-between">
-                  <span className="flex items-center gap-1.5">
-                    <Swords className="w-3.5 h-3.5 text-red-400" />
-                    <span>⚔️ War Mode Quotas (Frontline Combatants)</span>
-                  </span>
-                  <span className="text-[10px] text-slate-400">Spends on munitions &amp; combat</span>
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <div>
-                    <label className="block text-emerald-400 text-[11px] font-bold mb-1">War Patriot &ge;</label>
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      value={policyDraft.warPatriotRatePct ?? 5}
-                      onChange={(e) => setPolicyDraft((prev) => ({ ...prev, warPatriotRatePct: parseFloat(e.target.value) || 0 }))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
-                    />
+                {!isPolicyValid && (
+                  <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-xs flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                    <span>
+                      <strong>{tx('Invalid Quota Hierarchy:', 'Jerarquía de Cuotas Inválida:')}</strong>{' '}
+                      {tx('Quotas must satisfy', 'Las cuotas deben cumplir')}{' '}
+                      <strong>{tx('Patriot > Moderate > Low Contributor', 'Patriota > Moderado > Bajo Contribuyente')}</strong>{' '}
+                      {tx('for each playstyle.', 'para cada estilo de juego.')}
+                    </span>
                   </div>
-                  <div>
-                    <label className="block text-blue-400 text-[11px] font-bold mb-1">War Moderate &ge;</label>
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      value={policyDraft.warModerateRatePct ?? 2.5}
-                      onChange={(e) => setPolicyDraft((prev) => ({ ...prev, warModerateRatePct: parseFloat(e.target.value) || 0 }))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-amber-400 text-[11px] font-bold mb-1">War Low &ge;</label>
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      value={policyDraft.warLowRatePct ?? 1}
-                      onChange={(e) => setPolicyDraft((prev) => ({ ...prev, warLowRatePct: parseFloat(e.target.value) || 0 }))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
-                    />
-                  </div>
-                </div>
-              </div>
+                )}
 
-              {/* Eco Mode Specific Quotas */}
-              <div className="p-3.5 bg-slate-950/70 border border-emerald-900/30 rounded-2xl space-y-2.5">
-                <div className="font-bold text-emerald-300 flex items-center justify-between">
-                  <span className="flex items-center gap-1.5">
-                    <Sprout className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>🌾 Eco Mode Quotas (Industrialists &amp; Companies)</span>
-                  </span>
-                  <span className="text-[10px] text-slate-400">Higher passive margins</span>
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <div>
-                    <label className="block text-emerald-400 text-[11px] font-bold mb-1">Eco Patriot &ge;</label>
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      value={policyDraft.ecoPatriotRatePct ?? 15}
-                      onChange={(e) => setPolicyDraft((prev) => ({ ...prev, ecoPatriotRatePct: parseFloat(e.target.value) || 0 }))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
-                    />
+                {/* Analysis Period */}
+                <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-2xl">
+                  <label className="block text-slate-300 font-bold mb-1">
+                    {tx('Analysis Period Window (Days)', 'Ventana del Período de Análisis (Días)')}
+                  </label>
+                  <p className="text-[11px] text-slate-500 mb-2 leading-relaxed">
+                    {tx(
+                      'Timeframe over which citizen BTC income growth is audited (default: 7 days / 1 week).',
+                      'Período de tiempo sobre el cual se audita el crecimiento de ingresos en BTC del ciudadano (predeterminado: 7 días / 1 semana).'
+                    )}
+                  </p>
+                  <div className="grid grid-cols-5 gap-1.5 mb-2">
+                    {[1, 3, 7, 14, 30].map((d) => (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => setPolicyDraft((prev) => ({ ...prev, analysisPeriodDays: d }))}
+                        className={`py-1.5 rounded-lg text-xs font-bold border transition ${
+                          policyDraft.analysisPeriodDays === d
+                            ? 'bg-amber-500 text-slate-950 border-amber-400 font-black'
+                            : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-700'
+                        }`}
+                      >
+                        {d} {d === 1 ? tx('Day', 'Día') : tx('Days', 'Días')}
+                      </button>
+                    ))}
                   </div>
-                  <div>
-                    <label className="block text-blue-400 text-[11px] font-bold mb-1">Eco Moderate &ge;</label>
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      value={policyDraft.ecoModerateRatePct ?? 10}
-                      onChange={(e) => setPolicyDraft((prev) => ({ ...prev, ecoModerateRatePct: parseFloat(e.target.value) || 0 }))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-amber-400 text-[11px] font-bold mb-1">Eco Low &ge;</label>
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      value={policyDraft.ecoLowRatePct ?? 5}
-                      onChange={(e) => setPolicyDraft((prev) => ({ ...prev, ecoLowRatePct: parseFloat(e.target.value) || 0 }))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Historical Big Donor Grace Floor */}
-              <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-2">
-                <label className="block text-amber-300 font-bold mb-1 flex items-center gap-1.5">
-                  <Award className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Historical Big Contributor Grace Floor (BTC)</span>
-                </label>
-                <p className="text-[11px] text-slate-500 leading-relaxed">
-                  Citizens ranked in the nation&apos;s Top Lifetime Donors with cumulative donations &ge; this floor are honored as <strong>Historical Pillars</strong> and protected from being classified as critical leeches during military mobilization.
-                </p>
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={policyDraft.historicalDonorGraceThresholdBtc ?? 500}
-                  onChange={(e) =>
-                    setPolicyDraft((prev) => ({
-                      ...prev,
-                      historicalDonorGraceThresholdBtc: Math.max(0, parseFloat(e.target.value) || 0),
-                    }))
-                  }
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono focus:border-amber-400"
-                />
-              </div>
-
-              {/* Top Historical Donors Protection */}
-              <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-2">
-                <label className="block text-amber-300 font-bold mb-1 flex items-center gap-1.5">
-                  <Award className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Top Lifetime Donors Hall of Fame Protection (Rank)</span>
-                </label>
-                <p className="text-[11px] text-slate-500 leading-relaxed">
-                  Citizens ranked in the nation&apos;s Top X lifetime donors (default: Top 10) are honored as <strong>Historical Pillars</strong> and protected from leech designation even if currently in war munitions mode or inactive.
-                </p>
-                <input
-                  type="number"
-                  min="1"
-                  max="100"
-                  step="1"
-                  value={policyDraft.topHistoricalDonorProtectionRank ?? 10}
-                  onChange={(e) =>
-                    setPolicyDraft((prev) => ({
-                      ...prev,
-                      topHistoricalDonorProtectionRank: Math.max(1, parseInt(e.target.value) || 10),
-                    }))
-                  }
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono focus:border-amber-400"
-                />
-              </div>
-
-              {/* Country-Proportional Leech Wealth Percentile Threshold */}
-              <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-2">
-                <label className="block text-amber-300 font-bold mb-1 flex items-center gap-1.5">
-                  <Coins className="w-3.5 h-3.5 text-amber-400" />
-                  <span>National Wealth Percentile Floor for Critical Leech</span>
-                </label>
-                <p className="text-[11px] text-slate-500 leading-relaxed">
-                  Only citizens in the upper wealth brackets of {countryName} (e.g. Top 25% / 75th percentile) can be classified as Critical Leeches if donating 0. Working-class and modest-wealth citizens are protected as Low Contributors.
-                </p>
-                <div className="flex items-center gap-2 flex-wrap">
-                  {[
-                    { label: 'Top 50% (Median)', val: 50 },
-                    { label: 'Top 25% (P75 - Default)', val: 75 },
-                    { label: 'Top 20% (P80)', val: 80 },
-                    { label: 'Top 10% (P90)', val: 90 },
-                  ].map((tier) => (
-                    <button
-                      key={tier.val}
-                      type="button"
-                      onClick={() =>
-                        setPolicyDraft((prev) => ({
-                          ...prev,
-                          leechWealthPercentileCutoff: tier.val,
-                        }))
-                      }
-                      className={`px-2.5 py-1 rounded-xl text-xs font-semibold transition border ${
-                        (policyDraft.leechWealthPercentileCutoff ?? 75) === tier.val
-                          ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 font-bold'
-                          : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      {tier.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Damage to BTC Conversion Toggle & Presets */}
-              <div className="p-3.5 bg-slate-950/70 border border-red-950/40 rounded-2xl space-y-3">
-                <label className="flex items-start gap-2.5 cursor-pointer select-none">
                   <input
-                    type="checkbox"
-                    checked={Boolean(policyDraft.includeDamageInLeechCalculation)}
+                    type="number"
+                    min="1"
+                    max="90"
+                    step="1"
+                    value={policyDraft.analysisPeriodDays ?? 7}
                     onChange={(e) =>
                       setPolicyDraft((prev) => ({
                         ...prev,
-                        includeDamageInLeechCalculation: e.target.checked,
+                        analysisPeriodDays: Math.max(1, parseInt(e.target.value) || 7),
                       }))
                     }
-                    className="mt-0.5 rounded accent-amber-500 w-4 h-4"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono focus:outline-none focus:border-amber-400"
                   />
-                  <div>
-                    <span className="font-bold text-slate-200 block flex items-center gap-1.5">
-                      <Swords className="w-3.5 h-3.5 text-red-400" /> Convert Battlefield Damage to Defense Credit
-                    </span>
-                    <span className="text-[11px] text-slate-400 leading-relaxed block mt-0.5">
-                      Awards frontline warriors who deal massive combat damage (even with 0 direct BTC donations) with defense contribution credit, recognizing them as Combat Heroes instead of leeches.
-                    </span>
-                  </div>
-                </label>
+                </div>
 
-                {policyDraft.includeDamageInLeechCalculation && (
-                  <div className="pt-2 border-t border-slate-800/80 space-y-2 pl-6">
-                    <div className="flex items-center justify-between">
-                      <label className="text-[11px] font-bold text-slate-300">
-                        Conversion Rate (BTC per 1,000 damage dealt):
+                {/* Standard General Quotas */}
+                <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-2.5">
+                  <div className="font-bold text-white flex items-center gap-1.5">
+                    <Scale className="w-3.5 h-3.5 text-amber-400" />
+                    <span>{tx('General Default Income Quotas (%)', 'Cuotas Generales de Ingreso por Defecto (%)')}</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="block text-emerald-400 text-[11px] font-bold mb-1">
+                        {tx('Patriot ≥', 'Patriota ≥')}
                       </label>
                       <input
                         type="number"
-                        step="0.01"
-                        min="0.001"
-                        value={policyDraft.damageConversionRateBtcPer1k ?? 0.08}
-                        onChange={(e) =>
-                          setPolicyDraft((prev) => ({
-                            ...prev,
-                            damageConversionRateBtcPer1k: Math.max(0.001, parseFloat(e.target.value) || 0.08),
-                          }))
-                        }
-                        className="w-24 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-white font-mono text-xs text-right focus:border-amber-400"
+                        step="any"
+                        min="0"
+                        value={policyDraft.patriotIncomeRatePct ?? 15}
+                        onChange={(e) => setPolicyDraft((prev) => ({ ...prev, patriotIncomeRatePct: parseFloat(e.target.value) || 0 }))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
                       />
                     </div>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[10px] text-slate-500 font-bold uppercase">Presets:</span>
-                      {[0.05, 0.08, 0.09, 0.1, 0.12].map((preset) => (
-                        <button
-                          key={preset}
-                          type="button"
-                          onClick={() =>
-                            setPolicyDraft((prev) => ({
-                              ...prev,
-                              damageConversionRateBtcPer1k: preset,
-                            }))
-                          }
-                          className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold transition border ${
-                            policyDraft.damageConversionRateBtcPer1k === preset
-                              ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 font-bold'
-                              : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                          }`}
-                        >
-                          {preset}
-                        </button>
-                      ))}
+                    <div>
+                      <label className="block text-blue-400 text-[11px] font-bold mb-1">
+                        {tx('Moderate ≥', 'Moderado ≥')}
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        value={policyDraft.moderateIncomeRatePct ?? 10}
+                        onChange={(e) => setPolicyDraft((prev) => ({ ...prev, moderateIncomeRatePct: parseFloat(e.target.value) || 0 }))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
+                      />
                     </div>
-
-                    <div className="p-2.5 bg-slate-900/90 rounded-xl border border-red-900/30 text-[10px] space-y-1">
-                      <div className="font-mono text-red-300 font-bold">
-                        Formula: (Battlefield Damage ÷ 1,000) × {policyDraft.damageConversionRateBtcPer1k ?? 0.08} BTC
-                      </div>
-                      <div className="text-slate-400">
-                        🛡️ <strong>Playstyle Gating:</strong> Applied to active frontline warriors (Pure-War &amp; Hybrid). Pure-Eco industrialists receive 0 BTC credit to prevent tax evasion through incidental warfare.
-                      </div>
+                    <div>
+                      <label className="block text-amber-400 text-[11px] font-bold mb-1">
+                        {tx('Low Contributor ≥', 'Bajo Contribuyente ≥')}
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        value={policyDraft.lowContributorIncomeRatePct ?? 5}
+                        onChange={(e) => setPolicyDraft((prev) => ({ ...prev, lowContributorIncomeRatePct: parseFloat(e.target.value) || 0 }))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
+                      />
                     </div>
                   </div>
-                )}
-              </div>
+                </div>
 
-              {/* Resource Wealth Inclusion Toggle */}
-              <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-2xl">
-                <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                {/* War Mode Specific Quotas */}
+                <div className="p-3.5 bg-slate-950/70 border border-red-900/30 rounded-2xl space-y-2.5">
+                  <div className="font-bold text-red-300 flex items-center justify-between gap-2 flex-wrap">
+                    <span className="flex items-center gap-1.5">
+                      <Swords className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                      <span>
+                        {tx('⚔️ War Mode Quotas (Frontline Combatants)', '⚔️ Cuotas Modo War (Combatientes del Frente)')}
+                      </span>
+                    </span>
+                    <span className="text-[10px] text-slate-400">
+                      {tx('Spends on munitions & combat', 'Gasta en municiones y combate')}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="block text-emerald-400 text-[11px] font-bold mb-1">
+                        {tx('War Patriot ≥', 'Patriota War ≥')}
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        value={policyDraft.warPatriotRatePct ?? 5}
+                        onChange={(e) => setPolicyDraft((prev) => ({ ...prev, warPatriotRatePct: parseFloat(e.target.value) || 0 }))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-blue-400 text-[11px] font-bold mb-1">
+                        {tx('War Moderate ≥', 'Moderado War ≥')}
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        value={policyDraft.warModerateRatePct ?? 2.5}
+                        onChange={(e) => setPolicyDraft((prev) => ({ ...prev, warModerateRatePct: parseFloat(e.target.value) || 0 }))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-amber-400 text-[11px] font-bold mb-1">
+                        {tx('War Low ≥', 'Bajo War ≥')}
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        value={policyDraft.warLowRatePct ?? 1}
+                        onChange={(e) => setPolicyDraft((prev) => ({ ...prev, warLowRatePct: parseFloat(e.target.value) || 0 }))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Eco Mode Specific Quotas */}
+                <div className="p-3.5 bg-slate-950/70 border border-emerald-900/30 rounded-2xl space-y-2.5">
+                  <div className="font-bold text-emerald-300 flex items-center justify-between gap-2 flex-wrap">
+                    <span className="flex items-center gap-1.5">
+                      <Sprout className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      <span>
+                        {tx('🌾 Eco Mode Quotas (Industrialists & Companies)', '🌾 Cuotas Modo Eco (Industriales y Empresas)')}
+                      </span>
+                    </span>
+                    <span className="text-[10px] text-slate-400">
+                      {tx('Higher passive margins', 'Mayores márgenes pasivos')}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="block text-emerald-400 text-[11px] font-bold mb-1">
+                        {tx('Eco Patriot ≥', 'Patriota Eco ≥')}
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        value={policyDraft.ecoPatriotRatePct ?? 15}
+                        onChange={(e) => setPolicyDraft((prev) => ({ ...prev, ecoPatriotRatePct: parseFloat(e.target.value) || 0 }))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-blue-400 text-[11px] font-bold mb-1">
+                        {tx('Eco Moderate ≥', 'Moderado Eco ≥')}
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        value={policyDraft.ecoModerateRatePct ?? 10}
+                        onChange={(e) => setPolicyDraft((prev) => ({ ...prev, ecoModerateRatePct: parseFloat(e.target.value) || 0 }))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-amber-400 text-[11px] font-bold mb-1">
+                        {tx('Eco Low ≥', 'Bajo Eco ≥')}
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        value={policyDraft.ecoLowRatePct ?? 5}
+                        onChange={(e) => setPolicyDraft((prev) => ({ ...prev, ecoLowRatePct: parseFloat(e.target.value) || 0 }))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Historical Big Donor Grace Floor */}
+                <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-2">
+                  <label className="block text-amber-300 font-bold mb-1 flex items-center gap-1.5">
+                    <Award className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span>
+                      {tx(
+                        'Historical Big Contributor Grace Floor (BTC)',
+                        'Piso de Gracia para Grandes Contribuyentes Históricos (BTC)'
+                      )}
+                    </span>
+                  </label>
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    {tx(
+                      "Citizens ranked in the nation's Top Lifetime Donors with cumulative donations ≥ this floor are honored as",
+                      'Los ciudadanos ubicados en el Top de Donantes Históricos de la nación con donaciones acumuladas ≥ este piso son honrados como'
+                    )}{' '}
+                    <strong>{tx('Historical Pillars', 'Pilares Históricos')}</strong>{' '}
+                    {tx(
+                      'and protected from being classified as critical leeches during military mobilization.',
+                      'y protegidos de ser clasificados como leeches críticos durante la movilización militar.'
+                    )}
+                  </p>
                   <input
-                    type="checkbox"
-                    checked={Boolean(policyDraft.includeResourceWealth)}
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={policyDraft.historicalDonorGraceThresholdBtc ?? 500}
                     onChange={(e) =>
                       setPolicyDraft((prev) => ({
                         ...prev,
-                        includeResourceWealth: e.target.checked,
+                        historicalDonorGraceThresholdBtc: Math.max(0, parseFloat(e.target.value) || 0),
                       }))
                     }
-                    className="mt-0.5 rounded accent-amber-500 w-4 h-4"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono focus:border-amber-400"
                   />
-                  <div>
-                    <span className="font-bold text-slate-200 block">
-                      Include Raw Resource Wealth (Commodities, excluding equipment)
+                </div>
+
+                {/* Top Historical Donors Protection */}
+                <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-2">
+                  <label className="block text-amber-300 font-bold mb-1 flex items-center gap-1.5">
+                    <Award className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span>
+                      {tx(
+                        'Top Lifetime Donors Hall of Fame Protection (Rank)',
+                        'Protección Salón de la Fama Top Donantes Históricos (Rango)'
+                      )}
                     </span>
-                    <span className="text-[11px] text-slate-400 leading-relaxed block mt-0.5">
-                      Counts resource stockpiles (iron, lead, oil, bread, narcotics) in donation capacity calculations, as displayed in player stats.
+                  </label>
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    {tx(
+                      "Citizens ranked in the nation's Top X lifetime donors (default: Top 10) are honored as",
+                      'Los ciudadanos ubicados en el Top X de donantes históricos de la nación (predeterminado: Top 10) son honrados como'
+                    )}{' '}
+                    <strong>{tx('Historical Pillars', 'Pilares Históricos')}</strong>{' '}
+                    {tx(
+                      'and protected from leech designation even if currently in war munitions mode or inactive.',
+                      'y protegidos de la designación de leech incluso si actualmente están en modo munición de guerra o inactivos.'
+                    )}
+                  </p>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    step="1"
+                    value={policyDraft.topHistoricalDonorProtectionRank ?? 10}
+                    onChange={(e) =>
+                      setPolicyDraft((prev) => ({
+                        ...prev,
+                        topHistoricalDonorProtectionRank: Math.max(1, parseInt(e.target.value) || 10),
+                      }))
+                    }
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono focus:border-amber-400"
+                  />
+                </div>
+
+                {/* Country-Proportional Leech Wealth Percentile Threshold */}
+                <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-2">
+                  <label className="block text-amber-300 font-bold mb-1 flex items-center gap-1.5">
+                    <Coins className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span>
+                      {tx(
+                        'National Wealth Percentile Floor for Critical Leech',
+                        'Piso de Percentil de Riqueza Nacional para Leech Crítico'
+                      )}
                     </span>
+                  </label>
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    {tx(
+                      `Only citizens in the upper wealth brackets of ${countryName} (e.g. Top 25% / 75th percentile) can be classified as Critical Leeches if donating 0. Working-class and modest-wealth citizens are protected as Low Contributors.`,
+                      `Solo los ciudadanos en los tramos superiores de riqueza de ${countryName} (ej. Top 25% / percentil 75) pueden ser clasificados como Leeches Críticos si donan 0. Los ciudadanos de clase trabajadora y patrimonio modesto están protegidos como Bajos Contribuyentes.`
+                    )}
+                  </p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {[
+                      { label: tx('Top 50% (Median)', 'Top 50% (Mediana)'), val: 50 },
+                      { label: tx('Top 25% (P75 - Default)', 'Top 25% (P75 - Predeterminado)'), val: 75 },
+                      { label: tx('Top 20% (P80)', 'Top 20% (P80)'), val: 80 },
+                      { label: tx('Top 10% (P90)', 'Top 10% (P90)'), val: 90 },
+                    ].map((tier) => (
+                      <button
+                        key={tier.val}
+                        type="button"
+                        onClick={() =>
+                          setPolicyDraft((prev) => ({
+                            ...prev,
+                            leechWealthPercentileCutoff: tier.val,
+                          }))
+                        }
+                        className={`px-2.5 py-1 rounded-xl text-xs font-semibold transition border ${
+                          (policyDraft.leechWealthPercentileCutoff ?? 75) === tier.val
+                            ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 font-bold'
+                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {tier.label}
+                      </button>
+                    ))}
                   </div>
-                </label>
+                </div>
+
+                {/* Damage to BTC Conversion Toggle & Presets */}
+                <div className="p-3.5 bg-slate-950/70 border border-red-950/40 rounded-2xl space-y-3">
+                  <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(policyDraft.includeDamageInLeechCalculation)}
+                      onChange={(e) =>
+                        setPolicyDraft((prev) => ({
+                          ...prev,
+                          includeDamageInLeechCalculation: e.target.checked,
+                        }))
+                      }
+                      className="mt-0.5 rounded accent-amber-500 w-4 h-4"
+                    />
+                    <div>
+                      <span className="font-bold text-slate-200 flex items-center gap-1.5">
+                        <Swords className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                        <span>
+                          {tx(
+                            'Convert Battlefield Damage to Defense Credit',
+                            'Convertir Daño en Campo de Batalla a Crédito de Defensa'
+                          )}
+                        </span>
+                      </span>
+                      <span className="text-[11px] text-slate-400 leading-relaxed block mt-0.5">
+                        {tx(
+                          'Awards frontline warriors who deal massive combat damage (even with 0 direct BTC donations) with defense contribution credit, recognizing them as Combat Heroes instead of leeches.',
+                          'Otorga a los guerreros de primera línea que infligen un daño masivo en combate (incluso con 0 donaciones directas en BTC) crédito de contribución a la defensa, reconociéndolos como Héroes de Combate en lugar de leeches.'
+                        )}
+                      </span>
+                    </div>
+                  </label>
+
+                  {policyDraft.includeDamageInLeechCalculation && (
+                    <div className="pt-2 border-t border-slate-800/80 space-y-2 pl-6">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-[11px] font-bold text-slate-300">
+                          {tx(
+                            'Conversion Rate (BTC per 1,000 damage dealt):',
+                            'Tasa de Conversión (BTC por cada 1,000 de daño infligido):'
+                          )}
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0.001"
+                          value={policyDraft.damageConversionRateBtcPer1k ?? 0.08}
+                          onChange={(e) =>
+                            setPolicyDraft((prev) => ({
+                              ...prev,
+                              damageConversionRateBtcPer1k: Math.max(0.001, parseFloat(e.target.value) || 0.08),
+                            }))
+                          }
+                          className="w-24 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-white font-mono text-xs text-right focus:border-amber-400"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[10px] text-slate-500 font-bold uppercase">
+                          {tx('Presets:', 'Ajustes:')}
+                        </span>
+                        {[0.05, 0.08, 0.09, 0.1, 0.12].map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() =>
+                              setPolicyDraft((prev) => ({
+                                ...prev,
+                                damageConversionRateBtcPer1k: preset,
+                              }))
+                            }
+                            className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold transition border ${
+                              policyDraft.damageConversionRateBtcPer1k === preset
+                                ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 font-bold'
+                                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            {preset}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="p-2.5 bg-slate-900/90 rounded-xl border border-red-900/30 text-[10px] space-y-1">
+                        <div className="font-mono text-red-300 font-bold">
+                          {tx(
+                            `Formula: (Battlefield Damage ÷ 1,000) × ${policyDraft.damageConversionRateBtcPer1k ?? 0.08} BTC`,
+                            `Fórmula: (Daño en Campo de Batalla ÷ 1,000) × ${policyDraft.damageConversionRateBtcPer1k ?? 0.08} BTC`
+                          )}
+                        </div>
+                        <div className="text-slate-400">
+                          🛡️ <strong>{tx('Playstyle Gating:', 'Filtro por Estilo de Juego:')}</strong>{' '}
+                          {tx(
+                            'Applied to active frontline warriors (Pure-War & Hybrid). Pure-Eco industrialists receive 0 BTC credit to prevent tax evasion through incidental warfare.',
+                            'Se aplica a guerreros activos de primera línea (Pure-War y Hybrid). Los industriales Pure-Eco reciben 0 crédito en BTC para prevenir la evasión fiscal mediante combates incidentales.'
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Resource Wealth Inclusion Toggle */}
+                <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-2xl">
+                  <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(policyDraft.includeResourceWealth)}
+                      onChange={(e) =>
+                        setPolicyDraft((prev) => ({
+                          ...prev,
+                          includeResourceWealth: e.target.checked,
+                        }))
+                      }
+                      className="mt-0.5 rounded accent-amber-500 w-4 h-4"
+                    />
+                    <div>
+                      <span className="font-bold text-slate-200 block">
+                        {tx(
+                          'Include Raw Resource Wealth (Commodities, excluding equipment)',
+                          'Incluir Riqueza en Recursos Brutos (Materias Primas, excluyendo equipamiento)'
+                        )}
+                      </span>
+                      <span className="text-[11px] text-slate-400 leading-relaxed block mt-0.5">
+                        {tx(
+                          'Counts resource stockpiles (iron, lead, oil, bread, narcotics) in donation capacity calculations, as displayed in player stats.',
+                          'Contabiliza las reservas de recursos (hierro, plomo, petróleo, pan, narcóticos) en los cálculos de capacidad de donación, tal como se muestra en las estadísticas del jugador.'
+                        )}
+                      </span>
+                    </div>
+                  </label>
+                </div>
               </div>
 
-              {/* Actions */}
-              <div className="pt-3 border-t border-slate-800 flex items-center justify-between gap-2.5">
+              {/* Fixed Bottom Action Bar */}
+              <div className="px-6 py-4 border-t border-slate-800 bg-slate-900 shrink-0 z-20 flex items-center justify-between gap-2.5">
                 <button
                   type="button"
                   onClick={() => setPolicyDraft(sanitizePolicyConfig(config))}
                   className="px-3.5 py-2 bg-slate-800/80 hover:bg-slate-800 text-slate-400 hover:text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition"
-                  title="Reset all thresholds to live country API-calculated defaults"
+                  title={tx(
+                    'Reset all thresholds to live country API-calculated defaults',
+                    'Restablecer todos los umbrales a los valores predeterminados del país'
+                  )}
                 >
-                  <RotateCcw className="w-3.5 h-3.5" /> Reset to Country Defaults
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>{tx('Reset to Country Defaults', 'Restablecer a Valores del País')}</span>
                 </button>
                 <div className="flex items-center gap-2">
                   <button
@@ -2111,13 +2254,13 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     onClick={() => setIsPolicyModalOpen(false)}
                     className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-bold transition"
                   >
-                    Cancel
+                    {tx('Cancel', 'Cancelar')}
                   </button>
                   <button
                     type="submit"
                     className="px-5 py-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black rounded-xl transition shadow-md active:scale-95"
                   >
-                    Save &amp; Apply Policy
+                    {tx('Save & Apply Policy', 'Guardar y Aplicar Política')}
                   </button>
                 </div>
               </div>

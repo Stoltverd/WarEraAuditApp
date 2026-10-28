@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 export type WareraItemType =
   | 'oil'
@@ -17,7 +17,8 @@ export type WareraItemType =
   | 'helicopter'
   | 'jet'
   | 'raw'
-  | 'general';
+  | 'general'
+  | string;
 
 interface WareraItemIconProps {
   itemCode?: string;
@@ -26,19 +27,200 @@ interface WareraItemIconProps {
   showLabel?: boolean;
 }
 
+/**
+ * Official WarEra item sprite base URL from https://arcana.warera.wiki/js/utils.js:
+ * https://media.warera.io/images/items/${imgName}.png?v=31
+ */
+const WARERA_ITEM_IMG_BASE = 'https://media.warera.io/images/items';
+const WARERA_ITEM_IMG_VER = '31';
+
+/**
+ * Canonical mapping from any item ID, API code, display name, or tiered equipment code
+ * to the exact sprite filename on https://media.warera.io/images/items/{sprite}.png?v=31
+ * extracted from https://arcana.warera.wiki/js/data.js (ITEMS & DC_ITEM_IMG).
+ */
+const ITEM_SPRITE_MAP: Record<string, { sprite: string; label: string; bg: string; textColor: string }> = {
+  // Raw Materials
+  grain: { sprite: 'grain', label: 'Grain', bg: '#1f2937', textColor: 'text-emerald-300' },
+  wheat: { sprite: 'grain', label: 'Grain', bg: '#1f2937', textColor: 'text-emerald-300' },
+  limestone: { sprite: 'limestone', label: 'Limestone', bg: '#1f2937', textColor: 'text-stone-300' },
+  lead: { sprite: 'lead', label: 'Lead', bg: '#1f2937', textColor: 'text-purple-300' },
+  petroleum: { sprite: 'petroleum', label: 'Petroleum', bg: '#1f2937', textColor: 'text-amber-300' },
+  crudeoil: { sprite: 'petroleum', label: 'Petroleum', bg: '#1f2937', textColor: 'text-amber-300' },
+  coca: { sprite: 'coca', label: 'Coca', bg: '#1f2937', textColor: 'text-lime-300' },
+  cocaleaf: { sprite: 'coca', label: 'Coca', bg: '#1f2937', textColor: 'text-lime-300' },
+  iron: { sprite: 'iron', label: 'Iron', bg: '#1f2937', textColor: 'text-slate-200' },
+  livestock: { sprite: 'livestock', label: 'Livestock', bg: '#1f2937', textColor: 'text-orange-300' },
+  cattle: { sprite: 'livestock', label: 'Livestock', bg: '#1f2937', textColor: 'text-orange-300' },
+  fish: { sprite: 'fish', label: 'Fish', bg: '#1f2937', textColor: 'text-sky-300' },
+  wood: { sprite: 'wood', label: 'Wood', bg: '#1f2937', textColor: 'text-amber-400' },
+  coal: { sprite: 'limestone', label: 'Coal', bg: '#1f2937', textColor: 'text-slate-300' },
+
+  // Manufactured Products
+  steel: { sprite: 'steel', label: 'Steel', bg: '#14532d', textColor: 'text-cyan-300' },
+  concrete: { sprite: 'concrete', label: 'Concrete', bg: '#14532d', textColor: 'text-stone-200' },
+  oil: { sprite: 'oil', label: 'Oil', bg: '#14532d', textColor: 'text-amber-400' },
+  bread: { sprite: 'bread', label: 'Bread', bg: '#14532d', textColor: 'text-amber-200' },
+  food: { sprite: 'bread', label: 'Food', bg: '#14532d', textColor: 'text-emerald-300' },
+  steak: { sprite: 'steak', label: 'Steak', bg: '#1e3a5f', textColor: 'text-rose-300' },
+  cookedfish: { sprite: 'cookedFish', label: 'Cooked Fish', bg: '#3b1f5e', textColor: 'text-purple-300' },
+  cooked_fish: { sprite: 'cookedFish', label: 'Cooked Fish', bg: '#3b1f5e', textColor: 'text-purple-300' },
+  'cooked fish': { sprite: 'cookedFish', label: 'Cooked Fish', bg: '#3b1f5e', textColor: 'text-purple-300' },
+  lightammo: { sprite: 'lightAmmo', label: 'Light Ammo', bg: '#14532d', textColor: 'text-emerald-300' },
+  light_ammo: { sprite: 'lightAmmo', label: 'Light Ammo', bg: '#14532d', textColor: 'text-emerald-300' },
+  'light ammo': { sprite: 'lightAmmo', label: 'Light Ammo', bg: '#14532d', textColor: 'text-emerald-300' },
+  ammo: { sprite: 'ammo', label: 'Ammo', bg: '#1e3a5f', textColor: 'text-cyan-300' },
+  munitions: { sprite: 'ammo', label: 'Munitions', bg: '#1e3a5f', textColor: 'text-cyan-300' },
+  heavyammo: { sprite: 'heavyAmmo', label: 'Heavy Ammo', bg: '#3b1f5e', textColor: 'text-purple-300' },
+  heavy_ammo: { sprite: 'heavyAmmo', label: 'Heavy Ammo', bg: '#3b1f5e', textColor: 'text-purple-300' },
+  'heavy ammo': { sprite: 'heavyAmmo', label: 'Heavy Ammo', bg: '#3b1f5e', textColor: 'text-purple-300' },
+  cocain: { sprite: 'cocain', label: 'Cocaine', bg: '#3b1f5e', textColor: 'text-fuchsia-300' },
+  cocaine: { sprite: 'cocain', label: 'Cocaine', bg: '#3b1f5e', textColor: 'text-fuchsia-300' },
+  paper: { sprite: 'paper', label: 'Paper', bg: '#14532d', textColor: 'text-slate-100' },
+
+  // Cases & Craft Salvage
+  case1: { sprite: 'case1', label: 'Standard Case', bg: '#14532d', textColor: 'text-emerald-300' },
+  case: { sprite: 'case1', label: 'Case', bg: '#14532d', textColor: 'text-emerald-300' },
+  case2: { sprite: 'case2', label: 'Elite Case', bg: '#7f1d1d', textColor: 'text-rose-300' },
+  case_2: { sprite: 'case2', label: 'Elite Case', bg: '#7f1d1d', textColor: 'text-rose-300' },
+  woodencase: { sprite: 'woodenCase', label: 'Wooden Case', bg: '#374151', textColor: 'text-amber-300' },
+  wooden_case: { sprite: 'woodenCase', label: 'Wooden Case', bg: '#374151', textColor: 'text-amber-300' },
+  'wooden case': { sprite: 'woodenCase', label: 'Wooden Case', bg: '#374151', textColor: 'text-amber-300' },
+  scraps: { sprite: 'scraps', label: 'Scraps', bg: '#1e3a5f', textColor: 'text-sky-300' },
+  scrap: { sprite: 'scraps', label: 'Scraps', bg: '#1e3a5f', textColor: 'text-sky-300' },
+
+  // Weapons & Combat Equipment (DC_ITEM_IMG from arcana.warera.wiki/js/data.js)
+  knife: { sprite: 'knife', label: 'Knife', bg: '#1f2937', textColor: 'text-red-300' },
+  gun: { sprite: 'gun', label: 'Handgun', bg: '#14532d', textColor: 'text-red-300' },
+  pistol: { sprite: 'gun', label: 'Handgun', bg: '#14532d', textColor: 'text-red-300' },
+  rifle: { sprite: 'rifle', label: 'Rifle', bg: '#1e3a5f', textColor: 'text-red-400' },
+  weapon: { sprite: 'rifle', label: 'Weapon', bg: '#1e3a5f', textColor: 'text-red-400' },
+  weapons: { sprite: 'rifle', label: 'Weapons', bg: '#1e3a5f', textColor: 'text-red-400' },
+  sniper: { sprite: 'sniper', label: 'Sniper', bg: '#3b1f5e', textColor: 'text-purple-300' },
+  tank: { sprite: 'tank', label: 'Tank', bg: '#6b3410', textColor: 'text-amber-300' },
+  tanks: { sprite: 'tank', label: 'Tanks', bg: '#6b3410', textColor: 'text-amber-300' },
+  artillery: { sprite: 'tank', label: 'Artillery', bg: '#6b3410', textColor: 'text-amber-300' },
+  jet: { sprite: 'jet', label: 'Fighter Jet', bg: '#7f1d1d', textColor: 'text-rose-300' },
+  helicopter: { sprite: 'jet', label: 'Aircraft', bg: '#7f1d1d', textColor: 'text-rose-300' },
+  helmet: { sprite: 'helmet', label: 'Helmet', bg: '#1e3a5f', textColor: 'text-blue-300' },
+  chest: { sprite: 'chest', label: 'Body Armor', bg: '#1e3a5f', textColor: 'text-blue-300' },
+  armor: { sprite: 'chest', label: 'Armor', bg: '#1e3a5f', textColor: 'text-blue-300' },
+  pants: { sprite: 'pants', label: 'Combat Pants', bg: '#1e3a5f', textColor: 'text-blue-300' },
+  boots: { sprite: 'boots', label: 'Combat Boots', bg: '#1e3a5f', textColor: 'text-blue-300' },
+  gloves: { sprite: 'gloves', label: 'Combat Gloves', bg: '#1e3a5f', textColor: 'text-blue-300' },
+};
+
+/**
+ * Tier background colors matching Arcana's TIER_BG (tier 1..6) for tiered combat gear
+ * like helmet1..6, chest1..6, pants1..6, boots1..6, gloves1..6.
+ */
+const EQUIPMENT_TIER_BG: Record<string, string> = {
+  '1': '#1f2937',
+  '2': '#14532d',
+  '3': '#1e3a5f',
+  '4': '#3b1f5e',
+  '5': '#6b3410',
+  '6': '#7f1d1d',
+};
+
+export function resolveWareraItemMeta(rawCode?: string): {
+  spriteUrl: string | null;
+  label: string;
+  bg: string;
+  textColor: string;
+} {
+  if (!rawCode) {
+    return { spriteUrl: null, label: 'Commodity', bg: '#1f2937', textColor: 'text-slate-300' };
+  }
+
+  const trimmed = rawCode.trim();
+  const lower = trimmed.toLowerCase();
+  const compact = lower.replace(/[\s_-]+/g, '');
+
+  // 1. Direct lookup on lower or compact key
+  const direct = ITEM_SPRITE_MAP[lower] || ITEM_SPRITE_MAP[compact];
+  if (direct) {
+    return {
+      spriteUrl: `${WARERA_ITEM_IMG_BASE}/${direct.sprite}.png?v=${WARERA_ITEM_IMG_VER}`,
+      label: direct.label,
+      bg: direct.bg,
+      textColor: direct.textColor,
+    };
+  }
+
+  // 2. Check tiered equipment codes (e.g., helmet1..6, chest1..6, pants1..6, boots1..6, gloves1..6)
+  const gearMatch = compact.match(/^(helmet|chest|pants|boots|gloves|knife|gun|rifle|sniper|tank|jet)([1-6])$/);
+  if (gearMatch) {
+    const baseSlot = gearMatch[1];
+    const tierNum = gearMatch[2];
+    const baseMeta = ITEM_SPRITE_MAP[baseSlot];
+    if (baseMeta) {
+      return {
+        spriteUrl: `${WARERA_ITEM_IMG_BASE}/${baseMeta.sprite}.png?v=${WARERA_ITEM_IMG_VER}`,
+        label: `${baseMeta.label} T${tierNum}`,
+        bg: EQUIPMENT_TIER_BG[tierNum] || baseMeta.bg,
+        textColor: baseMeta.textColor,
+      };
+    }
+  }
+
+  // 3. Partial substring matching for descriptive labels
+  if (compact.includes('cookedfish')) {
+    const m = ITEM_SPRITE_MAP.cookedfish;
+    return { spriteUrl: `${WARERA_ITEM_IMG_BASE}/${m.sprite}.png?v=${WARERA_ITEM_IMG_VER}`, ...m };
+  }
+  if (compact.includes('heavyammo')) {
+    const m = ITEM_SPRITE_MAP.heavyammo;
+    return { spriteUrl: `${WARERA_ITEM_IMG_BASE}/${m.sprite}.png?v=${WARERA_ITEM_IMG_VER}`, ...m };
+  }
+  if (compact.includes('lightammo')) {
+    const m = ITEM_SPRITE_MAP.lightammo;
+    return { spriteUrl: `${WARERA_ITEM_IMG_BASE}/${m.sprite}.png?v=${WARERA_ITEM_IMG_VER}`, ...m };
+  }
+  if (compact.includes('woodencase')) {
+    const m = ITEM_SPRITE_MAP.woodencase;
+    return { spriteUrl: `${WARERA_ITEM_IMG_BASE}/${m.sprite}.png?v=${WARERA_ITEM_IMG_VER}`, ...m };
+  }
+  for (const [key, meta] of Object.entries(ITEM_SPRITE_MAP)) {
+    if (key.length >= 4 && compact.includes(key)) {
+      return {
+        spriteUrl: `${WARERA_ITEM_IMG_BASE}/${meta.sprite}.png?v=${WARERA_ITEM_IMG_VER}`,
+        label: meta.label,
+        bg: meta.bg,
+        textColor: meta.textColor,
+      };
+    }
+  }
+
+  return {
+    spriteUrl: null,
+    label: trimmed,
+    bg: '#1f2937',
+    textColor: 'text-slate-300',
+  };
+}
+
 export const WareraItemIcon: React.FC<WareraItemIconProps> = ({
   itemCode = 'general',
   className = '',
   size = 'sm',
   showLabel = false,
 }) => {
-  const normalized = (itemCode || 'general').toLowerCase().trim();
+  const [imgFailed, setImgFailed] = useState(false);
+  const { spriteUrl, label, bg, textColor } = resolveWareraItemMeta(itemCode);
 
   const sizeClasses = {
-    xs: 'w-3.5 h-3.5 text-[10px]',
+    xs: 'w-4 h-4 text-[10px]',
     sm: 'w-5 h-5 text-xs',
     md: 'w-7 h-7 text-sm',
     lg: 'w-9 h-9 text-base',
+  }[size];
+
+  const imgSizeClasses = {
+    xs: 'w-3 h-3',
+    sm: 'w-4 h-4',
+    md: 'w-5 h-5',
+    lg: 'w-6 h-6',
   }[size];
 
   const iconSizes = {
@@ -48,145 +230,42 @@ export const WareraItemIcon: React.FC<WareraItemIconProps> = ({
     lg: 22,
   }[size];
 
-  // Map known War Era item codes to custom SVGs & vibrant color schemes matching Arcana Era
-  let bgGradient = 'from-slate-700 to-slate-900 border-slate-600';
-  let textColor = 'text-slate-300';
-  let label = itemCode;
-
-  if (normalized.includes('oil')) {
-    bgGradient = 'from-amber-600/30 to-amber-950/80 border-amber-500/40';
-    textColor = 'text-amber-400';
-    label = 'Oil';
-  } else if (normalized.includes('iron')) {
-    bgGradient = 'from-slate-600/40 to-slate-900/90 border-slate-400/40';
-    textColor = 'text-slate-200';
-    label = 'Iron';
-  } else if (normalized.includes('food') || normalized.includes('grain')) {
-    bgGradient = 'from-emerald-600/30 to-emerald-950/80 border-emerald-500/40';
-    textColor = 'text-emerald-400';
-    label = 'Food';
-  } else if (normalized.includes('steel')) {
-    bgGradient = 'from-cyan-600/30 to-cyan-950/80 border-cyan-500/40';
-    textColor = 'text-cyan-300';
-    label = 'Steel';
-  } else if (normalized.includes('lead')) {
-    bgGradient = 'from-purple-600/30 to-purple-950/80 border-purple-500/40';
-    textColor = 'text-purple-300';
-    label = 'Lead';
-  } else if (normalized.includes('munit') || normalized.includes('ammo')) {
-    bgGradient = 'from-rose-600/30 to-rose-950/80 border-rose-500/40';
-    textColor = 'text-rose-400';
-    label = 'Munitions';
-  } else if (normalized.includes('alumin')) {
-    bgGradient = 'from-sky-600/30 to-sky-950/80 border-sky-400/40';
-    textColor = 'text-sky-300';
-    label = 'Aluminium';
-  } else if (normalized.includes('rifle') || normalized.includes('gun') || normalized.includes('weapon')) {
-    bgGradient = 'from-red-600/30 to-red-950/80 border-red-500/40';
-    textColor = 'text-red-400';
-    label = 'Rifle';
-  } else if (normalized.includes('tank')) {
-    bgGradient = 'from-lime-600/30 to-lime-950/80 border-lime-500/40';
-    textColor = 'text-lime-300';
-    label = 'Tank';
-  } else if (normalized.includes('armor') || normalized.includes('shield')) {
-    bgGradient = 'from-blue-600/30 to-blue-950/80 border-blue-500/40';
-    textColor = 'text-blue-300';
-    label = 'Armor';
-  }
-
-  const renderSvg = () => {
-    if (normalized.includes('oil')) {
-      return (
-        <svg width={iconSizes} height={iconSizes} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M12 2v4" />
-          <path d="m4.93 10.93 2.83 2.83" />
-          <path d="M2 18h20" />
-          <path d="M20 18v-5a4 4 0 0 0-4-4h-4a4 4 0 0 0-4 4v5" />
-          <circle cx="12" cy="14" r="2" />
-        </svg>
-      );
-    }
-    if (normalized.includes('iron') || normalized.includes('steel')) {
-      return (
-        <svg width={iconSizes} height={iconSizes} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect width="18" height="12" x="3" y="6" rx="2" />
-          <line x1="7" x2="17" y1="12" y2="12" />
-          <line x1="7" x2="7" y1="6" y2="18" />
-          <line x1="17" x2="17" y1="6" y2="18" />
-        </svg>
-      );
-    }
-    if (normalized.includes('food')) {
-      return (
-        <svg width={iconSizes} height={iconSizes} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M2 22 12 12" />
-          <path d="M12 12c1.7-1.7 2-4 1-5s-3.3-.7-5 1c-1.7 1.7-2 4-1 5s3.3.7 5-1Z" />
-          <path d="m16 8 3-3c1-1 2.5-1 3.5 0s1 2.5 0 3.5l-3 3" />
-          <path d="m14 14 3-3" />
-        </svg>
-      );
-    }
-    if (normalized.includes('munit') || normalized.includes('ammo')) {
-      return (
-        <svg width={iconSizes} height={iconSizes} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M12 2a4 4 0 0 0-4 4v12a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V6a4 4 0 0 0-4-4Z" />
-          <line x1="8" x2="16" y1="18" y2="18" />
-          <line x1="8" x2="16" y1="14" y2="14" />
-        </svg>
-      );
-    }
-    if (normalized.includes('lead')) {
-      return (
-        <svg width={iconSizes} height={iconSizes} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect width="16" height="16" x="4" y="4" rx="2" />
-          <path d="M8 8v8h8" />
-          <path d="M16 8v8" />
-        </svg>
-      );
-    }
-    if (normalized.includes('rifle') || normalized.includes('weapon')) {
-      return (
-        <svg width={iconSizes} height={iconSizes} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h3l2.5 3h5a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Z" />
-          <line x1="16.5" x2="22" y1="12" y2="12" />
-        </svg>
-      );
-    }
-    if (normalized.includes('tank')) {
-      return (
-        <svg width={iconSizes} height={iconSizes} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="2" y="12" width="20" height="8" rx="4" />
-          <path d="M6 12V8a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v4" />
-          <line x1="16" y1="8" x2="22" y2="8" />
-        </svg>
-      );
-    }
-    if (normalized.includes('armor') || normalized.includes('shield')) {
-      return (
-        <svg width={iconSizes} height={iconSizes} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-        </svg>
-      );
-    }
-    // Default commodity / crate
-    return (
-      <svg width={iconSizes} height={iconSizes} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="m7.5 4.27 9 5.15" />
-        <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
-        <path d="m3.3 7 8.7 5 8.7-5" />
-        <path d="M12 22V12" />
-      </svg>
-    );
-  };
+  const renderFallbackSvg = () => (
+    <svg
+      width={iconSizes}
+      height={iconSizes}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="m7.5 4.27 9 5.15" />
+      <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+      <path d="m3.3 7 8.7 5 8.7-5" />
+      <path d="M12 22V12" />
+    </svg>
+  );
 
   return (
     <div className={`inline-flex items-center gap-1.5 ${className}`}>
       <div
-        className={`rounded-lg bg-gradient-to-br border flex items-center justify-center shrink-0 shadow-sm transition-transform ${sizeClasses} ${bgGradient} ${textColor}`}
+        style={{ backgroundColor: bg }}
+        className={`rounded-lg border border-slate-700/80 flex items-center justify-center shrink-0 shadow-inner overflow-hidden transition-transform ${sizeClasses} ${textColor}`}
         title={`${label} (${itemCode})`}
       >
-        {renderSvg()}
+        {spriteUrl && !imgFailed ? (
+          <img
+            src={spriteUrl}
+            alt={label}
+            loading="lazy"
+            onError={() => setImgFailed(true)}
+            className={`${imgSizeClasses} object-contain select-none`}
+          />
+        ) : (
+          renderFallbackSvg()
+        )}
       </div>
       {showLabel && (
         <span className={`font-semibold font-mono capitalize ${textColor}`}>

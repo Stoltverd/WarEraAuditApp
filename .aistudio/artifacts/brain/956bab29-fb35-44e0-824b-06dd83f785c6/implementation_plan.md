@@ -1,120 +1,101 @@
-# Implementation Plan: National Census Synchronization, Audit Lifecycle Gating & Personal Receipt Persistence Fix
+# Implementation Plan: Policy Calibration Modal Fix, Official Country Flags & Official WarEra Item Icons
 
-## 1. Root Cause Diagnosis of the Three Reported Issues
+## 1. Architectural Diagnosis & Root Cause Analysis
 
-### Issue #1: Background Audit Starts While the National Census Is Still in Progress
-- **Root Cause A (`src/App.tsx` lines 326–336 & 1139–1143)**: During `executeSync`, `syncCountryData` streams resolved citizens in chunks of 16 via `onChunkUsers`, incrementally updating `usersMap` and `citizenEconomicProfiles` while `isSyncing` is still `true`. However, the `useEffect` on line 1139 (`if (citizenEconomicProfiles.length > 0) handleRunIncomeAudit()`) does **not** check `!isSyncing`, firing income audits against partial citizen cohorts while the census is only partly ingested.
-- **Root Cause B (`src/components/ministry/CitizenRadar.tsx` lines 370–409 & `src/App.tsx` lines 773–795)**: Because `countryBenchmark` (national P75 net worth, median liquid cash, median income) is derived from `activeCountryCitizens`, starting the background receipt stream (`auditStreamService.startStream`) before `syncCountryData` has finished resolving all citizens causes the first batch of audited citizens (starting with the #1 richest citizen, `N3V1T5`) to be evaluated against an incomplete national benchmark or interrupted when the census finishes.
+### Issue 1: Policy & Leech Calibration Modal Untranslated Text, Dynamic `{countryName}` Tag & Header Scroll Overflow
+1. **Header Scroll Bleed (`src/components/ministry/CitizenRadar.tsx`, lines 1669–1673)**:
+   - The modal container currently uses `p-6 ... max-h-[90vh] overflow-y-auto` on the outer shell while the header bar inside uses `sticky top-0 bg-slate-900 z-10`.
+   - Because `p-6` (`padding-top: 1.5rem / 24px`) is applied to the scrolling container itself, `sticky top-0` sticks `24px` below the top border of the modal. As the user scrolls down, content passes behind the sticky header and becomes visible in the `24px` top padding gap above the title banner (where `"General Default Income Quotas (%)"` is seen peeking above `"Calibración de Políticas Soberanas y Leeches"` in the screenshot).
+   - **Fix**: Refactor the modal container into a 3-zone flex layout (`flex flex-col max-h-[90vh] overflow-hidden` without `p-6` on the outer shell):
+     1. **Fixed Top Header** (`px-6 pt-5 pb-4 border-b border-slate-800 bg-slate-900 shrink-0 z-20`)
+     2. **Dedicated Scrollable Body** (`p-6 overflow-y-auto flex-1 space-y-5`)
+     3. **Fixed Bottom Action Bar** (`px-6 py-4 border-t border-slate-800 bg-slate-900 shrink-0 z-20`)
+2. **Untranslated Strings & 100% Dynamic `{countryName}` Interpolation (`src/components/ministry/CitizenRadar.tsx` & `src/i18n/I18nContext.tsx`)**:
+   - The Policy & Leech Calibration modal must work dynamically for **every country in the world** using the active `countryName` prop (`selectedCountry?.name || tx('Selected Nation', 'Nación Seleccionada')`), never hardcoding any specific country name.
+   - Currently, strings with dynamic `{countryName}` interpolation—such as ``Customizable income donation ratios by playstyle for ${countryName}`` and ``Only citizens in the upper wealth brackets of ${countryName} (e.g. Top 25% / 75th percentile) can be classified as Critical Leeches if donating 0...``—as well as JSX blocks containing inline `<strong>` tags or Lucide icons (`<Swords />`), are split across multiple DOM text nodes or lack dynamic pattern rules in `I18nContext.tsx`.
+   - **Fix**: Explicitly localize every heading, subtitle, Policy Guide bullet, quota label, description paragraph, percentile button, checkbox label, and action button inside `CitizenRadar.tsx` using `tx(en, es)` with dynamic `${countryName}` template variables (e.g., `tx(\`Customizable income donation ratios by playstyle for \${countryName}\`, \`Proporciones personalizables de donación de ingresos según estilo de juego para \${countryName}\`)`), AND add universal dynamic regex rules (`/^Customizable income donation ratios by playstyle for (.+)$/i` $\rightarrow$ `'Proporciones personalizables de donación de ingresos según estilo de juego para $1'`) and static dictionary entries to `src/i18n/I18nContext.tsx` so all languages and any selected country translate seamlessly.
 
-### Issue #2: National Census Gets Permanently Stuck (e.g., `95 of 98 registered active citizens (97%)`)
-- **Root Cause (`src/App.tsx` lines 531–555 vs. lines 773–788, and `CitizenRadar.tsx` line 179)**:
-  - In `src/App.tsx`, `totalActiveCitizens` returns `selectedCountry.rankings?.countryActivePopulation?.value` (`98` for Colombia), which is the server's raw active population counter (including citizens below Level 10 or recently emigrated accounts).
-  - Meanwhile, `citizenEconomicProfiles` (`src/App.tsx` line 784) explicitly filters `usersMap` for `isActive && level >= 10`, producing **`95`** eligible active citizens.
-  - Both `CitizenRadar.tsx` (line 179) and `MinistryWorkspace.tsx` (line 182) compute:
-    ```ts
-    const isCohortAuditing = Boolean(isSyncing) || (totalActiveCitizens !== undefined && totalActiveCitizens > 0 && profiles.length < totalActiveCitizens);
-    ```
-  - Because `profiles.length` (`95`) is strictly less than `totalActiveCitizens` (`98`), `profiles.length < totalActiveCitizens` (`95 < 98`) remains **`true` forever** even after `isSyncing` becomes `false`! This permanently locks the top banner at *"Processed 95 of 98 registered active citizens (97%)"* and keeps all 4 ministerial KPI cards in an infinite loading state.
+### Issue 2: Official Country Flags from `https://arcana.warera.wiki/company`
+- Inspection of `https://arcana.warera.wiki/js/utils.js` and `https://arcana.warera.wiki/js/data.js` confirms that Arcana renders country flags using FlagCDN (`https://flagcdn.com/20x15/${iso.toLowerCase()}.png`, width `20`, height `15`, with `COUNTRY_ISO` mapping country names and 2-letter ISO codes).
+- In `src/components/Header.tsx`, the country selector currently uses a Unicode regional indicator helper (`getFlagEmoji(c.code)`, which renders as two-letter text abbreviations like `CO`, `US`, `PL` on Windows/Chromium desktop browsers) AND displays a raw `<span className="text-xs text-slate-400 uppercase font-mono">{c.code}</span>` abbreviation on the right side of each country option.
+- **Fix**: Create a reusable `<WareraCountryFlag />` component backed by the complete `COUNTRY_ISO` lookup table from `https://arcana.warera.wiki/js/data.js` + ISO-2 code normalization, rendering `<img src="https://flagcdn.com/20x15/${iso.toLowerCase()}.png" srcSet="https://flagcdn.com/40x30/${iso.toLowerCase()}.png 2x" width="20" height="15" ... />`. Replace the country code abbreviations and emoji fallbacks in the `Header.tsx` country selector button and dropdown list (as well as country lists in `CompanyPortfolioAnalyzer.tsx`, `TreasuryLedger.tsx`, and `WarReadinessEvaluation.tsx`) with the crisp graphical flag.
 
-### Issue #3: Citizens (e.g., `N3V1T5`) Show `0.0 BTC` & `0 receipts` After the Audit Finishes (Even With 2,993 Cached Receipts)
-Three compounding bugs caused `N3V1T5` to show `IN +0.0 / NET +0.0 / 0 receipts` in the table (Screenshot 1) and `0.0 BTC` with `"Queried personal stream: 0 receipts found for this 7D period"` next to `Line-Item Transaction Ledger (2993)` in the modal (Screenshot 2):
-1. **Bug 3A — `auditSchemaVersion` and `muDonationsBtc` Stripped in `src/App.tsx` (`citizenEconomicProfiles`, lines 918–996)**:
-   - While `App.tsx` checks `audited.auditSchemaVersion === 2` on line 860, the `list.push({ ... })` object construction on lines 918–996 **omitted `auditSchemaVersion` and `muDonationsBtc`**!
-   - Consequently, every `CitizenEconomicProfile` passed down to `CitizenRadar`, `CitizenAuditModal`, and `auditCitizensIncomeGrowth` had `auditSchemaVersion: undefined`.
-   - When `handleRunIncomeAudit` ran (`ministryService.ts` line 1220), its immutability guard (`p.auditSchemaVersion === AUDIT_PROFILE_SCHEMA_VERSION`) evaluated `undefined === 2` (`false`), stripping the audited protection.
-   - When the user opened `CitizenAuditModal` for `N3V1T5`, line 211 checked `localProfile.auditSchemaVersion !== 2` (`undefined !== 2` -> `true`) and immediately triggered an automatic `handleSyncLiveReceipts(7)` on mount!
-2. **Bug 3B — Swallowed `AbortError` in `fetchUserTransactions` (`src/services/apiService.ts` lines 751 & 926–929)**:
-   - Inside `fetchUserTransactions`, when an `AbortSignal` triggers (e.g. when a stream restarts, a component re-renders, or a worker aborts), the `catch` block executes:
-     ```ts
-     if (signal?.aborted || err?.name === 'AbortError') {
-       break;
-     }
-     ```
-     and then returns `allTransactions` (`[]`) **without throwing `AbortError`**!
-   - Callers (`auditStreamService` and `CitizenAuditModal`) therefore received `[]` as a successful response and overwrote `N3V1T5`'s profile with **`0 receipts` and `0.0 BTC`**!
-3. **Bug 3C — Unawaited IndexedDB Cache Race in `CitizenAuditModal.tsx` (lines 156–160 vs. 209–218 & 440–448)**:
-   - On modal mount, `storage.getUserPersonalTransactions(profile.userId)` is started asynchronously in a `useEffect` (line 156), which loaded `N3V1T5`'s **2,993** cached transactions from IndexedDB (populating `Line-Item Transaction Ledger (2993)`).
-   - However, `handleSyncLiveReceipts` was fired synchronously on mount (line 214) when `personalTransactions` in the React closure was still `[]`, and it did not `await storage.getUserPersonalTransactions(userId)` before merging. When the aborted/racing fetch returned `[]`, `mergedTxs` evaluated to `[]` (`0` items), overwriting `localProfile` with `0.0 BTC` and displaying `"Queried personal stream: 0 receipts found for this 7D period."` right above the tab showing `(2993)`!
+### Issue 3: Official Item & Product Icons from `https://arcana.warera.wiki/company`
+- Inspection of `https://arcana.warera.wiki/js/data.js` and `https://arcana.warera.wiki/js/utils.js` confirms the canonical item icon endpoint:
+  `https://media.warera.io/images/items/${imgName}.png?v=31`
+- Complete canonical item & equipment icon identifiers from `arcana.warera.wiki`:
+  - **Raw Materials & Manufactured Products (20 items)**: `grain`, `limestone`, `lead`, `petroleum`, `coca`, `iron`, `livestock`, `fish`, `wood`, `steel`, `concrete`, `oil`, `bread`, `steak`, `cookedFish`, `lightAmmo`, `ammo`, `heavyAmmo`, `cocain`, `paper`.
+  - **Cases & Salvage (4 items)**: `case1` (`case`), `case2` (`case_2` / elite case), `woodenCase` (`wooden_case`), `scraps` (`scrap`).
+  - **Combat Equipment & Weapons (`DC_ITEM_IMG`)**: `knife`, `gun`, `rifle`, `sniper`, `tank`, `jet`, `helmet` (`helmet1`–`helmet6`), `chest` (`chest1`–`chest6`), `pants` (`pants1`–`pants6`), `boots` (`boots1`–`boots6`), `gloves` (`gloves1`–`gloves6`).
+- Furthermore, `src/components/ministry/StockpileTracker.tsx` (line 833) and `src/components/ministry/MarketAdvisor.tsx` (line 294) currently point to a broken legacy URL (`https://warera.io/${item.id}.png`), which fails to load and falls back to generic Lucide icons.
+- **Fix**: Upgrade `src/components/common/WareraItemIcon.tsx` to load the official `https://media.warera.io/images/items/${imgName}.png?v=31` sprites for all commodities, company products, cases, scraps, and equipment across the entire application, and replace the broken `https://warera.io/${item.id}.png` image tags in `StockpileTracker.tsx` and `MarketAdvisor.tsx` with `<WareraItemIcon />`.
 
 ---
 
 ## 2. Comparative Architectural Proposals
 
-### Proposal A: Strict Two-Stage Sequential Pipeline with Verified Cohort Alignment & Atomic Receipt Hydration *(Recommended)*
-- **Architecture**:
-  1. **Stage 1 (National Census Hydration)**: Track an explicit `isCensusComplete` state in `App.tsx` that is `false` while `isSyncing === true` and becomes `true` only after `syncCountryData` finishes resolving all citizen profiles for the selected country. Once `isSyncing === false`, align `totalActiveCitizens` with the actual verified Level 10+ active cohort (`citizenEconomicProfiles.length`) so the census progress bar (`processed / total`) reaches `100%` cleanly and never hangs at `95 / 98` due to sub-Level-10 accounts.
-  2. **Stage 2 (Gated Background Audit Stream)**: Gate both `handleRunIncomeAudit` (`App.tsx`) and `auditStreamService.startStream` (`CitizenRadar.tsx`) strictly on `isCensusComplete && !isSyncing`. If a census sync begins, immediately pause/stop any background receipt stream until the census completes.
-  3. **Atomic Receipt Persistence & Schema Preservation**:
-     - Preserve `auditSchemaVersion` and `muDonationsBtc` in `App.tsx` (`citizenEconomicProfiles`).
-     - In `fetchUserTransactions` (`apiService.ts`), always throw an explicit `AbortError` when `signal?.aborted` is true so aborted requests are never mistaken for `0 receipts`.
-     - In `auditStreamService.ts` and `CitizenAuditModal.tsx`, always read and merge existing cached receipts from IndexedDB (`await storage.getUserPersonalTransactions(userId)`) before building an audited profile, and auto-hydrate any citizen profile whose `receiptCount === 0` if IndexedDB already holds cached personal receipts for that citizen.
-     - Automatically apply buffered background audit results to the live table as soon as the background stream finishes (or immediately for any citizen whose current row has `0 receipts` / unverified status), while preserving manual pinning only when the user is actively filtering/editing.
+### Proposal A: Direct Inline Patching (Minimal Component Edits)
+- **Architecture**: Patch the modal container classes in `CitizenRadar.tsx`, rely primarily on `I18nContext.tsx` DOM text-node replacements for translations, and inline `flagcdn.com` and `media.warera.io` `<img>` tags directly inside `Header.tsx`, `StockpileTracker.tsx`, and `MarketAdvisor.tsx`.
 - **Pros**:
-  - Completely eliminates the `95/98` infinite stuck state.
-  - Guarantees `countryBenchmark` is 100% accurate before the first citizen (`N3V1T5`) is audited.
-  - Guarantees that cached receipts (like `N3V1T5`'s 2,993 receipts) are never wiped out by an aborted request or missing `auditSchemaVersion` prop.
+  - Fastest initial file touch count.
 - **Cons**:
-  - Background receipt auditing waits a few seconds for the initial national census (`user.getUserLite` batch hydration) to reach 100% before starting.
-- **Expert Reasoning**:
-  - Auditing individual citizen cashflows before the national census finishes is mathematically unsound because fiscal classifications (`Model Patriot`, `Critical Leech`, etc.) depend on the national P75 wealth and median liquid cash benchmarks. A strict two-stage pipeline guarantees both benchmark precision and zero race conditions.
+  - Inline `<strong>` tags and icons inside `CitizenRadar.tsx` split strings into multiple DOM text nodes, causing fragile translations when only relying on DOM `MutationObserver`.
+  - Duplicating flag and item URL logic across multiple components makes fallback handling inconsistent.
 
-### Proposal B: Concurrent Census + Audit with Post-Census Benchmark Recomputation
+### Proposal B: Dedicated Shared Visual Components (`WareraCountryFlag` & `WareraItemIcon`) + Explicit Bilingual `tx()` & Dictionary Sync (Recommended)
 - **Architecture**:
-  - Allow the background receipt stream to run simultaneously with the national census, and trigger a full re-evaluation of all audited profiles after `isSyncing` transitions to `false`.
+  1. Refactor the `CitizenRadar.tsx` Policy Calibration modal into a 3-zone flex container (`shrink-0` header, `flex-1 overflow-y-auto` body, `shrink-0` footer) so scrolled content can never bleed behind or above the header banner.
+  2. Explicitly wrap every Policy Calibration modal string and Policy Guide paragraph in `CitizenRadar.tsx` with `tx(en, es)` using dynamic `${countryName}` interpolation for **any** selected nation, AND register all corresponding static strings and dynamic `{countryName}` regex rules in `src/i18n/I18nContext.tsx`.
+  3. Create `src/components/common/WareraCountryFlag.tsx` containing the complete `COUNTRY_ISO` mapping from `arcana.warera.wiki/js/data.js` and rendering `https://flagcdn.com/20x15/${iso.toLowerCase()}.png` (with `2x` retina `srcSet`). Replace both the broken emoji flags and the raw country code abbreviation badge in `Header.tsx` (plus country displays in `CompanyPortfolioAnalyzer.tsx`, `TreasuryLedger.tsx`, and `WarReadinessEvaluation.tsx`).
+  4. Upgrade `src/components/common/WareraItemIcon.tsx` with the complete `ITEMS` and `DC_ITEM_IMG` mapping from `arcana.warera.wiki` (`https://media.warera.io/images/items/${imgName}.png?v=31`), with automatic SVG fallback if offline, and use it across `CompanyPortfolioAnalyzer.tsx`, `StockpileTracker.tsx`, `MarketAdvisor.tsx`, and `CitizenRadar.tsx`.
 - **Pros**:
-  - Starts fetching personal transaction pages slightly earlier during initial country load.
+  - Completely eliminates scroll bleed above the modal header.
+  - Guarantees 100% instant, flicker-free Spanish/English translation inside the Policy Calibration modal for **every country dynamically** (`${countryName}`), even on paragraphs with bold formatting and icons.
+  - Centralizes official WarEra item sprites and FlagCDN country flags in reusable components with clean fallback states.
 - **Cons**:
-  - Concurrent `user.getUserLite` census batches and 4-worker `transaction.getPaginatedTransactions` streams compete for the same token-bucket rate limiter, slowing down the census and increasing mid-sync state churn.
-- **Expert Reasoning**:
-  - Rejected because the user explicitly noted: *"The background audit is starting when the national census is still in progress. We can't have a precise audit if the census isn't complete."*
+  - Requires touching a few more files (`Header.tsx`, `WareraCountryFlag.tsx`, `WareraItemIcon.tsx`, `StockpileTracker.tsx`, `MarketAdvisor.tsx`, `CitizenRadar.tsx`, `I18nContext.tsx`), which is well worth the maintainability and visual consistency.
 
-### Proposal C: On-Demand / Manual-Only Background Audit Trigger
-- **Architecture**:
-  - Complete the national census automatically, but require the user to click a "Start Financial Audit" button to begin streaming personal receipts.
+### Proposal C: Build-Time Local Asset Mirroring
+- **Architecture**: Download all 195 country flags from `flagcdn.com` and all 35+ item PNGs from `media.warera.io` into `/public/assets/` and reference them locally.
 - **Pros**:
-  - Zero automatic background network traffic after census completion.
+  - Works without external CDN requests.
 - **Cons**:
-  - Degrades UX by requiring manual intervention before the Ministry table shows verified cashflows.
-- **Expert Reasoning**:
-  - Automatic background auditing after census completion is a core workflow; gating it strictly on `isCensusComplete` gives all the safety of manual ordering without extra user clicks.
+  - Bloats the repository with over 230 binary files and goes against directly referencing the live `arcana.warera.wiki` asset URLs (`?v=31`) when game sprites update.
+
+### Expert Recommendation
+**Proposal B** is the best engineering choice. It directly uses the canonical URLs and mappings from `https://arcana.warera.wiki/company`, fixes the broken `https://warera.io/${item.id}.png` URLs in `StockpileTracker` and `MarketAdvisor`, eliminates the modal scroll overflow permanently via flexbox layout isolation, and guarantees complete Spanish/English localization in the Policy Calibration modal with 100% dynamic `{countryName}` support for every country.
 
 ---
 
-## 3. Edge Case Mitigations
+## 3. Edge Case Mitigation
 
-1. **Sub-Level-10 Citizens & Emigrated Accounts in Server Population Count (`95 vs 98`)**:
-   - While `isSyncing === true`, `totalActiveCitizens` uses the server's `countryActivePopulation` estimate (`98`) so the progress bar shows live ingestion progress (`0 -> 95`). The moment `isSyncing` completes (`isSyncing === false`), `totalActiveCitizens` snaps to the exact count of verified Level 10+ active citizens (`citizenEconomicProfiles.length`, e.g., `95`), ensuring `isCohortAuditing` immediately resolves to `false` (`95 / 95 = 100%`).
-2. **Aborted Requests & Mid-Stream Country/Window Switching**:
-   - In `fetchUserTransactions` (`src/services/apiService.ts`), any `signal?.aborted` check or caught `AbortError` will immediately throw `new DOMException('Aborted', 'AbortError')` instead of breaking and returning a partial or empty array. Neither `auditStreamService` nor `CitizenAuditModal` will ever persist a profile from an aborted fetch.
-3. **Power-Traders With Thousands of Receipts (e.g., `N3V1T5` with 2,993 receipts)**:
-   - Use standard `limit: 50` pagination with cursor + page fallback in `fetchUserTransactions`. If a late page (e.g., page 40) encounters a transient error after retries while earlier pages succeeded, merge the fetched transactions with IndexedDB (`storage.getUserPersonalTransactions(userId)`) rather than discarding all transactions or overwriting with `0`.
-   - When opening `CitizenAuditModal`, immediately hydrate `localProfile` from the IndexedDB `personal_receipts` cache if `cached.length > 0` and the incoming profile has `receiptCount === 0` or `grossInflowBtc === 0`.
-4. **Buffered Audit Updates Not Appearing on Citizens With `0 receipts`**:
-   - In `CitizenRadar.tsx`, if a citizen currently displays unverified or empty data (`receiptCount === 0` and `grossInflowBtc === 0`), or when the background audit stream completes (`!streamProgress.isRunning`), automatically flush buffered updates into `auditedProfilesMap` so the user never sees `0.0 BTC / 0 receipts` for an already-audited citizen.
+1. **Dynamic Country Name Interpolation (`{countryName}`) Across All ~195 Countries**:
+   - *Edge Case*: Any player from any country (e.g., Poland, Argentina, United States, Colombia, Spain, Japan) selects their nation in the header and opens Policy Calibration. If any string or translation rule hardcoded a specific country name, it would break for other nations or fail to translate.
+   - *Mitigation*: Pass the dynamic `countryName` prop (`selectedCountry?.name || tx('Selected Nation', 'Nación Seleccionada')`) into every `tx()` template string in `CitizenRadar.tsx` (e.g., `tx(\`Customizable income donation ratios by playstyle for \${countryName}\`, \`Proporciones personalizables de donación de ingresos según estilo de juego para \${countryName}\`)`), and add dynamic capture-group regexes in `I18nContext.tsx` (`/for (.+)$/i`, `/of (.+) \(e\.g\./i`) so any country name is dynamically preserved and translated. Also update `src/App.tsx` so the fallback when `selectedCountry` is loading is generic rather than a specific country.
+2. **Unmapped or Custom Country Names / API Country Codes**:
+   - *Edge Case*: The WarEra API returns a country with either an ISO-2 `code` (e.g. `"CO"`, `"PL"`, `"US"`), a full country name (`"Bosnia and Herzegovina"`, `"Côte d'Ivoire"`), or a non-standard internal ID.
+   - *Mitigation*: `WareraCountryFlag` will resolve the 2-letter ISO code by first checking if `code` is already a valid 2-letter ISO alpha-2 code (`/^[A-Za-z]{2}$/`), and if not, looking up `COUNTRY_ISO[name]` (case-insensitive and accent-normalized). If neither resolves or if the image fails to load (`onError`), it gracefully renders a clean globe badge.
+3. **Item ID Naming Variations Across API & Wiki (`cocain` vs `cocaine`, `cookedFish` vs `cooked_fish`, `case1` vs `case`, `helmet1`–`helmet6`)**:
+   - *Edge Case*: Different WarEra API endpoints and local services refer to items using snake_case (`cooked_fish`, `heavy_ammo`, `light_ammo`), camelCase (`cookedFish`, `heavyAmmo`, `lightAmmo`), display names (`"Cooked Fish"`, `"Cocaine"`, `"Concrete"`), or tiered equipment codes (`"helmet3"`, `"chest5"`).
+   - *Mitigation*: `WareraItemIcon` normalizes any input string (camelCase, snake_case, display label, or tiered gear code like `helmet1..6`) to the exact `media.warera.io/images/items/${imgName}.png?v=31` filename used by `arcana.warera.wiki` (`cookedFish`, `cocain`, `lightAmmo`, `ammo`, `heavyAmmo`, `case1`, `case2`, `woodenCase`, `scraps`, `helmet`, `chest`, `pants`, `boots`, `gloves`, `knife`, `gun`, `rifle`, `sniper`, `tank`, `jet`). If an image ever fails to load (`onError`), it automatically falls back to the bespoke SVG icon.
+4. **Modal Scroll Overflow on Small Viewports**:
+   - *Edge Case*: Opening the collapsible "Policy Guide" inside the Policy Calibration modal increases content height beyond `90vh` on laptops and mobile screens.
+   - *Mitigation*: By separating the modal into a `shrink-0` header, `flex-1 overflow-y-auto` scrollable content area, and `shrink-0` footer, expanding the Policy Guide smoothly scrolls inside the middle container without ever overlapping or bleeding above the header banner.
 
 ---
 
 ## 4. Phased Task Decomposition
 
-### Phase 1: Census Completion Gate & Cohort Count Alignment
-- **Phase 1.1 (`src/App.tsx`)**:
-  - Add `auditSchemaVersion` and `muDonationsBtc` to the `CitizenEconomicProfile` objects constructed inside `citizenEconomicProfiles` (`list.push({ ... })`) so audited status and schema version `2` are never stripped on re-render.
-  - Update `totalActiveCitizens` in `src/App.tsx` so that once `isSyncing === false` and `citizenEconomicProfiles.length > 0`, it returns `citizenEconomicProfiles.length` (the verified Level 10+ active citizen count), eliminating the permanent `95 of 98` deadlock.
-  - Gate the `useEffect` calling `handleRunIncomeAudit()` on `!isSyncing` so income audits never run while the national census is still ingesting user chunks.
-- **Phase 1.2 (`src/components/ministry/MinistryWorkspace.tsx` & `src/components/ministry/CitizenRadar.tsx`)**:
-  - Update `isCohortAuditing` / `isCensusAuditing` so it only remains `true` while `Boolean(isSyncing)` is active (or when `profiles.length === 0` during initial hydration), preventing the census banner and KPI cards from ever getting stuck after `isSyncing` finishes.
-  - Gate `auditStreamService.startStream` in `CitizenRadar.tsx` strictly on `!isSyncing && !isCohortAuditing && profiles.length > 0`, and explicitly call `auditStreamService.stop()` if `isSyncing` becomes `true`.
+### Phase 1: Policy & Leech Calibration Modal Layout & Dynamic Localization (`CitizenRadar.tsx`, `I18nContext.tsx`, `App.tsx`)
+- **Phase 1.1**: Refactor the Policy Calibration modal container in `src/components/ministry/CitizenRadar.tsx` from a single padded scrolling container into a 3-section flex container (`shrink-0` top header bar, `flex-1 overflow-y-auto p-6` scrollable body, and `shrink-0` bottom action bar) so scrolled text never appears behind or above the title banner.
+- **Phase 1.2**: Wrap all text inside the Policy Calibration modal and its collapsible Policy Guide in `src/components/ministry/CitizenRadar.tsx` with `tx(en, es)` using 100% dynamic `${countryName}` interpolation, and ensure `src/App.tsx` passes a generic fallback (`selectedCountry?.name || 'State'`) when no country is loaded yet.
+- **Phase 1.3**: Add all Policy Calibration static strings and dynamic `{countryName}` regex patterns to `src/i18n/I18nContext.tsx` for full coverage.
 
-### Phase 2: Atomic Receipt Persistence, Abort Safety & Auto-Hydration
-- **Phase 2.1 (`src/services/apiService.ts`)**:
-  - In `fetchUserTransactions`, throw an explicit `AbortError` whenever `signal?.aborted` is true instead of `break`ing and returning `[]`.
-  - Use `limit: 50` (matching WarEra's standard tRPC page limit across all endpoints) to ensure maximum stability across multi-page streams.
-- **Phase 2.2 (`src/services/auditStreamService.ts`)**:
-  - In `auditSingleCitizen`, merge newly fetched receipts with any existing cached receipts from `storage.getUserPersonalTransactions(citizen.userId)` before calling `buildAuditedCitizenProfile`, so a citizen with cached receipts is never downgraded to `0 receipts`.
-  - Ensure `AbortError` or `isStaleRun()` cleanly exits without invoking `onProfileAudited` or overwriting IndexedDB.
-- **Phase 2.3 (`src/components/ministry/CitizenRadar.tsx` & `src/components/ministry/CitizenAuditModal.tsx`)**:
-  - In `CitizenRadar.tsx`, immediately apply audited profiles to `auditedProfilesMap` when the citizen previously had `0 receipts` or when the background audit stream completes (`onComplete`), removing the trap where finished audits stay hidden in a staging buffer.
-  - In `CitizenAuditModal.tsx`, await `storage.getUserPersonalTransactions(currentProfile.userId)` both on modal mount (auto-healing `localProfile` and parent state immediately if `cached.length > 0` while `localProfile.receiptCount === 0`) and inside `handleSyncLiveReceipts` before merging, ensuring `N3V1T5`'s 2,993 receipts immediately display accurate Gross Inflow, Net Cashflow, and Treasury Contribution.
+### Phase 2: Official Country Flags Integration (`WareraCountryFlag.tsx` & `Header.tsx`)
+- **Phase 2.1**: Create `src/components/common/WareraCountryFlag.tsx` implementing the complete `COUNTRY_ISO` dictionary and `https://flagcdn.com/20x15/${iso.toLowerCase()}.png` (`2x` `40x30` retina `srcSet`) flag renderer from `https://arcana.warera.wiki/company`.
+- **Phase 2.2**: Update `src/components/Header.tsx` to display `<WareraCountryFlag />` in the country selector button and dropdown items, removing the raw country code abbreviation (`{c.code}`) and replacing `getFlagEmoji`. Also integrate `<WareraCountryFlag />` into `CompanyPortfolioAnalyzer.tsx` (player country & Lowest-Tax Countries badges), `TreasuryLedger.tsx`, and `WarReadinessEvaluation.tsx`.
 
-### Phase 3: Build & Lint Verification
-- **Phase 3.1**: Run `compile_applet` and `lint_applet` to verify zero TypeScript or ESLint errors across all modified files.
+### Phase 3: Official WarEra Item & Equipment Icons Integration (`WareraItemIcon.tsx`, `StockpileTracker.tsx`, `MarketAdvisor.tsx`)
+- **Phase 3.1**: Upgrade `src/components/common/WareraItemIcon.tsx` to resolve all 24 commodities/cases/scraps and 11 combat equipment/weapon categories to `https://media.warera.io/images/items/${imgName}.png?v=31` (matching `https://arcana.warera.wiki/company`), with automatic fallback to the inline SVG icon on network error.
+- **Phase 3.2**: Replace the broken `https://warera.io/${item.id}.png` image elements in `src/components/ministry/StockpileTracker.tsx` and `src/components/ministry/MarketAdvisor.tsx` with `<WareraItemIcon />` so all item icons render consistently across every view.
+- **Phase 3.3**: Run `compile_applet` and `lint_applet` to verify zero TypeScript or build errors.

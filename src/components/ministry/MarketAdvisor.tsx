@@ -286,19 +286,7 @@ export const MarketAdvisor: React.FC<MarketAdvisorProps> = ({
                   {/* Name & Icon */}
                   <td className="py-3.5 px-4 font-sans font-bold text-white">
                     <div className="flex items-center gap-2.5">
-                      <div
-                        style={{ backgroundColor: bg }}
-                        className="w-7 h-7 rounded-lg border border-slate-700 flex items-center justify-center shrink-0 shadow-inner overflow-hidden"
-                      >
-                        <img
-                          src={`https://warera.io/${item.id}.png`}
-                          alt={item.name}
-                          className="w-5 h-5 object-contain"
-                          onError={(e) => {
-                            e.currentTarget.style.display = 'none';
-                          }}
-                        />
-                      </div>
+                      <WareraItemIcon itemCode={item.id} size="md" />
                       <div>
                         <span className="text-white text-xs">{item.name}</span>
                         <div className="text-[10px] text-slate-500 font-mono">{item.unit}</div>

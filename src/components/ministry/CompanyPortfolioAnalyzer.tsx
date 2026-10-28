@@ -30,6 +30,7 @@ import {
 import { CitizenEconomicProfile } from '../../types/ministry';
 import { WareraUserLite } from '../../types/warera';
 import { WareraItemIcon } from '../common/WareraItemIcon';
+import { WareraCountryFlag } from '../common/WareraCountryFlag';
 import { useI18n, translateRawStringEs } from '../../i18n/I18nContext';
 import {
   Search,
@@ -1336,7 +1337,8 @@ export const CompanyPortfolioAnalyzer: React.FC<CompanyPortfolioAnalyzerProps> =
                 <div className="flex items-center gap-3 flex-wrap text-xs sm:text-sm text-slate-300 mt-1 font-medium">
                   {ownerCountryName && (
                     <span className="inline-flex items-center gap-1.5 font-bold text-slate-200">
-                      <span>🌍 {ownerCountryName}</span>
+                      <WareraCountryFlag countryName={ownerCountryName} size="sm" />
+                      <span>{ownerCountryName}</span>
                     </span>
                   )}
                   <span className="text-slate-600">·</span>
@@ -1525,9 +1527,14 @@ export const CompanyPortfolioAnalyzer: React.FC<CompanyPortfolioAnalyzerProps> =
                     >
                       <div className="min-w-0">
                         <div className="font-bold text-white text-sm truncate flex items-center gap-2">
-                          <span>{entry.country.name}</span>
+                          <WareraCountryFlag
+                            countryName={entry.country.name}
+                            countryCode={entry.country.code}
+                            size="sm"
+                          />
+                          <span className="truncate">{entry.country.name}</span>
                           {entry.hasCompanyHere && (
-                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[11px] font-mono">
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[11px] font-mono shrink-0">
                               has a company here
                             </span>
                           )}
@@ -1720,9 +1727,18 @@ export const CompanyPortfolioAnalyzer: React.FC<CompanyPortfolioAnalyzerProps> =
                             {translateCommodity(c.item?.name || c.company.itemCode)}
                           </span>
                           <span>·</span>
-                          <span>
-                            {c.country?.name ? `${c.country.name} · ` : ''}
-                            {c.region?.name || c.company.region || 'Verified Region'}
+                          <span className="inline-flex items-center gap-1.5">
+                            {c.country?.name && (
+                              <>
+                                <WareraCountryFlag
+                                  countryName={c.country.name}
+                                  countryCode={c.country.code}
+                                  size="xs"
+                                />
+                                <span>{c.country.name} ·</span>
+                              </>
+                            )}
+                            <span>{c.region?.name || c.company.region || 'Verified Region'}</span>
                           </span>
                         </div>
                         {tags.length > 0 && (

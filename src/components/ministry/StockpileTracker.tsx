@@ -14,6 +14,7 @@ import {
 import { storage } from '../../services/storage';
 import { fetchCountryInventoryDetailed, compareTransactionsNewestFirst } from '../../services/apiService';
 import { formatDateDDMMYYYY } from '../../utils/dateUtils';
+import { WareraItemIcon } from '../common/WareraItemIcon';
 import {
   Package,
   TrendingUp,
@@ -825,22 +826,7 @@ export const StockpileTracker: React.FC<StockpileTrackerProps> = ({
                           {/* Item Icon & Name */}
                           <td className="py-3 px-4 font-sans font-bold text-white">
                             <div className="flex items-center gap-3">
-                              <div
-                                style={{ backgroundColor: bg }}
-                                className="w-9 h-9 rounded-xl border border-slate-700/80 flex items-center justify-center shrink-0 shadow-inner overflow-hidden"
-                              >
-                                <img
-                                  src={`https://warera.io/${item.id}.png`}
-                                  alt={item.name}
-                                  className="w-6 h-6 object-contain"
-                                  onError={(e) => {
-                                    e.currentTarget.style.display = 'none';
-                                  }}
-                                />
-                                <span className="text-[10px] font-black text-slate-200 hidden">
-                                  {item.code.slice(0, 2)}
-                                </span>
-                              </div>
+                              <WareraItemIcon itemCode={item.id} size="lg" />
                               <div>
                                 <div className="text-white text-xs font-bold flex items-center gap-1.5">
                                   <span>{item.name}</span>
@@ -1402,19 +1388,7 @@ export const StockpileTracker: React.FC<StockpileTrackerProps> = ({
                         {/* Commodity */}
                         <td className="py-3.5 px-4 font-sans font-bold text-white">
                           <div className="flex items-center gap-2.5">
-                            <div
-                              style={{ backgroundColor: bg }}
-                              className="w-7 h-7 rounded-lg border border-slate-700 flex items-center justify-center shrink-0 shadow-inner overflow-hidden"
-                            >
-                              <img
-                                src={`https://warera.io/${mov.itemCode}.png`}
-                                alt={mov.itemName}
-                                className="w-5 h-5 object-contain"
-                                onError={(e) => {
-                                  e.currentTarget.style.display = 'none';
-                                }}
-                              />
-                            </div>
+                            <WareraItemIcon itemCode={mov.itemCode || mov.itemName} size="md" />
                             <div>
                               <div className="text-white text-xs font-bold">{mov.itemName}</div>
                               <div className="text-[10px] text-slate-500 font-mono capitalize">

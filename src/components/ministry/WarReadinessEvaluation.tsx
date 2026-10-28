@@ -8,6 +8,7 @@ import {
   evaluateStateWarReadiness,
   getCachedWarReadinessReport,
 } from '../../services/warReadinessService';
+import { WareraCountryFlag } from '../common/WareraCountryFlag';
 import {
   Swords,
   Shield,
@@ -403,7 +404,11 @@ export const WarReadinessEvaluation: React.FC<WarReadinessEvaluationProps> = ({
                   : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
               }`}
             >
-              {country.code || country.name.slice(0, 2).toUpperCase()}
+              <WareraCountryFlag
+                countryName={country.name}
+                countryCode={country.code}
+                size="lg"
+              />
             </div>
             <div>
               <div className="flex items-center gap-2.5 flex-wrap">

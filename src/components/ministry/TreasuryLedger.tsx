@@ -12,6 +12,7 @@ import {
 import { formatDateDDMMYYYY } from '../../utils/dateUtils';
 import { fetchNationalTransfers, compareTransactionsNewestFirst } from '../../services/apiService';
 import { storage } from '../../services/storage';
+import { WareraCountryFlag } from '../common/WareraCountryFlag';
 import {
   Coins,
   ArrowUpRight,
@@ -483,9 +484,11 @@ export const TreasuryLedger: React.FC<TreasuryLedgerProps> = ({
                           ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
                           : 'bg-slate-800 text-slate-200 border-slate-700'
                       }`}>
-                        <span className="text-sm shrink-0" role="img" aria-label="flag">
-                          {getFlagEmoji(fromCountryObj?.code)}
-                        </span>
+                        <WareraCountryFlag
+                          countryName={fromCountry}
+                          countryCode={fromCountryObj?.code}
+                          size="xs"
+                        />
                         <span>{fromCountry}</span>
                       </span>
                     </td>
@@ -518,9 +521,11 @@ export const TreasuryLedger: React.FC<TreasuryLedgerProps> = ({
                           ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
                           : 'bg-slate-800 text-slate-200 border-slate-700'
                       }`}>
-                        <span className="text-sm shrink-0" role="img" aria-label="flag">
-                          {getFlagEmoji(toCountryObj?.code)}
-                        </span>
+                        <WareraCountryFlag
+                          countryName={toCountry}
+                          countryCode={toCountryObj?.code}
+                          size="xs"
+                        />
                         <span>{toCountry}</span>
                       </span>
                     </td>
