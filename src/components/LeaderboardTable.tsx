@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { DonorRankingItem } from '../types/warera';
+import { DonorRankingItem, WareraUserLite } from '../types/warera';
 import { formatDateDDMMYYYY } from '../utils/dateUtils';
+import { useI18n } from '../i18n/I18nContext';
 import {
   Search,
   ArrowUpDown,
@@ -21,6 +22,7 @@ interface LeaderboardTableProps {
   onSelectDonor: (userId: string) => void;
   timeframe: string;
   onResolveUsers?: (userIds: string[]) => Promise<void>;
+  usersMap?: Record<string, WareraUserLite>;
 }
 
 type SortField = 'rank' | 'amount' | 'events' | 'lastDonation';
@@ -31,7 +33,9 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
   onSelectDonor,
   timeframe,
   onResolveUsers,
+  usersMap,
 }) => {
+  const { lang, tx } = useI18n();
   const [search, setSearch] = useState('');
   const [sortField, setSortField] = useState<SortField>('rank');
   const [sortAsc, setSortAsc] = useState(true);
@@ -193,7 +197,7 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
             Citizen Donation Leaderboard
           </h3>
           <p className="text-sm text-slate-300 mt-1">
-            Showing all {filteredAndSorted.length} contributing citizens for {timeframe}
+            {`Showing all ${filteredAndSorted.length} contributing citizens for ${timeframe}`}
           </p>
         </div>
 
@@ -211,7 +215,11 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
       </div>
 
       {/* Table Container */}
-      <div id="leaderboard-table-anchor" className="overflow-x-auto rounded-2xl border border-slate-800">
+      <div
+        id="leaderboard-table-anchor"
+        data-no-dom-i18n="true"
+        className="overflow-x-auto rounded-2xl border border-slate-800"
+      >
         <table className="w-full text-left border-collapse text-sm sm:text-base">
           <thead>
             <tr className="bg-slate-800/80 border-b border-slate-700/80 text-slate-300 font-bold uppercase tracking-wider text-xs sm:text-sm">
@@ -333,8 +341,47 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
                               </span>
                             </div>
                           ) : (
-                            <div className="font-extrabold text-slate-100 group-hover:text-amber-400 transition truncate text-base sm:text-lg">
-                              {donor.username}
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-extrabold text-slate-100 group-hover:text-amber-400 transition truncate text-base sm:text-lg">
+                                {donor.username}
+                              </span>
+                              {/* Citizen Level Badge */}
+                              {(() => {
+                                const resolvedLvl =
+                                  donor.level ??
+                                  usersMap?.[donor.userId]?.leveling?.level ??
+                                  usersMap?.[donor.userId]?.level;
+                                if (resolvedLvl === undefined) return null;
+                                return (
+                                  <span
+                                    className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-800 text-slate-300 border border-slate-700/80 shrink-0"
+                                    title={`${tx('Citizen Level', 'Nivel de Ciudadano')} ${resolvedLvl}`}
+                                  >
+                                    {lang === 'es' ? 'Nvl' : 'Lv.'} {resolvedLvl}
+                                  </span>
+                                );
+                              })()}
+                              {/* Build Role Badge */}
+                              {(() => {
+                                const role = donor.playstyle;
+                                if (!role) return null;
+                                const isEco = role === 'pure-eco';
+                                const isWar = role === 'pure-war';
+                                return (
+                                  <span
+                                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold border shrink-0 ${
+                                      isEco
+                                        ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                                        : isWar
+                                        ? 'bg-rose-500/15 border-rose-500/30 text-rose-300'
+                                        : 'bg-indigo-500/15 border-indigo-500/30 text-indigo-300'
+                                    }`}
+                                    title={tx(`Build Role: ${role.toUpperCase()}`, `Rol de Build: ${role.toUpperCase()}`)}
+                                  >
+                                    {isEco ? '🌾 Eco' : isWar ? '⚔️ War' : '⚖️ Hybrid'}
+                                  </span>
+                                );
+                              })()}
                             </div>
                           )}
                           <div className="text-xs text-slate-400 font-mono truncate mt-0.5">
@@ -344,18 +391,20 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
                       </div>
                     </td>
 
-                    {/* Period Share Visual Bar (Reclaims empty horizontal chasm) */}
+                    {/* Period Share Visual Bar (Stacked layout with single-line subtitle) */}
                     <td className="py-4 px-4 sm:px-5 hidden lg:table-cell">
-                      <div className="space-y-1.5 max-w-xs">
-                        <div className="flex items-center justify-between text-xs font-mono">
-                          <span className="text-slate-300 font-bold">{percentage}%</span>
-                          <span className="text-slate-400">of period funds</span>
+                      <div className="space-y-1 w-44">
+                        <div className="text-xs font-mono font-bold text-amber-300">
+                          {percentage}%
                         </div>
-                        <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden border border-slate-700/60">
+                        <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden border border-slate-700/60">
                           <div
                             className="h-full bg-gradient-to-r from-amber-500 to-yellow-400 rounded-full transition-all duration-300"
                             style={{ width: `${Math.max(3, Math.min(100, pctNum))}%` }}
                           />
+                        </div>
+                        <div className="text-[10px] text-slate-400 font-mono whitespace-nowrap truncate">
+                          {tx('of period funds', 'de los fondos del período')}
                         </div>
                       </div>
                     </td>
@@ -373,8 +422,8 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
                           <span className="text-red-400 font-bold">{formatBtc(donor.damageAmount)} dmg</span>
                         </div>
                       ) : (
-                        <div className="text-xs text-slate-400 lg:hidden">
-                          {percentage}% of period funds
+                        <div className="text-xs text-slate-400 lg:hidden font-mono">
+                          {percentage}% {tx('of period funds', 'de los fondos del período')}
                         </div>
                       )}
                     </td>
@@ -439,12 +488,8 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
         <div className="mt-5 pt-4 border-t border-slate-800 flex flex-col md:flex-row items-center justify-between gap-4 text-xs">
           {/* Left: Summary & Per-Page Selector */}
           <div className="flex items-center gap-3 text-slate-400 flex-wrap">
-            <span>
-              Showing{' '}
-              <strong className="text-white font-mono">
-                {((currentPage - 1) * pageSize) + 1}–{Math.min(currentPage * pageSize, filteredAndSorted.length)}
-              </strong>{' '}
-              of <strong className="text-white font-mono">{filteredAndSorted.length.toLocaleString()}</strong> patrons
+            <span className="font-mono text-slate-300">
+              {`Showing ${((currentPage - 1) * pageSize) + 1}–${Math.min(currentPage * pageSize, filteredAndSorted.length)} of ${filteredAndSorted.length.toLocaleString()} patrons`}
             </span>
 
             <div className="flex items-center gap-1.5 pl-2 border-l border-slate-800">

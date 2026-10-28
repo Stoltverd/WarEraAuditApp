@@ -2,6 +2,7 @@ import React from 'react';
 import { RankingSummary } from '../types/warera';
 import { Coins, Users, Trophy, ArrowUpRight, TrendingUp } from 'lucide-react';
 import { formatDateRangeDDMMYYYY } from '../utils/dateUtils';
+import { useI18n } from '../i18n/I18nContext';
 
 interface RankingStatsProps {
   summary: RankingSummary;
@@ -16,16 +17,17 @@ export const RankingStats: React.FC<RankingStatsProps> = ({
   totalActiveCitizens,
   onSelectDonor,
 }) => {
+  const { lang, tx } = useI18n();
   const timeframeLabel =
     summary.timeframe === 'daily'
-      ? 'Past 24 Hours'
+      ? tx('Past 24 Hours', 'Últimas 24 Horas')
       : summary.timeframe === 'weekly'
-      ? 'Past 7 Days'
+      ? tx('Past 7 Days', 'Últimos 7 Días')
       : summary.timeframe === 'monthly'
-      ? 'Past 30 Days'
+      ? tx('Past 30 Days', 'Últimos 30 Días')
       : summary.timeframe === 'custom'
       ? formatDateRangeDDMMYYYY(summary.startDate, summary.endDate)
-      : 'All-Time Record';
+      : tx('All-Time Record', 'Registro Histórico Total');
 
   const formatBtc = (val: number) => {
     return val.toLocaleString(undefined, {
@@ -41,12 +43,15 @@ export const RankingStats: React.FC<RankingStatsProps> = ({
   const isSkewed = summary.totalDonors > 1 && meanValue > medianValue * 1.1;
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+    <div
+      data-no-dom-i18n="true"
+      className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6"
+    >
       {/* 1. Total BTC Donated */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-lg relative overflow-hidden">
         <div className="absolute -right-4 -bottom-4 w-20 h-20 bg-amber-500/10 rounded-full blur-xl pointer-events-none" />
         <div className="flex items-center justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider mb-2">
-          <span>Total BTC Donated</span>
+          <span>{tx('Total BTC Donated', 'Total BTC Donado')}</span>
           <Coins className="w-4 h-4 text-amber-400" />
         </div>
         <div className="flex items-baseline gap-1.5 truncate">
@@ -63,7 +68,7 @@ export const RankingStats: React.FC<RankingStatsProps> = ({
           </div>
         ) : null}
         <div className="mt-2 text-xs text-slate-400 flex items-center justify-between">
-          <span>{countryName} Treasury</span>
+          <span>{`${countryName} Treasury`}</span>
           <span className="text-amber-400/80 font-mono text-[11px] font-semibold">{timeframeLabel}</span>
         </div>
       </div>
@@ -72,7 +77,7 @@ export const RankingStats: React.FC<RankingStatsProps> = ({
       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-lg relative overflow-hidden">
         <div className="absolute -right-4 -bottom-4 w-20 h-20 bg-emerald-500/10 rounded-full blur-xl pointer-events-none" />
         <div className="flex items-center justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider mb-2">
-          <span>Contributing Citizens</span>
+          <span>{tx('Contributing Citizens', 'Ciudadanos Contribuyentes')}</span>
           <Users className="w-4 h-4 text-emerald-400" />
         </div>
         <div className="flex items-baseline gap-1.5 flex-wrap">
@@ -81,10 +86,7 @@ export const RankingStats: React.FC<RankingStatsProps> = ({
           </span>
           <span className="text-xs font-semibold text-slate-300">
             {activeCount > 0 ? (
-              <>
-                patrons <span className="text-slate-500 font-normal">out of</span>{' '}
-                <strong className="text-emerald-400 font-bold">{activeCount}</strong> active citizens
-              </>
+              <span>{`patrons out of ${activeCount} active citizens`}</span>
             ) : (
               'patrons'
             )}
@@ -104,7 +106,7 @@ export const RankingStats: React.FC<RankingStatsProps> = ({
       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-lg relative overflow-hidden">
         <div className="absolute -right-4 -bottom-4 w-20 h-20 bg-blue-500/10 rounded-full blur-xl pointer-events-none" />
         <div className="flex items-center justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider mb-2">
-          <span>Median Contribution</span>
+          <span>{tx('Median Contribution', 'Contribución Mediana')}</span>
           <TrendingUp className="w-4 h-4 text-blue-400" />
         </div>
         <div className="flex items-baseline gap-1.5 truncate">
@@ -119,12 +121,12 @@ export const RankingStats: React.FC<RankingStatsProps> = ({
               'No recorded contributions'
             ) : isSkewed ? (
               <>
-                <strong className="text-slate-300 font-semibold font-mono">Mean: {formatBtc(meanValue)} BTC</strong>{' '}
+                <strong className="text-slate-300 font-semibold font-mono">{`Mean: ${formatBtc(meanValue)} BTC`}</strong>{' '}
                 <span className="text-amber-400/90 text-[11px]">• Skewed by large contributions</span>
               </>
             ) : (
               <>
-                <strong className="text-slate-300 font-semibold font-mono">Mean: {formatBtc(meanValue)} BTC</strong>{' '}
+                <strong className="text-slate-300 font-semibold font-mono">{`Mean: ${formatBtc(meanValue)} BTC`}</strong>{' '}
                 <span className="text-slate-500 text-[11px]">• Uniform contributions</span>
               </>
             )}
@@ -137,7 +139,7 @@ export const RankingStats: React.FC<RankingStatsProps> = ({
       <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-amber-950/30 border border-amber-500/30 rounded-2xl p-4 shadow-lg relative overflow-hidden">
         <div className="flex items-center justify-between text-amber-400 text-xs font-semibold uppercase tracking-wider mb-2">
           <span className="flex items-center gap-1">
-            <Trophy className="w-3.5 h-3.5" /> Top Benefactor
+            <Trophy className="w-3.5 h-3.5" /> {tx('Top Benefactor', 'Principal Benefactor')}
           </span>
           {summary.topDonor && (
             <button
@@ -178,9 +180,11 @@ export const RankingStats: React.FC<RankingStatsProps> = ({
               </div>
             </div>
             <div className="mt-2 text-[11px] text-slate-400">
-              {summary.totalAmountDonated > 0
-                ? ((summary.topDonor.totalAmount / summary.totalAmountDonated) * 100).toFixed(1)
-                : '100'}% of all {summary.timeframe} donations
+              {`${
+                summary.totalAmountDonated > 0
+                  ? ((summary.topDonor.totalAmount / summary.totalAmountDonated) * 100).toFixed(1)
+                  : '100'
+              }% of all ${summary.timeframe} donations`}
             </div>
           </div>
         ) : (

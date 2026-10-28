@@ -1,45 +1,263 @@
 @import "tailwindcss";
 
 @layer base {
-  html {
-    font-size: 16px;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    text-rendering: optimizeLegibility;
+  :root,
+  html[data-theme="tactical-command"] {
+    --theme-bg: #020617;
+    --theme-card: #0f172a;
+    --theme-ink-primary: #f8fafc;
+    color-scheme: dark;
   }
 
-  @media (min-width: 1280px) {
-    html {
-      font-size: 16.5px;
-    }
+  /* ==========================================================================
+   * DARK THEME 2: OBSIDIAN OLED (True Pitch Carbon & High-Contrast Silver)
+   * ========================================================================== */
+  html[data-theme="obsidian-oled"] {
+    color-scheme: dark;
+    --color-slate-950: #000000;
+    --color-slate-900: #0a0b0e;
+    --color-slate-800: #16181f;
+    --color-slate-700: #262936;
+    --color-slate-600: #3d4254;
+    --color-slate-500: #6e768f;
+    --color-slate-400: #a0a8c0;
+    --color-slate-300: #cfd5e6;
+    --color-slate-200: #eaedf7;
+    --color-slate-100: #ffffff;
   }
 
-  @media (min-width: 1600px) {
-    html {
-      font-size: 17px;
-    }
+  /* ==========================================================================
+   * DARK THEME 3: MIDNIGHT NAVY (Deep Maritime Command & Cool Ice Typography)
+   * ========================================================================== */
+  html[data-theme="midnight-navy"] {
+    color-scheme: dark;
+    --color-slate-950: #030b17;
+    --color-slate-900: #08172b;
+    --color-slate-800: #112847;
+    --color-slate-700: #1d3d69;
+    --color-slate-600: #2e578f;
+    --color-slate-500: #5d82b5;
+    --color-slate-400: #93b4de;
+    --color-slate-300: #bfd7f5;
+    --color-slate-200: #e0edff;
+    --color-slate-100: #f5f9ff;
+  }
+
+  /* ==========================================================================
+   * DARK THEME 4: BUNKER OLIVE (Tactical Field Green & Low-Strain Sage Ivory)
+   * ========================================================================== */
+  html[data-theme="bunker-olive"] {
+    color-scheme: dark;
+    --color-slate-950: #060d08;
+    --color-slate-900: #0d1911;
+    --color-slate-800: #172b1e;
+    --color-slate-700: #24422e;
+    --color-slate-600: #376145;
+    --color-slate-500: #638c70;
+    --color-slate-400: #96baa1;
+    --color-slate-300: #c3decb;
+    --color-slate-200: #e2f2e7;
+    --color-slate-100: #f4fbf6;
+  }
+
+  /* ==========================================================================
+   * DARK THEME 5: CRIMSON COMMAND (Warm Obsidian Burgundy & Alabaster Gold)
+   * ========================================================================== */
+  html[data-theme="crimson-command"] {
+    color-scheme: dark;
+    --color-slate-950: #0f0608;
+    --color-slate-900: #1b0c10;
+    --color-slate-800: #2c151c;
+    --color-slate-700: #45222c;
+    --color-slate-600: #633441;
+    --color-slate-500: #915d6c;
+    --color-slate-400: #bfa3ab;
+    --color-slate-300: #dfc9cf;
+    --color-slate-200: #f2e6e9;
+    --color-slate-100: #fff7f8;
+  }
+
+  /* ==========================================================================
+   * SHARED HIGH-READABILITY LIGHT MODE FOUNDATION (WCAG AA/AAA Contrast)
+   * Remaps dark surfaces to crisp daylight cards and deepens pastel accents
+   * into high-contrast jewel inks so every table, badge, and chart is sharp.
+   * ========================================================================== */
+  html[data-theme-mode="light"] {
+    color-scheme: light;
+
+    /* Deepen semantic accent shades so 200/300/400 text classes have >7:1 contrast on light cards */
+    --color-amber-200: #78350f;
+    --color-amber-300: #92400e;
+    --color-amber-400: #b45309;
+    --color-amber-900: #fde68a;
+    --color-amber-950: #fef3c7;
+
+    --color-orange-300: #9a3412;
+    --color-orange-400: #c2410c;
+    --color-orange-950: #ffedd5;
+
+    --color-cyan-200: #164e63;
+    --color-cyan-300: #0e7490;
+    --color-cyan-400: #0284c7;
+    --color-cyan-800: #7dd3fc;
+    --color-cyan-900: #bae6fd;
+    --color-cyan-950: #e0f2fe;
+
+    --color-sky-300: #0369a1;
+    --color-sky-400: #0284c7;
+
+    --color-emerald-200: #064e3b;
+    --color-emerald-300: #065f46;
+    --color-emerald-400: #047857;
+    --color-emerald-800: #6ee7b7;
+    --color-emerald-900: #a7f3d0;
+    --color-emerald-950: #d1fae5;
+
+    --color-rose-200: #881337;
+    --color-rose-300: #9f1239;
+    --color-rose-400: #be123c;
+    --color-rose-800: #fda4af;
+    --color-rose-900: #fecdd3;
+    --color-rose-950: #ffe4e6;
+
+    --color-red-200: #7f1d1d;
+    --color-red-300: #991b1b;
+    --color-red-400: #b91c1c;
+    --color-red-900: #fecaca;
+    --color-red-950: #fee2e2;
+
+    --color-indigo-200: #312e81;
+    --color-indigo-300: #3730a3;
+    --color-indigo-400: #4338ca;
+    --color-indigo-900: #c7d2fe;
+    --color-indigo-950: #e0e7ff;
+
+    --color-purple-200: #4c1d95;
+    --color-purple-300: #5b21b6;
+    --color-purple-400: #6d28d9;
+    --color-purple-950: #f3e8ff;
+  }
+
+  /* ==========================================================================
+   * LIGHT THEME 1: DAYLIGHT ALABASTER (Crisp Studio White & Deep Slate Ink)
+   * ========================================================================== */
+  html[data-theme="daylight-alabaster"] {
+    --theme-ink-primary: #0f172a;
+    --color-slate-950: #eef2f6;
+    --color-slate-900: #ffffff;
+    --color-slate-800: #e2e8f0;
+    --color-slate-700: #cbd5e1;
+    --color-slate-600: #94a3b8;
+    --color-slate-500: #475569;
+    --color-slate-400: #334155;
+    --color-slate-300: #1e293b;
+    --color-slate-200: #0f172a;
+    --color-slate-100: #020617;
+  }
+
+  /* ==========================================================================
+   * LIGHT THEME 2: WARM PARCHMENT (Editorial Ivory Paper & Espresso Ink)
+   * ========================================================================== */
+  html[data-theme="warm-parchment"] {
+    --theme-ink-primary: #1c1917;
+    --color-slate-950: #efeae1;
+    --color-slate-900: #fffdf9;
+    --color-slate-800: #e4ddd0;
+    --color-slate-700: #cfc5b4;
+    --color-slate-600: #a69b88;
+    --color-slate-500: #575047;
+    --color-slate-400: #443e36;
+    --color-slate-300: #292520;
+    --color-slate-200: #1c1917;
+    --color-slate-100: #0c0a09;
+  }
+
+  /* ==========================================================================
+   * LIGHT THEME 3: NORDIC FROST (Cool Arctic Daylight & Deep Navy Ink)
+   * ========================================================================== */
+  html[data-theme="nordic-frost"] {
+    --theme-ink-primary: #0f2942;
+    --color-slate-950: #e6eff8;
+    --color-slate-900: #ffffff;
+    --color-slate-800: #d5e3f0;
+    --color-slate-700: #b8cde0;
+    --color-slate-600: #87a5c2;
+    --color-slate-500: #3b5978;
+    --color-slate-400: #254361;
+    --color-slate-300: #16324f;
+    --color-slate-200: #0f2942;
+    --color-slate-100: #061526;
+  }
+
+  /* ==========================================================================
+   * LIGHT THEME 4: MINT LEDGER (Central Bank Sage & Deep Forest Ink)
+   * ========================================================================== */
+  html[data-theme="mint-ledger"] {
+    --theme-ink-primary: #0d2618;
+    --color-slate-950: #e7f1eb;
+    --color-slate-900: #ffffff;
+    --color-slate-800: #d3e5da;
+    --color-slate-700: #b5cfc0;
+    --color-slate-600: #84ab94;
+    --color-slate-500: #385c47;
+    --color-slate-400: #244733;
+    --color-slate-300: #163623;
+    --color-slate-200: #0d2618;
+    --color-slate-100: #05140b;
   }
 }
 
-/* Global Legibility Floor: Prevent eye-straining sub-12px micro-typography across all views & modals */
-.text-\[8px\],
-.text-\[9px\],
-.text-\[10px\] {
-  font-size: 0.78rem !important;
-  line-height: 1.35 !important;
+/* Light-mode typography & button contrast guards */
+html[data-theme-mode="light"] .text-white {
+  color: var(--theme-ink-primary, #0f172a);
 }
 
-.text-\[11px\] {
-  font-size: 0.82rem !important;
-  line-height: 1.4 !important;
+/* Preserve white text/icons inside saturated brand/CTA badges & buttons */
+html[data-theme-mode="light"] .bg-indigo-600.text-white,
+html[data-theme-mode="light"] .bg-indigo-500.text-white,
+html[data-theme-mode="light"] .bg-rose-600.text-white,
+html[data-theme-mode="light"] .bg-red-600.text-white,
+html[data-theme-mode="light"] .bg-emerald-600.text-white,
+html[data-theme-mode="light"] .bg-blue-600.text-white,
+html[data-theme-mode="light"] .from-amber-500 .text-white {
+  color: #ffffff;
 }
 
-.text-xs {
-  font-size: 0.85rem !important;
-  line-height: 1.45 !important;
+/* Ensure dark text on bright amber/emerald/cyan CTA buttons remains dark in light mode */
+html[data-theme-mode="light"] .text-slate-950 {
+  color: #090d16;
 }
 
-/* Boost dim slate-500 contrast on dark slate-900/950 surfaces for effortless reading */
-.text-slate-500 {
-  color: #94a3b8 !important;
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+
+/* Custom sleek scrollbars for dark & light themes */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-slate-950, #0f172a);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-slate-700, #334155);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-slate-600, #475569);
 }

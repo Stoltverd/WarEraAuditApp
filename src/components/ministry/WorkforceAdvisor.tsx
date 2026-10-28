@@ -17,6 +17,7 @@ import {
 } from '../../types/warera';
 import { CitizenEconomicProfile, CommodityTrend } from '../../types/ministry';
 import { WareraItemIcon } from '../common/WareraItemIcon';
+import { CompanyPortfolioAnalyzer } from './CompanyPortfolioAnalyzer';
 import {
   Users,
   Award,
@@ -51,7 +52,7 @@ export const WorkforceAdvisor: React.FC<WorkforceAdvisorProps> = ({
   profiles = [],
   commodities = [],
 }) => {
-  const [subTab, setSubTab] = useState<'traits' | 'guide' | 'sandbox' | 'posters'>('traits');
+  const [subTab, setSubTab] = useState<'analyzer' | 'traits' | 'guide' | 'sandbox' | 'posters'>('analyzer');
 
   // Trait Explorer Filters
   const [traitSearch, setTraitSearch] = useState('');
@@ -295,14 +296,27 @@ export const WorkforceAdvisor: React.FC<WorkforceAdvisorProps> = ({
         <div className="flex flex-wrap items-center gap-1.5 bg-slate-950/90 p-1.5 rounded-2xl border border-slate-800 shrink-0">
           <button
             type="button"
-            onClick={() => setSubTab('traits')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
-              subTab === 'traits'
+            onClick={() => setSubTab('analyzer')}
+            className={`px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center gap-1.5 cursor-pointer ${
+              subTab === 'analyzer'
                 ? 'bg-amber-500 text-slate-950 font-black shadow-sm'
-                : 'text-slate-400 hover:text-white'
+                : 'text-slate-300 hover:text-white'
             }`}
           >
-            <Sparkles className="w-3.5 h-3.5" />
+            <Building2 className="w-4 h-4" />
+            <span>Live Player Company Analyzer</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setSubTab('traits')}
+            className={`px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center gap-1.5 cursor-pointer ${
+              subTab === 'traits'
+                ? 'bg-amber-500 text-slate-950 font-black shadow-sm'
+                : 'text-slate-300 hover:text-white'
+            }`}
+          >
+            <Sparkles className="w-4 h-4" />
             <span>Piraterers Trait Tier List (29)</span>
           </button>
 
@@ -410,6 +424,14 @@ export const WorkforceAdvisor: React.FC<WorkforceAdvisorProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* SUB-TAB 0: LIVE PLAYER COMPANY ANALYZER (v0.27) */}
+      {subTab === 'analyzer' && (
+        <CompanyPortfolioAnalyzer
+          showPlayerSearch={true}
+          profiles={profiles}
+        />
       )}
 
       {/* SUB-TAB 1: PIRATERERS TRAIT TIER LIST EXPLORER */}

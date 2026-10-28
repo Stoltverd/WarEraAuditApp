@@ -1074,14 +1074,18 @@ export async function batchResolveUsers(
   const existingMap = await storage.getAllUsers();
   Object.assign(memoryUserCache, existingMap);
 
-  // Filter missing: query users who have no record or have a temporary placeholder/unresolved level
+  const liveCensusSet = countryId ? liveCountryCensusMap[countryId] : undefined;
+
+  // Filter missing: query users who have no record, unresolved level, or missing deep skills/rankings
   const missingIds = userIds.filter((id) => {
     const cached = memoryUserCache[id];
     return (
       !cached ||
       !cached.username ||
       cached.username.startsWith('Citizen #') ||
-      cached.level === undefined
+      cached.level === undefined ||
+      !cached.skills ||
+      !cached.rankings
     );
   });
 
@@ -1094,7 +1098,10 @@ export async function batchResolveUsers(
     results.forEach((u, idx) => {
       const uid = chunk[idx];
       if (u) {
-        if (!u.country && countryId) {
+        if (countryId && liveCensusSet?.has(uid)) {
+          u.country = countryId;
+          u.countryId = countryId;
+        } else if (!u.country && countryId) {
           u.country = countryId;
           u.countryId = countryId;
         }
@@ -1134,7 +1141,7 @@ export async function batchResolveUsers(
     await storage.saveUsers(newUsers);
   }
 
-  return memoryUserCache;
+  return { ...memoryUserCache };
 }
 
 /**
@@ -1229,20 +1236,39 @@ export async function fetchUserCompanies(userId: string, forceRefresh = false): 
       return [];
     }
 
-    // Resolve individual company cards via company.getById
+    // Resolve individual company cards via company.getById + manager.getByCompanyId + employee.getCompanyRoster
     const companies: WareraCompany[] = [];
     await Promise.all(
       allCompanyIds.map(async (cid) => {
         try {
           const enc = encodeURIComponent(JSON.stringify({ companyId: cid }));
-          const cRes = await rateLimitedFetch(`${WARERA_TRPC_BASE}/company.getById?input=${enc}`, {
-            headers: { 'Accept': 'application/json' },
-          });
+          const [cRes, mgrRes, rosterRes] = await Promise.all([
+            rateLimitedFetch(`${WARERA_TRPC_BASE}/company.getById?input=${enc}`, {
+              headers: { 'Accept': 'application/json' },
+            }),
+            rateLimitedFetch(`${WARERA_TRPC_BASE}/manager.getByCompanyId`, {
+              method: 'POST',
+              headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+              body: JSON.stringify({ companyId: cid }),
+            }).catch(() => null),
+            rateLimitedFetch(`${WARERA_TRPC_BASE}/employee.getCompanyRoster`, {
+              method: 'POST',
+              headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+              body: JSON.stringify({ companyId: cid }),
+            }).catch(() => null),
+          ]);
           if (!cRes.ok) return;
           const cJson = await cRes.json();
           const d = cJson?.result?.data;
           if (d && d._id) {
-            const rawEmployees: any[] = Array.isArray(d.employees)
+            const mgrJson = mgrRes && mgrRes.ok ? await mgrRes.json().catch(() => null) : null;
+            const liveManager = mgrJson?.result?.data || null;
+            const rosterJson = rosterRes && rosterRes.ok ? await rosterRes.json().catch(() => null) : null;
+            const liveRoster = rosterJson?.result?.data || null;
+
+            const rawEmployees: any[] = Array.isArray(liveRoster?.employees)
+              ? liveRoster.employees
+              : Array.isArray(d.employees)
               ? d.employees
               : Array.isArray(d.workers)
               ? d.workers
@@ -1250,29 +1276,58 @@ export async function fetchUserCompanies(userId: string, forceRefresh = false): 
 
             const parsedEmployees = rawEmployees
               .filter((emp) => emp && typeof emp === 'object')
-              .map((emp, idx) => ({
-                id: String(emp._id || emp.id || `${d._id}_emp_${idx + 1}`),
-                name: String(emp.name || emp.username || `Employee #${idx + 1}`),
-                age: Number(emp.age ?? 21),
-                sex: (String(emp.sex || emp.gender || 'male').toLowerCase().startsWith('f') ? 'female' : 'male') as 'male' | 'female',
-                nationality: String(emp.nationality || emp.country || 'Homeland'),
-                happiness: Number(emp.happiness ?? 55),
-                trainingPotential: Number(emp.trainingPotential ?? emp.potential ?? emp.maxTrainings ?? 9),
-                trainingUsed: Number(emp.trainingUsed ?? emp.trainings ?? 3),
-                tenureDays: Number(emp.tenureDays ?? emp.daysWorked ?? 10),
-                isSpecializedInGood: Boolean(emp.isSpecialized ?? emp.specialized ?? true),
-                hasTool: Boolean(emp.hasTool ?? emp.tool ?? false),
-                toolTier: emp.toolTier || 'rare',
-                stats: {
-                  production: Number(emp.stats?.production ?? emp.production ?? 3),
-                  luck: Number(emp.stats?.luck ?? emp.luck ?? 2),
-                  responsibility: Number(emp.stats?.responsibility ?? emp.responsibility ?? emp.discipline ?? 3),
-                },
-                traits: Array.isArray(emp.traits) ? emp.traits : [],
-                hourlyWageBtc: Number(emp.hourlyWage ?? emp.wage ?? 0.45),
-              }));
+              .map((emp, idx) => {
+                const prodStat = Number(
+                  emp.breakdown?.production?.total ??
+                  emp.base?.production ??
+                  emp.stats?.production ??
+                  emp.production ??
+                  3
+                );
+                const bonusPct = Number(emp.productionBonus?.total ?? 0);
+                const bonusDetail = Array.isArray(emp.productionBonus?.contributions)
+                  ? emp.productionBonus.contributions
+                      .map((b: any) => `${b.source} ${b.percent >= 0 ? '+' : ''}${Number(b.percent).toFixed(1)}%`)
+                      .join(' · ')
+                  : undefined;
+                const happyVal = Number(emp.happinessBreakdown?.value ?? emp.happiness ?? 50);
+                const wageHr = Number(emp.estimate?.wage ?? emp.hourlyWage ?? emp.wage ?? 0.45);
+                const ptsHr = Number(emp.estimate?.production ?? (prodStat * 0.25 * (1 + bonusPct / 100)));
+                const rawTraits = Array.isArray(emp.traits) ? emp.traits : [];
+                const traitIds = rawTraits
+                  .map((t: any) => (typeof t === 'string' ? t : t?.code || t?.name || ''))
+                  .filter(Boolean);
+
+                return {
+                  id: String(emp._id || emp.id || `${d._id}_emp_${idx + 1}`),
+                  name: String(emp.name || emp.username || `Employee #${idx + 1}`),
+                  age: Number(emp.age ?? 24),
+                  sex: (String(emp.sex || emp.gender || 'male').toLowerCase().startsWith('f') ? 'female' : 'male') as 'male' | 'female',
+                  nationality: String(emp.nationality || emp.country || 'Homeland'),
+                  happiness: happyVal,
+                  trainingPotential: Number(emp.trainingPotential ?? emp.potential ?? emp.maxTrainings ?? 9),
+                  trainingUsed: Number(emp.trainingUsed ?? emp.trainings ?? 3),
+                  tenureDays: Number(emp.tenureDays ?? emp.daysWorked ?? 10),
+                  isSpecializedInGood: Boolean(emp.isSpecialized ?? emp.specialized ?? true),
+                  hasTool: Boolean(emp.hasTool ?? emp.tool ?? false),
+                  toolTier: emp.toolTier || 'rare',
+                  stats: {
+                    production: prodStat,
+                    luck: Number(emp.breakdown?.luck?.total ?? emp.base?.luck ?? emp.stats?.luck ?? emp.luck ?? 2),
+                    responsibility: Number(emp.breakdown?.responsibility?.total ?? emp.base?.responsibility ?? emp.stats?.responsibility ?? emp.responsibility ?? 3),
+                  },
+                  traits: traitIds,
+                  hourlyWageBtc: wageHr,
+                  productionBonusPct: bonusPct,
+                  productionBonusDetail: bonusDetail,
+                  hourlyOutputPts: ptsHr,
+                  quitChance: Number(emp.happinessBreakdown?.quitChance ?? 0),
+                  revealedTraitCodes: traitIds,
+                };
+              });
 
             const breakRoomLvl = Number(
+              liveRoster?.hourly?.cap ??
               d.activeUpgradeLevels?.breakRoom ??
               d.activeUpgradeLevels?.breakroom ??
               d.breakRoomLevel ??
@@ -1280,8 +1335,8 @@ export async function fetchUserCompanies(userId: string, forceRefresh = false): 
               (parsedEmployees.length > 0 ? Math.min(3, Math.max(1, parsedEmployees.length)) : 1)
             );
 
-            const managerObj = typeof d.manager === 'object' && d.manager ? d.manager : null;
-            const managerId = managerObj?._id || (typeof d.manager === 'string' ? d.manager : d.managerId);
+            const managerObj = liveManager || (typeof d.manager === 'object' && d.manager ? d.manager : null);
+            const managerId = managerObj?.user || managerObj?._id || (typeof d.manager === 'string' ? d.manager : d.managerId);
             const managerName = managerObj?.username || managerObj?.name || d.managerName;
 
             companies.push({
@@ -1291,6 +1346,7 @@ export async function fetchUserCompanies(userId: string, forceRefresh = false): 
               name: d.name || 'Unnamed Factory',
               itemCode: d.itemCode || 'commodity',
               isFull: Boolean(d.isFull),
+              disabledAt: d.disabledAt || null,
               concreteInvested: d.concreteInvested,
               production: Number(d.production || 0),
               activeUpgradeLevels: {
@@ -1299,11 +1355,13 @@ export async function fetchUserCompanies(userId: string, forceRefresh = false): 
                 automatedEngine: Number(d.activeUpgradeLevels?.automatedEngine ?? 1),
                 breakRoom: Math.min(3, Math.max(1, breakRoomLvl || 1)),
               },
-              workerCount: Number(d.workerCount ?? (parsedEmployees.length || 0)),
+              workerCount: Number(parsedEmployees.length || d.workerCount || 0),
               employees: parsedEmployees.length > 0 ? parsedEmployees : undefined,
               managerId: managerId ? String(managerId) : undefined,
               managerName: managerName ? String(managerName) : undefined,
-              hasManager: Boolean(managerId || d.hasManager),
+              hasManager: Boolean(liveManager || managerId || d.hasManager),
+              managerContract: liveManager || null,
+              rosterHourly: liveRoster?.hourly || null,
               estimatedValue: Number(d.estimatedValue || 0),
               createdAt: d.createdAt,
               updatedAt: d.updatedAt,
@@ -1325,19 +1383,48 @@ export async function fetchUserCompanies(userId: string, forceRefresh = false): 
   }
 }
 
+// Authoritative live citizen IDs per country from user.getUsersByCountry
+const liveCountryCensusMap: Record<string, Set<string>> = {};
+
+/**
+ * Returns the authoritative set of live citizen IDs for a country if already fetched in this session.
+ */
+export function getLiveCountryCensusIds(countryId?: string): Set<string> | null {
+  if (!countryId) return null;
+  return liveCountryCensusMap[countryId] || null;
+}
+
+/**
+ * Helper to extract normalized country ID from a cached WareraUserLite object
+ */
+function extractCachedUserCountryId(u?: WareraUserLite): string {
+  if (!u) return '';
+  if (typeof u.country === 'string' && u.country.trim()) return u.country.trim();
+  if (typeof u.country === 'object' && (u.country as any)?._id) {
+    return String((u.country as any)._id).trim();
+  }
+  if (u.countryId && typeof u.countryId === 'string') return u.countryId.trim();
+  return '';
+}
+
 /**
  * Fetch registered citizens of a country via user.getUsersByCountry with bulk pagination.
- * Directly harvests complete citizen profiles (username, avatar, leveling, active status)
- * so hundreds of citizens are ingested with 0 individual queries and zero rate limits.
+ * Directly harvests complete citizen profiles (username, avatar, leveling, active status),
+ * ALWAYS updates cached country residency (fixing immigrated citizens like Miky in Japan),
+ * and reconciles any previously cached citizens who emigrated out of this country.
  */
 export async function fetchCountryCitizens(
   countryId: string,
   maxPages = 25
 ): Promise<string[]> {
+  const existingMap = await storage.getAllUsers();
+  Object.assign(memoryUserCache, existingMap);
+
   const allCitizenIds: string[] = [];
   const harvestedUsers: WareraUserLite[] = [];
   let cursor: string | undefined = undefined;
   let page = 0;
+  let completedCleanly = false;
 
   try {
     while (page < maxPages) {
@@ -1355,7 +1442,10 @@ export async function fetchCountryCitizens(
       const json = await res.json();
       const rawData = json?.result?.data;
       const rawItems: any[] = rawData?.items || [];
-      if (rawItems.length === 0) break;
+      if (rawItems.length === 0) {
+        completedCleanly = true;
+        break;
+      }
 
       rawItems.forEach((item) => {
         if (!item || !item._id) return;
@@ -1365,40 +1455,112 @@ export async function fetchCountryCitizens(
         const wealthObj = typeof item.stats?.wealth === 'object' ? item.stats.wealth : null;
         const existing = memoryUserCache[uid];
 
-        // Only register placeholder if user does not already have an established profile with valid level
-        if (!existing || existing.level === undefined || existing.username?.startsWith('Citizen #')) {
-          const user: WareraUserLite = {
-            _id: uid,
-            username: item.username || existing?.username || `Citizen #${uid.slice(-6)}`,
-            avatarUrl: item.avatarUrl || item.avatar || existing?.avatarUrl,
-            country: item.country || countryId,
-            countryId: typeof item.country === 'string' ? item.country : (item.country?._id || countryId),
-            leveling: item.leveling || existing?.leveling,
-            level: Number(item.leveling?.level ?? item.level ?? existing?.level ?? 0),
-            militaryRank: item.militaryRank ?? existing?.militaryRank,
-            isActive: item.isActive !== undefined ? Boolean(item.isActive) : (existing?.isActive ?? true),
-            createdAt: item.createdAt || existing?.createdAt,
-            dates: item.dates || existing?.dates,
-            skills: item.skills || existing?.skills,
-            rankings: item.rankings || existing?.rankings,
-            stats: item.stats || existing?.stats,
-            money: wealthObj?.money !== undefined ? wealthObj.money : (item.money ?? existing?.money),
-          };
+        const resolvedCountryId =
+          typeof item.country === 'string' && item.country.trim()
+            ? item.country.trim()
+            : item.country?._id
+            ? String(item.country._id).trim()
+            : countryId;
 
-          memoryUserCache[uid] = user;
-          harvestedUsers.push(user);
-        }
+        // Always merge live residency, level, activity, and identity into memoryUserCache
+        // so citizens who moved to this country (e.g. Miky moving to Japan) immediately update their countryId
+        const user: WareraUserLite = {
+          ...(existing || {}),
+          _id: uid,
+          username: item.username || existing?.username || `Citizen #${uid.slice(-6)}`,
+          avatarUrl: item.avatarUrl || item.avatar || existing?.avatarUrl,
+          country: resolvedCountryId,
+          countryId: resolvedCountryId,
+          leveling: item.leveling || existing?.leveling,
+          level: Number(item.leveling?.level ?? item.level ?? existing?.level ?? 0),
+          militaryRank: item.militaryRank ?? existing?.militaryRank,
+          isActive: item.isActive !== undefined ? Boolean(item.isActive) : (existing?.isActive ?? true),
+          createdAt: item.createdAt || existing?.createdAt,
+          dates: item.dates || existing?.dates,
+          skills: item.skills || existing?.skills,
+          rankings: item.rankings || existing?.rankings,
+          stats: item.stats || existing?.stats,
+          money: wealthObj?.money !== undefined ? wealthObj.money : (item.money ?? existing?.money),
+        };
+
+        memoryUserCache[uid] = user;
+        harvestedUsers.push(user);
       });
 
       cursor = rawData?.nextCursor;
-      if (!cursor || rawItems.length < 100) break;
+      if (!cursor || rawItems.length < 100) {
+        completedCleanly = true;
+        break;
+      }
       await new Promise((r) => setTimeout(r, 80));
+    }
+
+    const uniqueCitizenIds = Array.from(new Set(allCitizenIds));
+
+    // If pagination completed cleanly, record the authoritative live census for this country
+    // and reconcile any cached users who used to have country === countryId but emigrated elsewhere
+    if (completedCleanly && uniqueCitizenIds.length > 0) {
+      const liveSet = new Set(uniqueCitizenIds);
+      liveCountryCensusMap[countryId] = liveSet;
+
+      const emigratedUserIds: string[] = [];
+      for (const [uid, cachedUser] of Object.entries(memoryUserCache)) {
+        if (!cachedUser) continue;
+        const cachedCId = extractCachedUserCountryId(cachedUser);
+        if (cachedCId === countryId && !liveSet.has(uid)) {
+          emigratedUserIds.push(uid);
+        }
+      }
+
+      if (emigratedUserIds.length > 0) {
+        // Re-verify emigrated citizens via user.getUserLite(uid, true) to discover their new country (e.g. Japan)
+        const chunkSize = 8;
+        for (let i = 0; i < emigratedUserIds.length; i += chunkSize) {
+          const chunk = emigratedUserIds.slice(i, i + chunkSize);
+          const refreshed = await Promise.all(chunk.map((uid) => fetchUserLite(uid, true)));
+          refreshed.forEach((freshUser, idx) => {
+            const uid = chunk[idx];
+            if (freshUser) {
+              const freshCId = extractCachedUserCountryId(freshUser);
+              // If upstream still hasn't updated or returned same country despite absence from getUsersByCountry, mark emigrated
+              if (!freshCId || freshCId === countryId) {
+                freshUser.country = 'emigrated';
+                freshUser.countryId = 'emigrated';
+              }
+              memoryUserCache[uid] = freshUser;
+              harvestedUsers.push(freshUser);
+            } else if (memoryUserCache[uid]) {
+              memoryUserCache[uid] = {
+                ...memoryUserCache[uid],
+                country: 'emigrated',
+                countryId: 'emigrated',
+              };
+              harvestedUsers.push(memoryUserCache[uid]);
+            }
+          });
+        }
+
+        // Prune emigrated citizens from this country's persisted auditedProfilesMap so stale entries never linger
+        const savedAudits = storage.getAuditedProfiles(countryId);
+        if (savedAudits && Object.keys(savedAudits).length > 0) {
+          let modifiedAudits = false;
+          for (const emigId of emigratedUserIds) {
+            if (savedAudits[emigId]) {
+              delete savedAudits[emigId];
+              modifiedAudits = true;
+            }
+          }
+          if (modifiedAudits) {
+            storage.saveAuditedProfilesMap(countryId, savedAudits);
+          }
+        }
+      }
     }
 
     if (harvestedUsers.length > 0) {
       await storage.saveUsers(harvestedUsers);
     }
-    return Array.from(new Set(allCitizenIds));
+    return uniqueCitizenIds;
   } catch (err) {
     console.warn('Failed to fetch country citizens:', err);
     return Array.from(new Set(allCitizenIds));

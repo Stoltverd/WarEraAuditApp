@@ -213,6 +213,8 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
     const countryChanged = prevCountryNameRef.current !== countryName;
     if (countryChanged) {
       prevCountryNameRef.current = countryName;
+      auditStreamService.resetForCountrySwitch();
+      bufferedMapRef.current = {};
       setDisplayedProfiles(profiles);
       setBufferedUpdatesMap({});
       setPinnedInViewIds(new Set());
@@ -245,6 +247,18 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
 
   // Handler for background stream updates: stages in buffer so rows never jump mid-browsing
   const handleBackgroundStreamUpdate = useCallback((updated: CitizenEconomicProfile) => {
+    const currentProfiles = profilesRef.current;
+    if (
+      currentProfiles.length > 0 &&
+      updated.countryId &&
+      currentProfiles[0]?.countryId &&
+      updated.countryId !== currentProfiles[0].countryId
+    ) {
+      return;
+    }
+    if (!currentProfiles.some((p) => p.userId === updated.userId)) {
+      return;
+    }
     bufferedMapRef.current = {
       ...bufferedMapRef.current,
       [updated.userId]: updated,
@@ -288,22 +302,24 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
 
   // Flush buffered background updates into the table and parent state atomically
   const handleApplyBufferedUpdates = useCallback(() => {
-    const stagedList = Object.values(bufferedMapRef.current) as CitizenEconomicProfile[];
+    const validIds = new Set(profiles.map((p) => p.userId));
+    const stagedList = (Object.values(bufferedMapRef.current) as CitizenEconomicProfile[]).filter(
+      (p) => validIds.has(p.userId)
+    );
+    bufferedMapRef.current = {};
+    setBufferedUpdatesMap({});
+    setPinnedInViewIds(new Set());
     if (stagedList.length === 0) {
       setDisplayedProfiles(profiles);
-      setPinnedInViewIds(new Set());
       return;
     }
     const stagedById = new Map<string, CitizenEconomicProfile>(
       stagedList.map((p) => [p.userId, p])
     );
-    bufferedMapRef.current = {};
     setDisplayedProfiles((prev) => {
       const base = prev.length > 0 ? prev : profiles;
       return base.map((p) => stagedById.get(p.userId) || p);
     });
-    setBufferedUpdatesMap({});
-    setPinnedInViewIds(new Set());
     if (onUpdateProfilesBatch) {
       onUpdateProfilesBatch(stagedList);
     } else {
@@ -352,14 +368,20 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
 
   // Seamless background stream trigger: initiates non-blocking verification for unverified or >30m stale citizens
   useEffect(() => {
+    const currentCountryId = profiles[0]?.countryId;
+    const isRunningDifferentCountry =
+      streamState.isRunning &&
+      Boolean(currentCountryId) &&
+      Boolean(streamState.countryId) &&
+      streamState.countryId !== currentCountryId;
+
     if (
       !isSyncing &&
       apiKey &&
       apiKey.trim() &&
       profiles.length > 0 &&
       actionableStaleCount > 0 &&
-      !streamState.isRunning &&
-      !streamState.isPaused
+      ((!streamState.isRunning && !streamState.isPaused) || isRunningDifferentCountry)
     ) {
       const mergedProfiles = profilesRef.current.map(
         (p) => bufferedMapRef.current[p.userId] || p
@@ -374,6 +396,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
       );
     }
   }, [
+    countryName,
     profiles.length,
     actionableStaleCount,
     isSyncing,
@@ -381,6 +404,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
     config.analysisPeriodDays,
     streamState.isRunning,
     streamState.isPaused,
+    streamState.countryId,
     handleBackgroundStreamUpdate,
   ]);
 
@@ -652,14 +676,14 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
           <div className="flex items-center gap-2 flex-wrap">
             <h2 className="text-base sm:text-lg font-black text-white flex items-center gap-2">
               <ShieldAlert className="w-5 h-5 text-amber-400" />
-              Sovereign Citizen &amp; Leech Radar — {countryName}
+              <span>{`Sovereign Citizen & Leech Radar — ${countryName}`}</span>
             </h2>
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20 uppercase tracking-wider">
+            <span className="text-[10px] text-amber-300 font-bold px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 uppercase tracking-wider">
               Economy Ministry
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Real-time income growth audits, patriotic quotas, and diplomatic treasury alerts for {countryName}.
+            {`Real-time income growth audits, patriotic quotas, and diplomatic treasury alerts for ${countryName}.`}
           </p>
         </div>
 
@@ -750,7 +774,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
               <Coins className="w-3.5 h-3.5 text-amber-400" /> Monitored Net Worth
             </span>
             <span className="text-[10px] text-emerald-400 font-mono font-bold bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-              {activeCount} Active (Lvl 10+)
+              {`${activeCount} Active (Lvl 10+)`}
             </span>
           </div>
           {isCohortAuditing ? (
@@ -760,7 +784,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                 <span>Auditing National Assets...</span>
               </div>
               <div className="text-[11px] text-slate-500 mt-1">
-                Aggregating complete census ({profiles.length}/{targetCohortSize} verified)
+                {`Aggregating complete census (${profiles.length}/${targetCohortSize} verified)`}
               </div>
             </div>
           ) : (
@@ -770,15 +794,15 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
               </div>
               <div className="text-slate-400 text-[11px] mt-1 flex items-center justify-between">
                 <span>
-                  Assets in {countryName}
+                  <span>{`Assets in ${countryName}`}</span>
                   {zeroContributionCount > 0 && (
                     <span className="text-slate-500 text-[10px] ml-1.5 font-normal">
-                      ({profiles.length - zeroContributionCount} patrons • {zeroContributionCount} zero-contrib)
+                      {`(${profiles.length - zeroContributionCount} patrons • ${zeroContributionCount} zero-contrib)`}
                     </span>
                   )}
                 </span>
                 <span className="text-cyan-400 font-mono font-semibold" title={`Gross economic turnover across ${config?.analysisPeriodDays ?? 7} days`}>
-                  {formatBtc(filtered.reduce((acc, p) => acc + (p.grossIncomeBtc || 0), 0))} BTC ({config?.analysisPeriodDays ?? 7}D Flow)
+                  {`${formatBtc(filtered.reduce((acc, p) => acc + (p.grossIncomeBtc || 0), 0))} BTC (${config?.analysisPeriodDays ?? 7}D Flow)`}
                 </span>
               </div>
             </>
@@ -805,7 +829,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                 {criticalLeechCount}
               </div>
               <div className="text-slate-500 text-[11px] mt-1">
-                Contributing under {config.lowContributorIncomeRatePct ?? 5}% of BTC income growth ({config.analysisPeriodDays ?? 7}D window)
+                {`Contributing under ${config.lowContributorIncomeRatePct ?? 5}% of BTC income growth (${config.analysisPeriodDays ?? 7}D window)`}
               </div>
             </>
           )}
@@ -887,7 +911,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
             ) : (
               <CheckCircle2 className="w-4 h-4 text-cyan-400 shrink-0" />
             )}
-            <span className="font-semibold whitespace-nowrap">{config?.analysisPeriodDays ?? 7}D Audit Active</span>
+            <span className="font-semibold whitespace-nowrap">{`${config?.analysisPeriodDays ?? 7}D Audit Active`}</span>
             {onRunIncomeAudit && (
               <button
                 type="button"
@@ -923,7 +947,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
             </span>
             <Clock className="w-4 h-4 text-amber-400 shrink-0" />
             <span className="whitespace-nowrap">
-              &gt;7d Inactive ({isCohortAuditing ? `${inactiveDonorCount}...` : inactiveDonorCount})
+              {`>7d Inactive (${isCohortAuditing ? `${inactiveDonorCount}...` : inactiveDonorCount})`}
             </span>
           </button>
         </div>
@@ -937,13 +961,13 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
             title="Filter by sovereign fiscal standing"
           >
             <option value="all">
-              All Fiscal Standings {isCohortAuditing ? `(${profiles.length}/${targetCohortSize}...)` : `(${activeCount})`}
+              {`All Fiscal Standings ${isCohortAuditing ? `(${profiles.length}/${targetCohortSize}...)` : `(${activeCount})`}`}
             </option>
             <option value="critical">
-              🚨 Needs Attention / Leeches {isCohortAuditing ? '(auditing...)' : `(${criticalLeechCount})`}
+              {`🚨 Needs Attention / Leeches ${isCohortAuditing ? '(auditing...)' : `(${criticalLeechCount})`}`}
             </option>
             {zeroContributionCount > 0 && !isCohortAuditing && (
-              <option value="zero-donations">⚠️ Zero Contributions ({zeroContributionCount})</option>
+              <option value="zero-donations">{`⚠️ Zero Contributions (${zeroContributionCount})`}</option>
             )}
             <option value="moderate">🔵 Fair / Moderate Donors</option>
             <option value="patriot">🟢 Model Patriots &amp; Pillars</option>
@@ -1014,7 +1038,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
               <div className="flex items-center gap-2.5 flex-wrap">
                 <Loader2 className="w-4 h-4 text-cyan-400 shrink-0 animate-spin" />
                 <span className="font-black text-white uppercase tracking-wide">
-                  4-Worker Delta Receipt Verification:
+                  4-Thread Delta Receipt Verification:
                 </span>
                 <span className="px-2.5 py-0.5 rounded bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 font-bold">
                   {streamState.auditedCount} / {streamState.totalTargetCount} Citizens ({streamState.pct}%)
@@ -1107,7 +1131,8 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
             <div className="flex items-center gap-2 flex-wrap">
               <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
               <span>
-                <strong>{bufferedCount} Verified Citizen Audits Ready</strong> — Table row order was kept locked so rows wouldn&apos;t jump while you were browsing.
+                <strong>{`${bufferedCount} Verified Citizen Audits Ready`}</strong>{' '}
+                <span>— Table row order was kept locked so rows wouldn&apos;t jump while you were browsing.</span>
               </span>
             </div>
             <button
@@ -1116,14 +1141,14 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
               className="px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl text-xs font-black flex items-center gap-1.5 transition shadow-md"
             >
               <RefreshCw className="w-3.5 h-3.5" />
-              <span>Apply {bufferedCount} Verified Updates to Table</span>
+              <span>{`Apply ${bufferedCount} Verified Updates to Table`}</span>
             </button>
           </div>
         ) : streamState.isPaused ? (
           <div className="bg-amber-950/80 border-b border-amber-800/60 px-4 py-2.5 flex items-center justify-between text-xs sm:text-sm text-amber-300 font-mono">
             <span className="flex items-center gap-2">
               <Pause className="w-4 h-4 text-amber-400" />
-              <span>Background Ledger Stream Paused ({streamState.auditedCount}/{streamState.totalTargetCount} verified)</span>
+              <span>{`Background Ledger Stream Paused (${streamState.auditedCount}/${streamState.totalTargetCount} verified)`}</span>
             </span>
             <button
               type="button"
@@ -1137,10 +1162,10 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
           <div className="bg-emerald-950/60 border-b border-emerald-800/40 px-4 py-2.5 flex items-center justify-between text-xs sm:text-sm text-emerald-300 font-mono">
             <span className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              <span>100% Truth-Based: All {displayedProfiles.length} active citizens verified via live personal receipts</span>
+              <span>{`100% Truth-Based: All ${displayedProfiles.length} active citizens verified via live personal receipts`}</span>
               {pinnedInViewIds.size > 0 && (
                 <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs">
-                  🔒 {pinnedInViewIds.size} updated row(s) pinned in current filter view
+                  {`🔒 ${pinnedInViewIds.size} updated row(s) pinned in current filter view`}
                 </span>
               )}
             </span>
@@ -1156,7 +1181,8 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
               )}
               <button
                 type="button"
-                onClick={() =>
+                onClick={() => {
+                  onRunIncomeAudit?.();
                   auditStreamService.startStream(
                     displayedProfiles,
                     apiKey,
@@ -1164,10 +1190,10 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     countryBenchmark,
                     handleBackgroundStreamUpdate,
                     true
-                  )
-                }
+                  );
+                }}
                 className="px-3 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-bold flex items-center gap-1.5 transition"
-                title="Force re-audit of all citizen personal receipts"
+                title="Force re-audit of all citizen personal receipts and refresh live national residency"
               >
                 <RefreshCw className="w-3.5 h-3.5" /> Re-Audit All
               </button>
@@ -1246,8 +1272,8 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
             <tr className="bg-slate-950/90 border-b border-slate-800 text-slate-300 font-bold uppercase tracking-wider text-xs">
               <th className="py-3.5 px-3.5">Citizen</th>
               <th className="py-3.5 px-3.5 text-right">Net Worth</th>
-              <th className="py-3.5 px-3.5 text-right">Inflow &amp; Net ({config?.analysisPeriodDays ?? 7}D)</th>
-              <th className="py-3.5 px-3.5 text-right">Donated ({config?.analysisPeriodDays ?? 7}D)</th>
+              <th className="py-3.5 px-3.5 text-right">{`Inflow & Net (${config?.analysisPeriodDays ?? 7}D)`}</th>
+              <th className="py-3.5 px-3.5 text-right">{`Donated (${config?.analysisPeriodDays ?? 7}D)`}</th>
               <th className="py-3.5 px-3.5 text-center">Fiscal Standing</th>
               <th className="py-3.5 px-3.5 text-center">Build &amp; Commitment</th>
               <th className="py-3.5 px-3.5 text-right">Actions</th>
@@ -1257,7 +1283,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
             {filtered.length === 0 ? (
               <tr>
                 <td colSpan={7} className="py-12 text-center text-slate-400 text-sm font-sans">
-                  No citizens match the active filters in {countryName}.
+                  {`No citizens match the active filters in ${countryName}.`}
                 </td>
               </tr>
             ) : (
@@ -1419,7 +1445,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                         {formatBtc(c.periodDonatedBtc ?? c.directDonatedBtc ?? 0)}
                       </div>
                       <div className="text-xs text-slate-300 font-sans">
-                        {formatBtc(c.totalDonatedBtc)} life
+                        {`${formatBtc(c.totalDonatedBtc)} life`}
                       </div>
                       <div className="text-[10px] text-slate-400 font-sans">
                         {c.lastDonationAt ? (
@@ -1430,7 +1456,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                       </div>
                       {typeof c.damageValueBtc === 'number' && c.damageValueBtc > 0 && (
                         <div className="text-[10px] text-red-300 font-mono font-bold mt-0.5" title="Converted combat defense credit">
-                          +{c.damageValueBtc.toFixed(1)} BTC war
+                          {`+${c.damageValueBtc.toFixed(1)} BTC war`}
                         </div>
                       )}
                     </td>
@@ -1489,7 +1515,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                             </span>
                           )}
                           <span className="text-xs text-slate-300 font-mono font-normal">
-                            · Lvl {c.level}
+                            {`· Lvl ${c.level}`}
                           </span>
                         </div>
 

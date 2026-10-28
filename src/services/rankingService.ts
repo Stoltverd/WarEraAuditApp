@@ -21,6 +21,11 @@ import {
   WareraCumulativeDonation,
   WareraUserLite,
 } from '../types/warera';
+import {
+  calculateWarSkillPoints,
+  calculateEcoSkillPoints,
+  evaluatePlaystyle,
+} from './ministryService';
 
 /**
  * Safely extract string country ID from userProfile, country string, or country object.
@@ -340,6 +345,14 @@ export function calculateGranularRankings(
     const combinedTotal = parseFloat((d.directAmount + damageAmount).toFixed(3));
     const sortedTx = [...d.transactions].sort(compareTransactionsNewestFirst);
 
+    const userLevel = userProfile?.leveling?.level ?? userProfile?.level;
+    let playstyle: 'pure-eco' | 'pure-war' | 'hybrid' | undefined;
+    if (userProfile?.skills) {
+      const warPoints = calculateWarSkillPoints(userProfile);
+      const ecoPoints = calculateEcoSkillPoints(userProfile);
+      playstyle = evaluatePlaystyle(warPoints, ecoPoints);
+    }
+
     return {
       ...d,
       username: resolvedUsername,
@@ -351,6 +364,8 @@ export function calculateGranularRankings(
       appliedRatePer1k: isCurrentCitizen ? appliedRate : 0,
       transactions: sortedTx,
       donations: sortedTx,
+      level: userLevel,
+      playstyle,
     };
   });
 
@@ -461,6 +476,14 @@ export function calculateCumulativeRankings(
     const donationCount = countrySpecificTxs.length > 0 ? countrySpecificTxs.length : 1;
     const resolvedTransactions = countrySpecificTxs.length > 0 ? countrySpecificTxs : [singleTx];
 
+    const userLevel = userProfile?.leveling?.level ?? userProfile?.level;
+    let playstyle: 'pure-eco' | 'pure-war' | 'hybrid' | undefined;
+    if (userProfile?.skills) {
+      const warPoints = calculateWarSkillPoints(userProfile);
+      const ecoPoints = calculateEcoSkillPoints(userProfile);
+      playstyle = evaluatePlaystyle(warPoints, ecoPoints);
+    }
+
     return {
       rank: 0,
       userId: c.userId,
@@ -478,6 +501,8 @@ export function calculateCumulativeRankings(
       transactions: timeframe === 'all' ? [singleTx] : resolvedTransactions,
       donations: timeframe === 'all' ? [singleTx] : resolvedTransactions,
       isCumulativeOnly: timeframe === 'all' || countrySpecificTxs.length === 0,
+      level: userLevel,
+      playstyle,
     };
   });
 
@@ -503,6 +528,13 @@ export function calculateCumulativeRankings(
         const damageAmount = parseFloat(((rawDamageDealt / 1000) * appliedRate).toFixed(3));
         if (damageAmount > 0) {
           totalDamage += damageAmount;
+          const userLevel = userProfile.leveling?.level ?? userProfile.level;
+          let playstyle: 'pure-eco' | 'pure-war' | 'hybrid' | undefined;
+          if (userProfile.skills) {
+            const warPoints = calculateWarSkillPoints(userProfile);
+            const ecoPoints = calculateEcoSkillPoints(userProfile);
+            playstyle = evaluatePlaystyle(warPoints, ecoPoints);
+          }
           donorsList.push({
             rank: 0,
             userId: uid,
@@ -519,6 +551,8 @@ export function calculateCumulativeRankings(
             transactions: [],
             donations: [],
             isCumulativeOnly: true,
+            level: userLevel,
+            playstyle,
           });
         }
       }

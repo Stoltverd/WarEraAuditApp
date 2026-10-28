@@ -2571,6 +2571,14 @@ Un pequeño incremento semanal marca la diferencia: le invitamos a realizar una 
     });
   }
 
+  const activeLang =
+    typeof localStorage !== 'undefined' && localStorage.getItem('warera_app_lang_v1') === 'es'
+      ? 'es'
+      : 'en';
+  if (activeLang === 'es') {
+    messages.sort((a, b) => (a.language === 'es' ? -1 : b.language === 'es' ? 1 : 0));
+  }
+
   return messages;
 }
 
@@ -2578,18 +2586,31 @@ Un pequeño incremento semanal marca la diferencia: le invitamos a realizar una 
  * Format CSV string from National Transactions for Excel (sorted newest-first)
  */
 export function exportNationalTransactionsToCsv(transactions: NationalTransaction[]): string {
+  const isEs =
+    typeof localStorage !== 'undefined' && localStorage.getItem('warera_app_lang_v1') === 'es';
   // UTF-8 BOM for Microsoft Excel compatibility
   const BOM = '\uFEFF';
-  const headers = [
-    'Transaction ID',
-    'Date',
-    'Source Country',
-    'Target Country',
-    'Direction',
-    'Category',
-    'Amount (BTC)',
-    'Reference Note',
-  ];
+  const headers = isEs
+    ? [
+        'ID Transacción',
+        'Fecha',
+        'País Origen',
+        'País Destino',
+        'Dirección',
+        'Categoría',
+        'Monto (BTC)',
+        'Nota de Referencia',
+      ]
+    : [
+        'Transaction ID',
+        'Date',
+        'Source Country',
+        'Target Country',
+        'Direction',
+        'Category',
+        'Amount (BTC)',
+        'Reference Note',
+      ];
 
   const sortedTxs = [...transactions].sort(compareTransactionsNewestFirst);
   const rows = sortedTxs.map((t) => [
@@ -2651,12 +2672,7 @@ export function parseNationalTransactionsCsv(csvContent: string): NationalTransa
 /**
  * Phase 5.2: Consolidated Ministerial Executive Digest Export (CSV)
  * Generates an executive-level multi-section report in UTF-8 BOM CSV format for Microsoft Excel & Google Sheets.
- * Includes:
- * 1. Executive Summary & Benchmark Header
- * 2. Citizen Economic & Income Growth Audit
- * 3. Inter-State Treasury Transfers
- * 4. National Strategic Stockpiles & Reserve Valuations
- * 5. Commodity Market Arbitrage Signals
+ * Automatically localizes headers and section titles when Spanish ('es') is active.
  */
 export function exportConsolidatedExecutiveDigest(params: {
   countryName: string;
@@ -2666,33 +2682,72 @@ export function exportConsolidatedExecutiveDigest(params: {
   stockpiles: ResourceReserveItem[];
   commodities: CommodityTrend[];
 }): string {
+  const isEs =
+    typeof localStorage !== 'undefined' && localStorage.getItem('warera_app_lang_v1') === 'es';
   const BOM = '\uFEFF';
   const dateStr = new Date().toISOString().split('T')[0];
   const lines: string[] = [];
 
   // Header & Metadata
-  lines.push(`"WAR ERA SOVEREIGN MINISTRY OF ECONOMY - CONSOLIDATED EXECUTIVE DIGEST"`);
-  lines.push(`"Country:","${params.countryName}","Audit Date:","${formatDateDDMMYYYY(dateStr)}","Analysis Period:","${params.periodDays} Days"`);
-  lines.push(`"Total Audited Citizens:","${params.profiles.length}","Inter-State Transfers:","${params.transactions.length}","Strategic Stockpiles:","${params.stockpiles.length}"`);
+  lines.push(
+    isEs
+      ? `"MINISTERIO DE ECONOMÍA SOBERANO WAR ERA - REPORTE EJECUTIVO CONSOLIDADO"`
+      : `"WAR ERA SOVEREIGN MINISTRY OF ECONOMY - CONSOLIDATED EXECUTIVE DIGEST"`
+  );
+  lines.push(
+    isEs
+      ? `"País:","${params.countryName}","Fecha de Auditoría:","${formatDateDDMMYYYY(dateStr)}","Período de Análisis:","${params.periodDays} Días"`
+      : `"Country:","${params.countryName}","Audit Date:","${formatDateDDMMYYYY(dateStr)}","Analysis Period:","${params.periodDays} Days"`
+  );
+  lines.push(
+    isEs
+      ? `"Ciudadanos Auditados:","${params.profiles.length}","Transferencias Interestatales:","${params.transactions.length}","Reservas Estratégicas:","${params.stockpiles.length}"`
+      : `"Total Audited Citizens:","${params.profiles.length}","Inter-State Transfers:","${params.transactions.length}","Strategic Stockpiles:","${params.stockpiles.length}"`
+  );
   lines.push('');
 
   // SECTION 1: CITIZEN ECONOMIC & DONATION AUDIT
-  lines.push(`"=== SECTION 1: CITIZEN ECONOMIC AUDIT & CONTRIBUTION ANALYSIS ==="`);
-  lines.push([
-    'Username',
-    'User ID',
-    'Net Worth (BTC)',
-    'Liquid Cash (BTC)',
-    'Period Donated (BTC)',
-    'Total Lifetime Donated (BTC)',
-    'Contribution Ratio (%)',
-    'Leech Tier',
-    'Build Mode',
-    'War Skill Points',
-    'Eco Skill Points',
-    'Ministerial Verdict',
-    'Ministerial Rationale',
-  ].map((h) => `"${h}"`).join(','));
+  lines.push(
+    isEs
+      ? `"=== SECCIÓN 1: AUDITORÍA ECONÓMICA CIUDADANA Y ANÁLISIS DE CONTRIBUCIÓN ==="`
+      : `"=== SECTION 1: CITIZEN ECONOMIC AUDIT & CONTRIBUTION ANALYSIS ==="`
+  );
+  lines.push(
+    (isEs
+      ? [
+          'Ciudadano',
+          'User ID',
+          'Patrimonio Neto (BTC)',
+          'Efectivo Líquido (BTC)',
+          'Donado en el Período (BTC)',
+          'Donado Histórico Total (BTC)',
+          'Ratio de Contribución (%)',
+          'Nivel Leech',
+          'Modo Build (Eco/War/Hybrid)',
+          'Puntos War (SP)',
+          'Puntos Eco (SP)',
+          'Veredicto Ministerial',
+          'Justificación Ministerial',
+        ]
+      : [
+          'Username',
+          'User ID',
+          'Net Worth (BTC)',
+          'Liquid Cash (BTC)',
+          'Period Donated (BTC)',
+          'Total Lifetime Donated (BTC)',
+          'Contribution Ratio (%)',
+          'Leech Tier',
+          'Build Mode',
+          'War Skill Points',
+          'Eco Skill Points',
+          'Ministerial Verdict',
+          'Ministerial Rationale',
+        ]
+    )
+      .map((h) => `"${h}"`)
+      .join(',')
+  );
 
   params.profiles.forEach((p) => {
     lines.push([
@@ -2715,17 +2770,37 @@ export function exportConsolidatedExecutiveDigest(params: {
   lines.push('');
 
   // SECTION 2: INTER-STATE TREASURY TRANSFERS
-  lines.push(`"=== SECTION 2: INTER-STATE TREASURY TRANSFERS ==="`);
-  lines.push([
-    'Transfer ID',
-    'Date',
-    'Source Country',
-    'Target Country',
-    'Direction',
-    'Category',
-    'Amount (BTC)',
-    'Reference Note',
-  ].map((h) => `"${h}"`).join(','));
+  lines.push(
+    isEs
+      ? `"=== SECCIÓN 2: TRANSFERENCIAS INTERESTATALES DEL TESORO ==="`
+      : `"=== SECTION 2: INTER-STATE TREASURY TRANSFERS ==="`
+  );
+  lines.push(
+    (isEs
+      ? [
+          'ID Transferencia',
+          'Fecha',
+          'País Origen',
+          'País Destino',
+          'Dirección',
+          'Categoría',
+          'Monto (BTC)',
+          'Nota de Referencia',
+        ]
+      : [
+          'Transfer ID',
+          'Date',
+          'Source Country',
+          'Target Country',
+          'Direction',
+          'Category',
+          'Amount (BTC)',
+          'Reference Note',
+        ]
+    )
+      .map((h) => `"${h}"`)
+      .join(',')
+  );
 
   [...params.transactions].sort(compareTransactionsNewestFirst).forEach((t) => {
     lines.push([
@@ -2743,19 +2818,41 @@ export function exportConsolidatedExecutiveDigest(params: {
   lines.push('');
 
   // SECTION 3: STRATEGIC STOCKPILES & RESERVES
-  lines.push(`"=== SECTION 3: NATIONAL STRATEGIC RESERVES & STOCKPILES ==="`);
-  lines.push([
-    'Resource Name',
-    'Code',
-    'Category',
-    'Current Stock',
-    'Unit',
-    'Period Net Activity',
-    'Avg Acquisition Cost (BTC)',
-    'Market Price (BTC)',
-    'Estimated Stockpile Value (BTC)',
-    'Strategic Notes',
-  ].map((h) => `"${h}"`).join(','));
+  lines.push(
+    isEs
+      ? `"=== SECCIÓN 3: RESERVAS ESTRATÉGICAS NACIONALES Y STOCKPILES ==="`
+      : `"=== SECTION 3: NATIONAL STRATEGIC RESERVES & STOCKPILES ==="`
+  );
+  lines.push(
+    (isEs
+      ? [
+          'Recurso',
+          'Código',
+          'Categoría',
+          'Stock Actual',
+          'Unidad',
+          'Actividad Neta del Período',
+          'Costo Promedio Adquisición (BTC)',
+          'Precio de Mercado (BTC)',
+          'Valor Estimado Reserva (BTC)',
+          'Notas Estratégicas',
+        ]
+      : [
+          'Resource Name',
+          'Code',
+          'Category',
+          'Current Stock',
+          'Unit',
+          'Period Net Activity',
+          'Avg Acquisition Cost (BTC)',
+          'Market Price (BTC)',
+          'Estimated Stockpile Value (BTC)',
+          'Strategic Notes',
+        ]
+    )
+      .map((h) => `"${h}"`)
+      .join(',')
+  );
 
   params.stockpiles.forEach((s) => {
     const totalValuation = (s.currentStock * (s.currentMarketPriceBtc || s.avgCostBtc || 0)).toFixed(2);
@@ -2776,19 +2873,41 @@ export function exportConsolidatedExecutiveDigest(params: {
   lines.push('');
 
   // SECTION 4: COMMODITY MARKET ARBITRAGE ADVISORIES
-  lines.push(`"=== SECTION 4: COMMODITY MARKET ARBITRAGE INTELLIGENCE ==="`);
-  lines.push([
-    'Commodity Name',
-    'Category',
-    'Current Price (BTC)',
-    '24h Change (%)',
-    '7d Average (BTC)',
-    '7d Floor (BTC)',
-    '7d Peak (BTC)',
-    '24h Volume',
-    'Ministerial Advisory',
-    'Strategic Rationale',
-  ].map((h) => `"${h}"`).join(','));
+  lines.push(
+    isEs
+      ? `"=== SECCIÓN 4: INTELIGENCIA DE ARBITRAJE DE MERCADO ==="`
+      : `"=== SECTION 4: COMMODITY MARKET ARBITRAGE INTELLIGENCE ==="`
+  );
+  lines.push(
+    (isEs
+      ? [
+          'Producto / Recurso',
+          'Categoría',
+          'Precio Actual (BTC)',
+          'Cambio 24h (%)',
+          'Promedio 7d (BTC)',
+          'Mínimo 7d (BTC)',
+          'Máximo 7d (BTC)',
+          'Volumen 24h',
+          'Recomendación Ministerial',
+          'Justificación Estratégica',
+        ]
+      : [
+          'Commodity Name',
+          'Category',
+          'Current Price (BTC)',
+          '24h Change (%)',
+          '7d Average (BTC)',
+          '7d Floor (BTC)',
+          '7d Peak (BTC)',
+          '24h Volume',
+          'Ministerial Advisory',
+          'Strategic Rationale',
+        ]
+    )
+      .map((h) => `"${h}"`)
+      .join(',')
+  );
 
   params.commodities.forEach((c) => {
     lines.push([

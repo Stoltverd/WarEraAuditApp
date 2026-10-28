@@ -26,6 +26,7 @@ export interface ActiveAuditWorkerSlot {
 export interface AutoAuditStreamState {
   isRunning: boolean;
   isPaused: boolean;
+  countryId?: string;
   activeWorkers: ActiveAuditWorkerSlot[];
   currentCitizenName?: string;
   currentCitizenId?: string;
@@ -46,6 +47,7 @@ type StreamListener = (state: AutoAuditStreamState) => void;
 class AutoAuditStreamService {
   private isRunning = false;
   private isPaused = false;
+  private activeRunId = 0;
   private abortController: AbortController | null = null;
   private listeners: Set<StreamListener> = new Set();
   private onProfileAuditedCallback: ((profile: CitizenEconomicProfile) => void) | null = null;
@@ -62,6 +64,7 @@ class AutoAuditStreamService {
   private state: AutoAuditStreamState = {
     isRunning: false,
     isPaused: false,
+    countryId: undefined,
     activeWorkers: [],
     auditedCount: 0,
     totalTargetCount: 0,
@@ -161,6 +164,7 @@ class AutoAuditStreamService {
   }
 
   public stop() {
+    this.activeRunId++;
     this.isRunning = false;
     this.isPaused = false;
     if (this.abortController) {
@@ -176,6 +180,40 @@ class AutoAuditStreamService {
       currentCitizenReceiptCount: undefined,
       retryAttempt: undefined,
       statusMessage: 'Background stream stopped',
+    });
+  }
+
+  /**
+   * Immediately aborts any running or paused background audit for the previous country,
+   * invalidates in-flight worker promises via activeRunId, and resets counters so the
+   * newly selected country starts cleanly.
+   */
+  public resetForCountrySwitch() {
+    this.activeRunId++;
+    this.isRunning = false;
+    this.isPaused = false;
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+    this.activeCountryId = undefined;
+    this.lastProfilesSnapshot = [];
+    this.onProfileAuditedCallback = null;
+    this.notify({
+      isRunning: false,
+      isPaused: false,
+      countryId: undefined,
+      activeWorkers: [],
+      currentCitizenName: undefined,
+      currentCitizenId: undefined,
+      currentCitizenReceiptCount: undefined,
+      retryAttempt: undefined,
+      auditedCount: 0,
+      totalTargetCount: 0,
+      failedCount: 0,
+      failedCitizenIds: [],
+      pct: 0,
+      statusMessage: 'Ready',
     });
   }
 
@@ -214,7 +252,7 @@ class AutoAuditStreamService {
 
   /**
    * Automatically iterates through unverified or stale (>30m) citizens in the background
-   * using a 4-Worker Priority-First Incremental Delta Streamer across ALL countries.
+   * using a 4-Thread Priority-First Incremental Delta Streamer across ALL countries.
    */
   public async startStream(
     profiles: CitizenEconomicProfile[],
@@ -225,11 +263,6 @@ class AutoAuditStreamService {
     forceReaudit = false,
     isExplicitRetry = false
   ): Promise<void> {
-    this.onProfileAuditedCallback = onProfileAudited;
-    this.lastApiKey = apiKey;
-    this.lastConfig = config;
-    this.lastBenchmark = countryBenchmark;
-
     if (!apiKey || !apiKey.trim() || profiles.length === 0) {
       return;
     }
@@ -250,6 +283,11 @@ class AutoAuditStreamService {
       }
     }
 
+    const runId = ++this.activeRunId;
+    this.onProfileAuditedCallback = onProfileAudited;
+    this.lastApiKey = apiKey;
+    this.lastConfig = config;
+    this.lastBenchmark = countryBenchmark;
     this.activeCountryId = incomingCountryId;
     this.activeWindowDays = incomingWindowDays;
 
@@ -322,6 +360,7 @@ class AutoAuditStreamService {
       this.notify({
         isRunning: false,
         isPaused: false,
+        countryId: incomingCountryId,
         activeWorkers: [],
         auditedCount: Math.max(0, totalCount - failedIdsList.length),
         totalTargetCount: totalCount,
@@ -346,13 +385,21 @@ class AutoAuditStreamService {
     const localAbortController = new AbortController();
     this.abortController = localAbortController;
 
+    const isStaleRun = () =>
+      !this.isRunning ||
+      this.activeRunId !== runId ||
+      localAbortController.signal.aborted ||
+      (incomingCountryId !== undefined && this.activeCountryId !== incomingCountryId);
+
     const workerSlots = new Map<number, ActiveAuditWorkerSlot>();
     const syncWorkerSlotsToState = (extraUpdates: Partial<AutoAuditStreamState> = {}) => {
+      if (isStaleRun()) return;
       const slotsList = Array.from(workerSlots.values()).sort(
         (a, b) => a.workerIndex - b.workerIndex
       );
       const primarySlot = slotsList[0];
       this.notify({
+        countryId: incomingCountryId,
         activeWorkers: slotsList,
         currentCitizenName: primarySlot?.username,
         currentCitizenId: primarySlot?.userId,
@@ -365,6 +412,7 @@ class AutoAuditStreamService {
     this.notify({
       isRunning: true,
       isPaused: false,
+      countryId: incomingCountryId,
       activeWorkers: [],
       auditedCount: initialAuditedCount,
       totalTargetCount: totalCount,
@@ -380,19 +428,15 @@ class AutoAuditStreamService {
     let completedCount = initialAuditedCount;
     const failedIds: string[] = [];
     let queueIndex = 0;
-    // Universal 4-worker concurrency across all countries, paced safely by rateLimitedFetch token bucket
+    // Universal 4-thread concurrency across all countries, paced safely by rateLimitedFetch token bucket
     const CONCURRENCY = Math.min(4, Math.max(1, unverified.length));
 
     const worker = async (workerIndex: number) => {
-      while (
-        queueIndex < unverified.length &&
-        this.isRunning &&
-        !localAbortController.signal.aborted
-      ) {
-        while (this.isPaused && this.isRunning && !localAbortController.signal.aborted) {
+      while (queueIndex < unverified.length && !isStaleRun()) {
+        while (this.isPaused && !isStaleRun()) {
           await new Promise((resolve) => setTimeout(resolve, 350));
         }
-        if (!this.isRunning || localAbortController.signal.aborted) break;
+        if (isStaleRun()) break;
 
         const currentIndex = queueIndex++;
         if (currentIndex >= unverified.length) break;
@@ -415,17 +459,14 @@ class AutoAuditStreamService {
 
         // Pre-load already cached transactions for this citizen so fetchUserTransactions can delta-short-circuit
         const storedTxs = await storage.getUserPersonalTransactions(citizen.userId);
+        if (isStaleRun()) break;
+
         const knownTxIds = new Set<string>();
         for (const st of storedTxs) {
           if (st._id) knownTxIds.add(st._id);
         }
 
-        while (
-          attempt < MAX_CITIZEN_ATTEMPTS &&
-          !citizenSucceeded &&
-          this.isRunning &&
-          !localAbortController.signal.aborted
-        ) {
+        while (attempt < MAX_CITIZEN_ATTEMPTS && !citizenSucceeded && !isStaleRun()) {
           attempt++;
           try {
             if (attempt > 1) {
@@ -443,12 +484,13 @@ class AutoAuditStreamService {
               await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
             }
 
-            if (!this.isRunning || localAbortController.signal.aborted) break;
+            if (isStaleRun()) break;
 
             const txs = await fetchUserTransactions(
               citizen.userId,
               apiKey,
               (loadedCount) => {
+                if (isStaleRun()) return;
                 workerSlots.set(workerIndex, {
                   workerIndex,
                   userId: citizen.userId,
@@ -463,7 +505,7 @@ class AutoAuditStreamService {
               knownTxIds
             );
 
-            if (!this.isRunning || localAbortController.signal.aborted) break;
+            if (isStaleRun()) break;
 
             const mergedMap = new Map<string, import('../types/warera').WareraTransaction>();
             for (const t of storedTxs) if (t._id) mergedMap.set(t._id, t);
@@ -473,6 +515,8 @@ class AutoAuditStreamService {
             if (txs.length > 0 && allUserTxs.length > 0) {
               await storage.saveUserPersonalTransactions(citizen.userId, allUserTxs);
             }
+
+            if (isStaleRun()) break;
 
             const auditedProfile = buildAuditedCitizenProfile(
               citizen,
@@ -485,6 +529,8 @@ class AutoAuditStreamService {
             // Atomic persistence: save verified profile immediately in memory and localStorage
             this.verifiedProfilesCache.set(auditedProfile.userId, auditedProfile);
             storage.saveAuditedProfile(auditedProfile);
+
+            if (isStaleRun()) break;
 
             if (this.onProfileAuditedCallback) {
               this.onProfileAuditedCallback(auditedProfile);
@@ -506,7 +552,7 @@ class AutoAuditStreamService {
               statusMessage: `Verified ${citizen.username} (${allUserTxs.length} receipts)`,
             });
           } catch (err: any) {
-            if (err?.name === 'AbortError' || localAbortController.signal.aborted) {
+            if (err?.name === 'AbortError' || isStaleRun()) {
               break;
             }
             const isRateLimit = String(err?.message || '').includes('429');
@@ -529,7 +575,7 @@ class AutoAuditStreamService {
         workerSlots.delete(workerIndex);
 
         // If all retry attempts failed, do NOT fabricate an 'audited' status.
-        if (!citizenSucceeded && this.isRunning && !localAbortController.signal.aborted) {
+        if (!citizenSucceeded && !isStaleRun()) {
           failedIds.push(citizen.userId);
           const pct = Math.min(
             100,
@@ -544,13 +590,15 @@ class AutoAuditStreamService {
         }
       }
       workerSlots.delete(workerIndex);
-      syncWorkerSlotsToState();
+      if (!isStaleRun()) {
+        syncWorkerSlotsToState();
+      }
     };
 
     const workers = Array.from({ length: CONCURRENCY }, (_, idx) => worker(idx + 1));
     await Promise.all(workers);
 
-    if (localAbortController.signal.aborted) {
+    if (isStaleRun()) {
       return;
     }
 
@@ -568,6 +616,7 @@ class AutoAuditStreamService {
     this.notify({
       isRunning: false,
       isPaused: false,
+      countryId: incomingCountryId,
       activeWorkers: [],
       currentCitizenName: undefined,
       currentCitizenId: undefined,

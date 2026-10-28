@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { RankingSummary } from '../types/warera';
 import { Download, Copy, Check, FileText, Code, MessageSquare, X } from 'lucide-react';
 import { formatDateDDMMYYYY, formatDateRangeDDMMYYYY } from '../utils/dateUtils';
+import { useI18n } from '../i18n/I18nContext';
 
 interface ExportModalProps {
   summary: RankingSummary;
@@ -14,17 +15,37 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   countryName,
   onClose,
 }) => {
+  const { lang, tx } = useI18n();
   const [activeTab, setActiveTab] = useState<'discord' | 'csv' | 'json'>('discord');
   const [copied, setCopied] = useState(false);
 
-  // Generate Discord Markdown table
+  // Generate Discord Markdown table (localized for EN / ES)
   const generateDiscordMarkdown = () => {
-    const header = `🏆 **${countryName.toUpperCase()} — ${summary.timeframe.toUpperCase()} BTC DONATION RANKING**\n` +
-      `📅 Period: ${formatDateRangeDDMMYYYY(summary.startDate, summary.endDate, ' - ')}\n` +
-      `💰 Total Donated: **${summary.totalAmountDonated.toLocaleString()} BTC** | 👥 Patrons: **${summary.totalDonors}**\n\n` +
-      '```\n' +
-      'Rank | Citizen                 | BTC Donated  | Records\n' +
-      '-----+-------------------------+--------------+--------\n';
+    const tfLabel =
+      lang === 'es'
+        ? summary.timeframe === 'daily'
+          ? 'DIARIO'
+          : summary.timeframe === 'weekly'
+          ? 'SEMANAL'
+          : summary.timeframe === 'monthly'
+          ? 'MENSUAL'
+          : 'HISTÓRICO'
+        : summary.timeframe.toUpperCase();
+
+    const header =
+      lang === 'es'
+        ? `🏆 **${countryName.toUpperCase()} — CLASIFICACIÓN DE DONACIONES BTC (${tfLabel})**\n` +
+          `📅 Período: ${formatDateRangeDDMMYYYY(summary.startDate, summary.endDate, ' - ')}\n` +
+          `💰 Total Donado: **${summary.totalAmountDonated.toLocaleString()} BTC** | 👥 Patrones: **${summary.totalDonors}**\n\n` +
+          '```\n' +
+          'Rgo  | Ciudadano               | BTC Donado   | Recibos\n' +
+          '-----+-------------------------+--------------+--------\n'
+        : `🏆 **${countryName.toUpperCase()} — ${summary.timeframe.toUpperCase()} BTC DONATION RANKING**\n` +
+          `📅 Period: ${formatDateRangeDDMMYYYY(summary.startDate, summary.endDate, ' - ')}\n` +
+          `💰 Total Donated: **${summary.totalAmountDonated.toLocaleString()} BTC** | 👥 Patrons: **${summary.totalDonors}**\n\n` +
+          '```\n' +
+          'Rank | Citizen                 | BTC Donated  | Records\n' +
+          '-----+-------------------------+--------------+--------\n';
 
     const rows = summary.leaderboard.slice(0, 25).map((d) => {
       const rankStr = String(d.rank).padStart(4, ' ');
@@ -34,12 +55,20 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       return `${rankStr} | ${nameStr} | ${btcStr} | ${recStr}`;
     }).join('\n');
 
-    return header + rows + '\n```\n_Generated via War Era Donation Utility_';
+    const footer =
+      lang === 'es'
+        ? '\n```\n_Generado por la Utilidad del Ministerio de Economía War Era_'
+        : '\n```\n_Generated via War Era Donation Utility_';
+
+    return header + rows + footer;
   };
 
-  // Generate CSV text
+  // Generate CSV text (localized headers for EN / ES)
   const generateCSV = () => {
-    const headers = ['Rank', 'Citizen', 'UserID', 'BTCDonated', 'DonationsCount', 'LastDonationDate'];
+    const headers =
+      lang === 'es'
+        ? ['Rango', 'Ciudadano', 'UserID', 'BTCDonado', 'CantidadDonaciones', 'FechaUltimaDonacion']
+        : ['Rank', 'Citizen', 'UserID', 'BTCDonated', 'DonationsCount', 'LastDonationDate'];
     const rows = summary.leaderboard.map((d) => [
       d.rank,
       `"${d.username.replace(/"/g, '""')}"`,

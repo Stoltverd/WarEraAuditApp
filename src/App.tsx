@@ -13,7 +13,7 @@ import {
   DonorRankingItem,
 } from './types/warera';
 import { storage } from './services/storage';
-import { getCountries, ensureDonorsDamageStats, fetchCountryCitizens, batchResolveUsers, fetchNationalTransfers, fetchCountryInventory, fetchCountryInventoryDetailed } from './services/apiService';
+import { getCountries, ensureDonorsDamageStats, fetchCountryCitizens, getLiveCountryCensusIds, batchResolveUsers, fetchNationalTransfers, fetchCountryInventory, fetchCountryInventoryDetailed } from './services/apiService';
 import { fetchAllCommoditiesMarket, buildSovereignStockpileMatrix } from './services/marketService';
 import {
   calculateGranularRankings,
@@ -21,6 +21,7 @@ import {
   syncCountryData,
   normalizeCountryId,
 } from './services/rankingService';
+import { auditStreamService } from './services/auditStreamService';
 import { Header } from './components/Header';
 import { RankingStats } from './components/RankingStats';
 import { Podium } from './components/Podium';
@@ -187,7 +188,8 @@ export default function App() {
 
   // Load Ministry data from storage on startup and on country switch
   useEffect(() => {
-    // Immediately clear previous country's transactions to prevent cross-contamination
+    // Immediately cancel any previous country's background audit and clear state
+    auditStreamService.resetForCountrySwitch();
     setNationalTransactions([]);
 
     async function loadMinistryData() {
@@ -207,9 +209,7 @@ export default function App() {
         setWatchedCitizens(watched);
 
         const savedAudits = storage.getAuditedProfiles(countryId);
-        if (savedAudits && Object.keys(savedAudits).length > 0) {
-          setAuditedProfilesMap(savedAudits);
-        }
+        setAuditedProfilesMap(savedAudits || {});
 
         const effectiveTrends = liveTrends && liveTrends.length > 0 ? liveTrends : DEFAULT_COMMODITIES;
         setMarketCommodities(effectiveTrends);
@@ -343,17 +343,19 @@ export default function App() {
         setCumulative(result.cumulative);
         setIsGranularActive(result.isGranular);
         setUsersMap(result.users);
+        setAuditedProfilesMap(storage.getAuditedProfiles(country._id) || {});
+
+        const liveCensus = getLiveCountryCensusIds(country._id);
 
         // Dynamically synthesize sovereign policy defaults from live API benchmarks for this selected country
         const activeCitizens = Object.values(result.users).filter((u) => {
           if (!u || !u._id) return false;
-          const uCId =
-            typeof u.country === 'string'
-              ? u.country
-              : typeof u.country === 'object' && (u.country as any)?._id
-              ? String((u.country as any)._id).trim()
-              : u.countryId;
-          if (uCId && uCId !== country._id) return false;
+          if (liveCensus && liveCensus.size > 0) {
+            if (!liveCensus.has(u._id)) return false;
+          } else {
+            const uCId = normalizeCountryId(u);
+            if (!uCId || uCId !== country._id) return false;
+          }
           const isActive = Boolean(u.isActive !== undefined ? u.isActive : true);
           const lvl = Number(u.leveling?.level ?? u.level ?? 0);
           return isActive && lvl >= 10;
@@ -537,15 +539,15 @@ export default function App() {
     }
 
     const countryId = selectedCountry._id;
+    const liveCensus = getLiveCountryCensusIds(countryId);
     return Object.values(usersMap).filter((u) => {
       if (!u || !u._id) return false;
-      const uCId =
-        typeof u.country === 'string'
-          ? u.country
-          : typeof u.country === 'object' && (u.country as any)?._id
-          ? String((u.country as any)._id).trim()
-          : u.countryId;
-      if (uCId && uCId !== countryId) return false;
+      if (liveCensus && liveCensus.size > 0) {
+        if (!liveCensus.has(u._id)) return false;
+      } else {
+        const uCId = normalizeCountryId(u);
+        if (!uCId || uCId !== countryId) return false;
+      }
       const isActive = Boolean(u.isActive !== undefined ? u.isActive : true);
       const lvl = Number(u.leveling?.level ?? u.level ?? 0);
       return isActive && lvl >= 10;
@@ -668,12 +670,17 @@ export default function App() {
       }
     });
 
+    const liveCensus = getLiveCountryCensusIds(countryId);
     const activeCountryCitizens = Object.values(usersMap).filter((user) => {
       if (!user || !user._id) return false;
       if (selectedCountry) {
-        const userCountryId = normalizeCountryId(user);
-        if (userCountryId && userCountryId !== selectedCountry._id) {
-          return false;
+        if (liveCensus && liveCensus.size > 0) {
+          if (!liveCensus.has(user._id)) return false;
+        } else {
+          const userCountryId = normalizeCountryId(user);
+          if (!userCountryId || userCountryId !== selectedCountry._id) {
+            return false;
+          }
         }
       }
       const isActive = Boolean(user.isActive !== undefined ? user.isActive : true);
@@ -761,13 +768,18 @@ export default function App() {
     const watchedMap = new Map<string, WatchedCitizen>();
     watchedCitizens.forEach((w) => watchedMap.set(w.userId, w));
 
-    // 3. Filter active citizens belonging to this country
+    // 3. Filter active citizens currently residing in this country (enforcing live census from user.getUsersByCountry)
+    const liveCensus = getLiveCountryCensusIds(countryId);
     const activeCountryCitizens = Object.values(usersMap).filter((user) => {
       if (!user || !user._id) return false;
       if (selectedCountry) {
-        const userCountryId = normalizeCountryId(user);
-        if (userCountryId && userCountryId !== selectedCountry._id) {
-          return false;
+        if (liveCensus && liveCensus.size > 0) {
+          if (!liveCensus.has(user._id)) return false;
+        } else {
+          const userCountryId = normalizeCountryId(user);
+          if (!userCountryId || userCountryId !== selectedCountry._id) {
+            return false;
+          }
         }
       }
       const isActive = Boolean(user.isActive !== undefined ? user.isActive : true);
@@ -970,11 +982,22 @@ export default function App() {
     return list;
   }, [summary.leaderboard, cumulative, transactions, usersMap, selectedCountry, playerTags, ministryConfig, watchedCitizens, auditedProfilesMap, countryBenchmark]);
 
-  // Income Growth Audit Action
-  const handleRunIncomeAudit = async (customConfig?: MinistryConfig) => {
+  // Income Growth Audit Action (also refreshes live country citizen census when triggered manually)
+  const handleRunIncomeAudit = async (customConfig?: MinistryConfig, refreshCensus = false) => {
     setIsAuditingIncome(true);
-    const cfg = customConfig || ministryConfig;
+    const cfg =
+      customConfig && typeof customConfig === 'object' && 'analysisPeriodDays' in customConfig
+        ? customConfig
+        : ministryConfig;
     try {
+      if (refreshCensus && selectedCountry?._id) {
+        const liveCitizenIds = await fetchCountryCitizens(selectedCountry._id);
+        if (liveCitizenIds.length > 0) {
+          const updatedUsers = await batchResolveUsers(liveCitizenIds, undefined, undefined, selectedCountry._id);
+          setUsersMap({ ...updatedUsers });
+          setAuditedProfilesMap(storage.getAuditedProfiles(selectedCountry._id) || {});
+        }
+      }
       const profilesForAudit = citizenEconomicProfiles.map((p) => {
         let periodDirect = p.directDonatedBtc;
         if (transactions && transactions.length > 0) {
@@ -1054,6 +1077,13 @@ export default function App() {
     (updatedProfile: CitizenEconomicProfile) => {
       storage.saveAuditedProfile(updatedProfile);
       setAuditedProfilesMap((prev) => {
+        if (
+          selectedCountry?._id &&
+          updatedProfile.countryId &&
+          updatedProfile.countryId !== selectedCountry._id
+        ) {
+          return prev;
+        }
         const next = { ...prev, [updatedProfile.userId]: updatedProfile };
         storage.saveAuditedProfilesMap(selectedCountry?._id, next);
         return next;
@@ -1068,6 +1098,9 @@ export default function App() {
       setAuditedProfilesMap((prev) => {
         const next = { ...prev };
         for (const p of updatedList) {
+          if (selectedCountry?._id && p.countryId && p.countryId !== selectedCountry._id) {
+            continue;
+          }
           next[p.userId] = p;
         }
         storage.saveAuditedProfilesMap(selectedCountry?._id, next);
@@ -1167,6 +1200,9 @@ export default function App() {
         countries={countries}
         selectedCountry={selectedCountry}
         onSelectCountry={(c) => {
+          if (selectedCountry?._id !== c._id) {
+            auditStreamService.resetForCountrySwitch();
+          }
           setSelectedCountry(c);
           storage.setLastViewedCountry(c);
           setSelectedDonorId(null);
@@ -1232,7 +1268,7 @@ export default function App() {
               </span>
             </div>
             <span className="font-mono text-xs bg-emerald-500/20 px-2.5 py-1 rounded font-bold text-emerald-300">
-              {transactions.length} Verified Receipts
+              {`${transactions.length} Verified Receipts`}
             </span>
           </div>
         )}
@@ -1246,7 +1282,7 @@ export default function App() {
                 {syncProgress.message}
               </span>
               <span className="font-mono text-slate-300 font-semibold">
-                {syncProgress.fetchedItems} items loaded
+                {`${syncProgress.fetchedItems} items loaded`}
               </span>
             </div>
             <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
@@ -1295,7 +1331,7 @@ export default function App() {
             onAcknowledgeAlert={handleAcknowledgeAlert}
             onPutOnWatch={handlePutOnWatch}
             onRemoveFromWatch={handleRemoveFromWatch}
-            onRunIncomeAudit={handleRunIncomeAudit}
+            onRunIncomeAudit={() => handleRunIncomeAudit(undefined, true)}
             onRestoreBackup={handleRestoreBackup}
             onOpenKeyModal={() => setIsKeyModalOpen(true)}
             onOpenDiagnostics={() => setIsDiagnosticsModalOpen(true)}
@@ -1657,6 +1693,7 @@ export default function App() {
               totalAmountDonated={summary.totalAmountDonated}
               onSelectDonor={(uid) => setSelectedDonorId(uid)}
               onResolveUsers={handleResolveUsers}
+              usersMap={usersMap}
               timeframe={
                 timeframe === 'daily'
                   ? 'in the last 24 hours'

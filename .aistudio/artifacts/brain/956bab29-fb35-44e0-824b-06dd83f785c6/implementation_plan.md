@@ -1,124 +1,95 @@
-# Implementation Plan
+# Leaderboard Integrity, I18n DOM Reconciliation & Citizen Badge Plan
 
-## Overview
+## 1. Root Cause Diagnosis (Issues #1, #2, #3, #7, #8)
+All five state-corruption symptoms across the Leaderboard, KPI Summary Cards (`RankingStats`), Top Navigation (`Header`), and Theme Switcher stem from a single underlying mechanism in `src/i18n/I18nContext.tsx`:
 
-We are upgrading the **War Era Sovereign Ministry of Economy** workspace across three focused objectives:
-
-1. **Unified Single-Tier Citizen Radar Filter Bar**: Restructure the filter and control bar in `CitizenRadar.tsx` so that the search input, `7D Audit Active` pill, `>7d Inactive` toggle button, and the three classification `<select>` dropdowns share an identical height (`h-9` / `36px`), unified border/focus styling, and clean responsive grid/flex alignment—replacing the raw native browser checkbox with a custom segmented toggle pill.
-2. **Scroll-Free Audit Experience (Radar Table & Forensic Audit Modal)**:
-   - **Citizen Radar Table**: Remove the forced `min-w-[960px]` horizontal scroll trigger and compact the 7 columns (`Citizen`, `Net Worth`, `7D Inflow & Net Flow`, `7D Donated`, `Fiscal Standing`, `Build & Grade`, `Actions`) using tight horizontal padding, tabular monospace numerals, and responsive wrapping so the table fits standard desktop viewports without a horizontal scrollbar.
-   - **Citizen Forensic Audit Modal**: Fix the dual/nested scrollbar on the modal navigation tab strip (`overflow-x-auto` causing a tiny vertical scrollbar next to `Military & Battlefield Defense`) and streamline the modal header and card vertical density so audit panels fit cleanly without cramped double scrollbars.
-3. **Dedicated "Economic War-Readiness Evaluation" Top-Level Ministry Tab**:
-   - Add a dedicated top-level tab in `MinistryWorkspace.tsx` (`⚔️ War-Readiness Evaluation`) alongside Citizen Radar, Workforce & Bot Advisor, National Treasury, Sovereign Stockpiles, and Market & Trade.
-   - **Participant & Coalition Builder (Step A)**: Automatically pre-select the currently audited country (`countryId`) as the **Allied Primary State**. Allow the user to select an **Opponent Primary State**, plus any number of **Allied Supporting States** and **Opponent Supporting States** from the global `WareraCountry[]` roster (with search and duplicate-selection prevention across sides).
-   - **Live Multi-State Census & Company Scanner (Steps B, C, D)**: For each participating state, fetch and evaluate active citizens (`fetchCountryCitizens` + `batchResolveUsers`) and inspect company automation rosters (`fetchUserCompanies`) with progressive status feedback and local caching:
-     - **Active Population**: Total verified active citizens in the state.
-     - **War-Ready Citizens (Step B)**: Active citizens filtered to **Level 25+** (`isActive && level >= 25`).
-     - **Average War Participants (Step C)**: Estimated battlefield turnout calculated as **Active Population ÷ 2** (`activePopulation / 2`).
-     - **Tier-5 Industrial Citizens (Step D)**: Active citizens who own **12 companies, all upgraded to Automation Engine Level 5+** (`companies.length >= 12` and at least 12 companies with `activeUpgradeLevels.automatedEngine >= 5`).
-   - **Per-State Formula Transparency & Head-to-Head Coalition Totals (Step F)**: Display a **Coalition Comparison Banner** (Allied Bloc vs. Opponent Bloc totals and ratios) at the top, followed by individual **State War-Readiness Cards** showing every metric separately alongside an explicit formula breakdown badge explaining how each number was derived.
-
----
-
-## User Choices & Decisions
-
-- **Module Placement**: Dedicated top-level tab in `MinistryWorkspace.tsx` (`Economic War-Readiness Evaluation`) for full-width coalition building and side-by-side state cards.
-- **Terminology for 12x Auto-5 Citizens**: **Tier-5 Industrial Citizens** (representing active citizens with 12 companies all at Automation Level 5+).
-- **Aggregation Scope**: Display both **Head-to-Head Coalition Totals** (Allied Bloc vs. Opponent Bloc) and **Per-State Breakdown Cards** with individual formula explanations.
-- **Audit Scroll Fixes**: Fix both the **Citizen Audit Modal** (eliminating the tab-strip scrollbar and compacting modal vertical layout) and the **Citizen Radar Table** (eliminating horizontal scroll on desktop viewports).
+1. **Unfiltered Text-Node Caching in `originalTextMapRef`**:
+   - When `lang === 'es'` is active, `processTree(document.body)` walks every `Node.TEXT_NODE` and executes:
+     ```ts
+     if (!originalTextMapRef.current.has(node)) {
+       originalTextMapRef.current.set(node, currentVal);
+     }
+     ```
+   - Because it caches `currentVal` **even when `translateTextNodeValue(currentVal) === currentVal`** (i.e., when no translation occurred), every dynamic numeric text node (`"0.00"`, `"0"`, `"#12"`, `"15.00"`, `"28.8%"`) and every React-managed `tx(en, es)` text node is trapped in `originalTextMapRef` with whatever text it held at that exact instant.
+2. **Why Header & Theme Switcher Get Stuck in Spanish (Issues #7 & #8)**:
+   - `Header.tsx` already localizes its labels via React (`tx('Rankings', 'Clasificación')` and `lang === 'es' ? activeTheme.nameEs : activeTheme.nameEn`).
+   - When switching to `ES`, React renders the Spanish strings (`"Clasificación"`, `"Comando Táctico"`, `"Sincronizar"`, `"API Key Activa"`) into the DOM text nodes first. Then `I18nContext`'s `useEffect` runs `processTree` and saves those **Spanish** strings into `originalTextMapRef` as if they were the original English strings.
+   - When switching back to `EN`, React updates the text nodes to English, and immediately afterward `I18nContext`'s `lang === 'en'` branch overwrites `node.nodeValue = orig`—forcing the DOM text nodes back to Spanish (`"Clasificación"`, `"Comando Táctico"`) out of sync with React's virtual DOM fiber.
+3. **Why Leaderboard Ranks/Amounts & KPI Stats Desync Across Country/Timeframe/Language Switches (Issues #1, #2, #3)**:
+   - When switching countries, `App.tsx` briefly clears `transactions = []`, causing `RankingStats` to render `"0.00"` for Total BTC and Median Contribution, and `"0"` for Contributing Citizens. `originalTextMapRef` captures `"0.00"` and `"0"`. When transactions finish loading or the user toggles `EN`/`ES` or timeframes (`24h` ↔ `7d` ↔ `30d`), `I18nContext` overwrites the updated DOM text nodes with the stale values cached in `originalTextMapRef`—resulting in `"0.00 BTC"` in KPI cards and mismatched rank/BTC/percentage cells inside `LeaderboardTable` rows (`key={donor.userId}`).
 
 ---
 
-## Architecture & Design
+## 2. Comparative Architectural Proposals
 
-### Comparative Architecture Proposals
-
-#### Proposal 1: On-Demand Multi-State Scanner with Two-Stage Hydration & IndexedDB Caching (Recommended)
-- **Architecture**: Create a dedicated `WarReadinessEvaluation.tsx` component and a `warReadinessService.ts` engine. Stage 1 immediately computes **Active Population**, **War-Ready Citizens (Lvl 25+)**, and **Average War Participants (`Active / 2`)** via bulk `fetchCountryCitizens` + cached `usersMap` in ~1 second per country. Stage 2 filters candidates who can hold 12 companies (citizens with `skills.companies.value >= 12` or `stats.companiesCount >= 12` or `stats.wealth.companies > 0`, falling back to active Lvl 25+ citizens if skill metadata is unhydrated) and queries `fetchUserCompanies(userId)` via the rate-limited queue to verify **Tier-5 Industrial Citizens** (`12 companies @ automatedEngine >= 5`), caching results in `localStorage`/`IndexedDB` so subsequent comparisons are instantaneous.
+### Proposal A: Targeted `I18nContext` Guardrails + Explicit React `tx()` Bypass (`data-i18n-managed`) (Recommended)
+- **How it works**:
+  1. **Strict Translation-Only Caching**: In `I18nContext.tsx`, only store a text node in `originalTextMapRef` when `translated !== currentVal` (meaning `translateTextNodeValue` actually matched an English dictionary rule and produced a different Spanish string). Pure numbers (`"0.00"`, `"1,000.00"`), rank numbers (`"#12"`), usernames, and already-Spanish strings are never stored in `originalTextMapRef`.
+  2. **Clean Restoration & Eviction on `ES` → `EN`**: When switching from `ES` to `EN`, restore only nodes present in `originalTextMapRef` and immediately `originalTextMapRef.current.delete(node)` so stale baselines can never persist across future renders.
+  3. **Live `characterData` Reconciliation**: In the `MutationObserver`'s `characterData` handler, if React updates a text node in `ES` mode, check if ` currentVal === lastTranslatedMapRef.current.get(node)`. If not, React itself mutated the text node with fresh data—so recompute `baseEn = currentVal` before translating (or delete from map if untranslated).
+  4. **Explicit `data-no-dom-i18n` Attribute on `tx()`-Managed Containers**: Add `data-no-dom-i18n="true"` on `Header.tsx` (and any component fully translated via `tx()`), instructing `processTree` to skip that subtree entirely so React has 100% exclusive control over header & theme labels.
 - **Pros**:
-  - Instant feedback for Steps B & C while Step D (company automation verification) streams live progress (`Scanning 12-company industrial rosters: 14/38 candidates...`).
-  - Avoids unnecessary `company.getCompanies` API calls for low-level citizens who do not own 12 companies, cutting API traffic by 70%–85%.
-  - Persists evaluated state snapshots so switching tabs or adding a new supporter country does not re-scan already-verified states.
+  - Eliminates 100% of numeric, rank, header, and theme text-node corruption while preserving all automatic Spanish DOM translations across the entire app.
+  - Zero performance overhead; actually speeds up `TreeWalker` by skipping numeric nodes and `Header`.
 - **Cons**:
-  - Requires a lightweight candidate pre-filter and progressive state reducer per country.
-- **Expert Reasoning**: Because War Era's tRPC API requires per-user `company.getCompanies` + `company.getById` calls to verify individual factory `automatedEngine` levels, scanning every citizen blindly across 6+ coalition countries could trigger hundreds of requests. Pre-filtering to active citizens capable of holding 12 companies and streaming via the existing rate-limited queue delivers 100% live accuracy without API rate-limit stalls.
+  - Requires careful tracking of `lastTranslatedMapRef` alongside `originalTextMapRef` so React updates and DOM-observer updates are cleanly distinguished.
 
-#### Proposal 2: Eager Full-Roster Sequential Scan Without Candidate Pre-Filtering
-- **Architecture**: Whenever a country is added to either coalition, sequentially call `fetchUserCompanies` for every single citizen in that country regardless of level or company count skill.
-- **Pros**: Simple loop implementation.
-- **Cons**: For a coalition of 4–6 countries with 100+ citizens each, querying `company.getCompanies` + 12x `company.getById` for every citizen can exceed 3,000 HTTP requests, causing slow evaluation times (60–120s).
+### Proposal B: Force Full React Subtree Remount (`key={lang}-${countryId}-${timeframe}`)
+- **How it works**:
+  - Keep `I18nContext` mostly as-is, but attach a composite `key={`${lang}-${selectedCountry?._id}-${timeframe}`}` to the root wrapper in `App.tsx` so React destroys and recreates all DOM nodes on every language, country, or timeframe change.
+- **Pros**:
+  - Simple one-line change in `App.tsx` that discards mutated DOM text nodes on switch.
+- **Cons**:
+  - **Poor UX**: Destroys component state (open modals, scroll position, search inputs, pagination page, expanded drawers) whenever the user switches language or timeframe.
+  - Does **not** fix async updates within the same country/language (e.g., when `transactions` finish loading after initial `"0.00"` render, or when sorting leaderboard columns).
 
-#### Proposal 3: Heuristic Estimation from Country Wealth Rankings Only
-- **Architecture**: Estimate Tier-5 Industrial Citizens purely from `stats.wealth.companies` thresholds without inspecting actual company upgrade levels.
-- **Pros**: Zero `company.getById` network calls.
-- **Cons**: Violates strict data honesty—cannot distinguish between a citizen with 12 Level-5 automated companies and a citizen with 8 high-storage manual companies.
+### Proposal C: Remove `MutationObserver` & Migrate All Components Exclusively to `tx(en, es)`
+- **How it works**:
+  - Delete `TreeWalker` and `MutationObserver` from `I18nContext.tsx` and manually wrap every string in all 20+ components with `tx(en, es)`.
+- **Pros**:
+  - Pure React rendering with zero direct DOM manipulation.
+- **Cons**:
+  - High regression risk for the hundreds of deep ministry tooltips, badges, and dynamic audit phrases that rely on the dictionary rules in `I18nContext.tsx`.
 
-> **Recommendation**: **Proposal 1** is strongly recommended because it guarantees 100% authentic verification of `12 companies @ Automation Level 5` while keeping evaluation fast, responsive, and rate-limit safe.
-
----
-
-### Edge Case Mitigation Strategy
-
-1. **Duplicate State Selection Across Coalitions**:
-   - *Risk*: A user accidentally selects the same country as both an Allied Supporter and the Opponent Main State (or Opponent Supporter).
-   - *Mitigation*: Automatically exclude any already-assigned country from the other coalition selector dropdowns, and provide a one-click "Swap Role / Remove" action on each state chip.
-2. **Primary Audited State Switching**:
-   - *Risk*: The user switches the active country in the top Header while viewing the War-Readiness tab.
-   - *Mitigation*: Automatically sync the Allied Primary State to the newly selected header country (unless the user has locked a custom scenario) and immediately reuse the already-loaded `profiles` in memory for zero-latency evaluation of the home state.
-3. **API Rate Limits & Partial Company Scan Cancellation**:
-   - *Risk*: Scanning a large coalition (e.g., 8 countries) takes several seconds and the user removes a country mid-scan or navigates away.
-   - *Mitigation*: Track per-country `AbortController` / scan tokens and store per-country evaluation state (`idle | scanning-census | scanning-companies | completed | error`) with a `Refresh State` and `Pause/Cancel Scan` control.
-4. **Citizens with >12 Companies vs. Exactly 12 Companies**:
-   - *Risk*: Some high-level citizens or historical accounts may have 12+ registered companies in the API where 12 active companies are at Automation Level 5+ (`automatedEngine >= 5`, up to Level 7 in v0.27).
-   - *Mitigation*: Count a citizen as a **Tier-5 Industrial Citizen** if they are active and own at least 12 companies whose `activeUpgradeLevels.automatedEngine >= 5` (supporting both exact Level 5 and higher engine upgrades 5–7).
-5. **Empty Supporter Lists or Single-State Preview**:
-   - *Risk*: The user hasn't picked an Opponent Primary State or any Supporters yet.
-   - *Mitigation*: Immediately render the Allied Primary State's full evaluation card and coalition totals on load, while showing a clean interactive selector prompt for the Opponent Primary State and optional Allied/Opponent Supporters.
+### Expert Recommendation
+**Proposal A** is the optimal engineering choice, combined with scoped composite keys on data-driven rows (`key={`${donor.userId}-${donor.rank}-${donor.totalAmount}`}`) in `LeaderboardTable.tsx` and `RankingStats.tsx`. It permanently fixes the root cause in `I18nContext.tsx`, guarantees React fiber consistency during live data hydration and sorting, preserves scroll/modal state, and keeps 100% of existing Spanish translations intact.
 
 ---
 
-## Implementation Phases
+## 3. Edge Case Mitigation Strategy
 
-### Phase 1: Citizen Radar Filter Bar Alignment & Citizen Audit Scroll Elimination
-- **Phase 1.1 (Citizen Radar Filter Bar Redesign)**:
-  - Refactor the filter control bar in `/src/components/ministry/CitizenRadar.tsx` into a structured, single-elevation toolbar where all controls share `h-9` (`36px`) height, consistent `px-3` spacing, and clean flex/grid wrapping.
-  - Replace the raw `<input type="checkbox">` inside the `>7d Inactive` pill with a custom interactive toggle button featuring a crisp status indicator dot/check icon, matching the `7D Audit Active` pill height and typography.
-- **Phase 1.2 (Citizen Radar Table No-Scroll Layout)**:
-  - Remove `min-w-[960px]` on the table in `/src/components/ministry/CitizenRadar.tsx` and optimize column widths, cell padding (`px-2.5 py-2.5`), and compact badge labels so all 7 columns fit comfortably inside the standard container width without horizontal scrolling.
-- **Phase 1.3 (Citizen Audit Modal Tab & Viewport Scroll Cleanup)**:
-  - In `/src/components/ministry/CitizenAuditModal.tsx`, fix the navigation tab bar (`overflow-y-hidden overflow-x-auto no-scrollbar`) so it never renders a miniature vertical scrollbar on the right edge, and tighten header/card vertical padding so the modal content is spacious and easy to read.
-
-### Phase 2: Economic War-Readiness Evaluation Engine (`warReadinessService.ts`)
-- **Phase 2.1 (Data Types & State Evaluation Interfaces)**:
-  - Add `StateWarReadinessReport` and `CoalitionWarReadinessSummary` interfaces to `/src/types/ministry.ts`, capturing:
-    - `countryId`, `countryName`, `role` (`allied-main` | `allied-supporter` | `opponent-main` | `opponent-supporter`)
-    - `activePopulation`: Verified active citizens count
-    - `warReadyCitizens`: Active citizens with `level >= 25` (plus list of top war-ready citizens)
-    - `averageWarParticipants`: `activePopulation / 2` (displayed with exact decimal/rounded breakdown)
-    - `tier5IndustrialCitizens`: Active citizens with `>= 12` companies at `automatedEngine >= 5` (plus expandable list of qualifying citizens and their company counts)
-    - `scanStatus`, `scannedCompanyCandidates`, `totalCompanyCandidates`, `lastEvaluatedAt`
-- **Phase 2.2 (Two-Stage Census & Industrial Verification Service)**:
-  - Create `/src/services/warReadinessService.ts` implementing `evaluateCountryWarReadiness(country, existingUsersMap, onProgress, forceRefresh)`:
-    - **Stage 1**: Uses existing `profiles`/`usersMap` if the country is already loaded, or calls `fetchCountryCitizens(country._id)` + `batchResolveUsers` to hydrate all active citizens (`isActive && level >= 10`, cross-checked against `country.rankings.countryActivePopulation.value`). Filters `level >= 25` for **War-Ready Citizens** and computes `activePopulation / 2` for **Average War Participants**.
-    - **Stage 2**: Identifies active citizens eligible for 12 companies and inspects their live enterprises via `fetchUserCompanies(userId)` to verify those with **12 companies at Automation Level 5+** (`automatedEngine >= 5`). Caches the verified report per country.
-
-### Phase 3: Economic War-Readiness Evaluation UI & Ministry Workspace Integration
-- **Phase 3.1 (Coalition Builder & Head-to-Head Comparison UI)**:
-  - Create `/src/components/ministry/WarReadinessEvaluation.tsx` featuring:
-    - **Participant & Supporter Selector Matrix**: Automatically sets the currently audited country as **Allied Primary State**. Provides searchable country selectors for **Opponent Primary State**, **Allied Supporters (Multi-Select)**, and **Opponent Supporters (Multi-Select)**.
-    - **Coalition Force Balance Banner**: Side-by-side comparison of Allied Coalition vs. Opponent Coalition totals across all 4 core metrics (**Total Active Population**, **Total War-Ready Lvl 25+**, **Combined Avg War Participants**, and **Total Tier-5 Industrial Citizens**), with proportional visual bars.
-    - **Per-State Breakdown Cards & Formula Explanations**: Dedicated cards for each participating country showing all 4 metrics separately, explicit formula callouts (`Active Citizens filtered by Level ≥ 25`, `Active Population ÷ 2`, `Active Citizens with 12 Companies @ Automation Engine Lvl 5+`), and an expandable roster drawer to inspect the exact citizens who qualified as War-Ready or Tier-5 Industrial Citizens.
-- **Phase 3.2 (Top-Level Ministry Tab Wiring)**:
-  - Register the new `war-readiness` tab (`⚔️ War-Readiness`) in `/src/components/ministry/MinistryWorkspace.tsx` and pass `countryId`, `countryName`, `countries`, `profiles`, and `usersMap` so the home country is pre-populated and evaluated immediately upon opening.
-
-### Phase 4: Verification & Build Audit
-- **Phase 4.1**: Run `lint_applet` (`tsc --noEmit`) and `compile_applet` (`npm run build`) to verify zero TypeScript or bundle errors.
+1. **Async Data Hydration While in Spanish Mode (`0.00` → Live BTC Totals)**:
+   - *Edge Case*: When switching countries while in `ES`, `RankingStats` initially renders `0.00 BTC` and `0 patrons`, then updates 500ms later when API data resolves.
+   - *Mitigation*: Numeric values (`0.00`, `47,850.00`) have `translateTextNodeValue(val) === val` and are never added to `originalTextMapRef`. For mixed text nodes (e.g., `"Showing 1–25 of 75 patrons"`), `lastTranslatedMapRef` tracks the exact Spanish output written by the observer; when React writes a new English string (`"Showing 1–25 of 92 patrons"`), `currentVal !== lastTranslated` triggers an immediate baseline refresh in `originalTextMapRef` before translating.
+2. **Theme Selection & Language Toggle Interaction**:
+   - *Edge Case*: User selects a non-default theme (e.g., `"Nordic Frost"` / `"Escarcha Nórdica"`), then toggles `ES` ↔ `EN`, and the theme button label either stays in Spanish or appears to revert to `"Comando Táctico"`.
+   - *Mitigation*: `Header.tsx` is marked with `data-no-dom-i18n="true"` because every single label in `Header.tsx` already uses reactive `tx(en, es)` and `activeTheme.nameEn` / `activeTheme.nameEs`. This prevents the DOM observer from ever touching the header or theme dropdown.
+3. **Unresolved or Newly Hydrated Citizens on the Leaderboard**:
+   - *Edge Case*: A donor in `LeaderboardTable` may initially only have transaction records before `user.getUserLite` resolves their `level` and `skills` (build role).
+   - *Mitigation*: When `usersMap[donor.userId]` is available, compute and display the Citizen Level badge (`Lv. X` / `Nvl X`) and Build Role badge (`Eco`, `War`, `Hybrid`). If `usersMap[donor.userId]` is still hydrating or lacks skill points, gracefully omit the build badge until hydrated without layout shift.
+4. **Long Spanish Text in "Cuota del período" (`Period Share`)**:
+   - *Edge Case*: On narrower desktop viewports (`1024px–1280px`), placing `"28.8%"` and `"de los fondos del período"` on the same horizontal row causes awkward multi-line wrapping.
+   - *Mitigation*: Restyle the cell into a vertical 3-tier stack:
+     1. Top row: Bold monospace percentage (`28.8%`).
+     2. Middle row: Full-width visual progress bar (`h-2 rounded-full`).
+     3. Bottom row: Single-line subtitle (`of period funds` / `de los fondos del período`) with `text-[11px] text-slate-400 whitespace-nowrap`.
 
 ---
 
-## Key Technical Details
+## 4. Phased Task Decomposition
 
-- **Active Citizen Definition**: Consistent with the rest of the app, active citizens are resolved from `user.getUsersByCountry` + `user.getUserById` where `Boolean(user.isActive !== false)` and `level >= 10`. Both the verified roster count and any official `rankings.countryActivePopulation.value` census delta are displayed transparently in the formula explanation.
-- **War-Ready Citizen Filter (Step B)**: `activeCitizens.filter(u => Number(u.leveling?.level ?? u.level ?? 0) >= 25)`.
-- **Average War Participants Formula (Step C)**: `activeCitizens.length / 2` (displayed as exact value e.g. `47.5` / `~48 citizens per battle`, alongside official census `/ 2` if applicable).
-- **Tier-5 Industrial Citizens Filter (Step D)**: Active citizens where `companies.filter(c => Number(c.activeUpgradeLevels?.automatedEngine ?? 1) >= 5).length >= 12`.
+### Phase 1: Fix `I18nContext` DOM Observer & Text-Node Reconciliation (Issues #1, #2, #3, #7, #8)
+- **Phase 1.1**: Update `src/i18n/I18nContext.tsx` to add `lastTranslatedMapRef = useRef<WeakMap<Node, string>>(new WeakMap())` and skip subtrees inside `[data-no-dom-i18n="true"]`.
+- **Phase 1.2**: In `processTree`, only record `originalTextMapRef.current.set(node, baseEn)` when `translated !== baseEn`. If `translated === baseEn`, remove any stale entry from `originalTextMapRef` and `lastTranslatedMapRef`.
+- **Phase 1.3**: When `characterData` fires in `ES` mode, detect when React has updated a text node (`currentVal !== lastTranslatedMapRef.current.get(node)`) and update `originalTextMapRef` to the new React value before translating. When switching `ES` → `EN`, restore original text and clear `originalTextMapRef` / `lastTranslatedMapRef` entries.
+- **Phase 1.4**: Add `data-no-dom-i18n="true"` to the `<header>` root in `src/components/Header.tsx` and audit all header strings (`tx(en, es)`) and theme selector labels so switching `EN` ↔ `ES` and changing themes updates instantaneously and never gets stuck in Spanish.
+
+### Phase 2: Leaderboard & KPI Stats State Synchronization + Citizen Level & Build Badges (Issues #1, #2, #4, #6)
+- **Phase 2.1**: Extend `DonorRankingItem` in `src/types/warera.ts` and `src/services/rankingCalculator.ts` (or pass `usersMap` lookup into `LeaderboardTable.tsx`) to include citizen `level?: number` and `playstyle?: 'pure-eco' | 'pure-war' | 'hybrid'` using the existing `calculateWarSkillPoints`, `calculateEcoSkillPoints`, and `evaluatePlaystyle` utilities.
+- **Phase 2.2**: Update `src/components/LeaderboardTable.tsx` to render each citizen's **Level badge (`Lv. X` / `Nvl X`)** and **Build Role badge (`Eco` / `War` / `Hybrid`)** inline next to their username.
+- **Phase 2.3**: Redesign the `Period Share` (`Cuota del período`) column in `src/components/LeaderboardTable.tsx` into a clean stacked layout (bold percentage on top, progress bar in the middle, single-line subtitle below).
+- **Phase 2.4**: Harden row and metric keys in `src/components/LeaderboardTable.tsx` and `src/components/RankingStats.tsx` so country, timeframe, and sort transitions always reflect live calculated numbers.
+
+### Phase 3: Verification & Build Audit
+- **Phase 3.1**: Audit other tables and cards (`Podium.tsx`, `CitizenRadar.tsx`, `DonorAuditModal.tsx`) for any similar text-node caching edge cases.
+- **Phase 3.2**: Run `lint_applet` and `compile_applet` to verify zero TypeScript or build errors.

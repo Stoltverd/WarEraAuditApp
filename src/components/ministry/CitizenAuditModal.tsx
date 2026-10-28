@@ -26,6 +26,8 @@ import {
 } from '../../services/workforceService';
 import { formatDateDDMMYYYY, formatDateTimeDDMMYYYY } from '../../utils/dateUtils';
 import { WareraItemIcon } from '../common/WareraItemIcon';
+import { CompanyPortfolioAnalyzer } from './CompanyPortfolioAnalyzer';
+import { useI18n } from '../../i18n/I18nContext';
 import {
   X,
   Coins,
@@ -85,6 +87,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
   onUpdateProfile,
   onUpdateConfig,
 }) => {
+  const { translateCommodity } = useI18n();
   const [activeTab, setActiveTab] = useState<'cashflow' | 'transactions' | 'companies' | 'defense'>('cashflow');
   const [localProfile, setLocalProfile] = useState<CitizenEconomicProfile | null>(profile);
   const [auditPeriodDays, setAuditPeriodDays] = useState<number>(config.analysisPeriodDays || 7);
@@ -827,14 +830,14 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                   </span>
                 )}
                 <span className="text-xs font-mono text-slate-400">
-                  Level {currentProfile.level} · {countryName}
+                  {`Level ${currentProfile.level} · ${countryName}`}
                 </span>
               </div>
 
               {/* Citizen ID & Respec Tenure Subtitle */}
               <div className="flex items-center gap-2.5 text-xs text-slate-400 mt-0.5 font-mono flex-wrap">
                 <span className="flex items-center gap-1">
-                  Citizen ID: {currentProfile.userId}
+                  <span>{`Citizen ID: ${currentProfile.userId}`}</span>
                   <button
                     type="button"
                     onClick={handleCopyId}
@@ -846,12 +849,14 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                 </span>
                 <span>·</span>
                 <span className="text-cyan-400">
-                  {currentProfile.playstyle === 'pure-eco' ? '🌾 Eco Build' : currentProfile.playstyle === 'pure-war' ? '⚔️ War Build' : '⚖️ Hybrid Build'}
-                  {typeof currentProfile.daysInBuild === 'number' && ` · Active for ${currentProfile.daysInBuild}d (Cooldown cleared)`}
+                  {`${currentProfile.playstyle === 'pure-eco' ? '🌾 Eco Build' : currentProfile.playstyle === 'pure-war' ? '⚔️ War Build' : '⚖️ Hybrid Build'}${
+                    typeof currentProfile.daysInBuild === 'number' ? ` · Active for ${currentProfile.daysInBuild}d (Cooldown cleared)` : ''
+                  }`}
                 </span>
                 <span>·</span>
                 <span>
-                  Strategic Tag: <strong className="text-slate-200">{currentProfile.manualTag !== 'none' ? currentProfile.manualTag.toUpperCase() : 'Unassigned'}</strong>
+                  <span>Strategic Tag:</span>{' '}
+                  <strong className="text-slate-200">{currentProfile.manualTag !== 'none' ? currentProfile.manualTag.toUpperCase() : 'Unassigned'}</strong>
                 </span>
               </div>
             </div>
@@ -928,7 +933,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
             }`}
           >
             <FileText className="w-3.5 h-3.5 shrink-0" />
-            <span>Line-Item Transaction Ledger ({timeframeTransactions.length})</span>
+            <span>{`Line-Item Transaction Ledger (${timeframeTransactions.length})`}</span>
             {isSyncingLedger && <RefreshCw className="w-3 h-3 animate-spin text-amber-400 shrink-0" />}
           </button>
 
@@ -1040,7 +1045,8 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                 <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 relative">
                   <div className="flex items-center justify-between">
                     <div className="text-xs font-bold text-cyan-400 uppercase tracking-wider flex items-center gap-1.5">
-                      <TrendingUp className="w-4 h-4 text-cyan-400" /> Gross Cash Inflow ({periodDays}D)
+                      <TrendingUp className="w-4 h-4 text-cyan-400" />
+                      <span>{`Gross Cash Inflow (${periodDays}D)`}</span>
                     </div>
                     <button
                       type="button"
@@ -1079,7 +1085,8 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                 <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 relative">
                   <div className="flex items-center justify-between">
                     <div className="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
-                      <Coins className="w-4 h-4 text-emerald-400" /> Net Cashflow ({periodDays}D)
+                      <Coins className="w-4 h-4 text-emerald-400" />
+                      <span>{`Net Cashflow (${periodDays}D)`}</span>
                     </div>
                     <button
                       type="button"
@@ -1147,11 +1154,13 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                     <div className="h-3 w-48 rounded bg-slate-800 animate-pulse mt-2" />
                   ) : (
                     <p className="text-[11px] text-slate-400 mt-1 font-mono">
-                      {grossIncome > 0
-                        ? `${((periodDonated / grossIncome) * 100).toFixed(1)}% contribution ratio`
-                        : (currentProfile.auditBaselineStatus === 'audited'
-                            ? `${(currentProfile.contributionRatio || 0).toFixed(1)}% contribution ratio`
-                            : 'Pending live stream verification')} · {formatBtc(currentProfile.totalDonatedBtc)} BTC lifetime
+                      {`${
+                        grossIncome > 0
+                          ? `${((periodDonated / grossIncome) * 100).toFixed(1)}% contribution ratio`
+                          : currentProfile.auditBaselineStatus === 'audited'
+                          ? `${(currentProfile.contributionRatio || 0).toFixed(1)}% contribution ratio`
+                          : 'Pending live stream verification'
+                      } · ${formatBtc(currentProfile.totalDonatedBtc)} BTC lifetime`}
                     </p>
                   )}
                 </div>
@@ -1188,7 +1197,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                       </div>
                     </div>
                     <div className="text-[11px] text-slate-400">
-                      {wagesCount} work shifts completed. Earned from daily labor contracts.
+                      {`${wagesCount} work shifts completed. Earned from daily labor contracts.`}
                     </div>
                   </div>
 
@@ -1206,7 +1215,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                         )}
                       </div>
                       <div className="text-[11px] text-slate-400">
-                        {wagesPaidCount} payroll disbursements to hired factory workers.
+                        {`${wagesPaidCount} payroll disbursements to hired factory workers.`}
                       </div>
                     </div>
                   )}
@@ -1234,7 +1243,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                       </div>
                     </div>
                     <div className="text-[11px] text-slate-400">
-                      {salesCount} filled orders. Converted manufactured goods (lead, steel, ammo) &amp; gear into liquid BTC.
+                      {`${salesCount} filled orders. Converted manufactured goods (lead, steel, ammo) & gear into liquid BTC.`}
                     </div>
                   </div>
 
@@ -1261,7 +1270,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                       </div>
                     </div>
                     <div className="text-[11px] text-slate-400">
-                      {purchasesCount} filled purchase orders. BTC spent buying resources or equipment.
+                      {`${purchasesCount} filled purchase orders. BTC spent buying resources or equipment.`}
                     </div>
                   </div>
 
@@ -1322,7 +1331,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                 <div className="flex items-center justify-between">
                   <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
                     <Building2 className="w-4 h-4 text-indigo-400" />
-                    <span>Balance Sheet Portfolio (Total Net Worth: {formatBtc(totalWealth)} BTC)</span>
+                    <span>{`Balance Sheet Portfolio (Total Net Worth: ${formatBtc(totalWealth)} BTC)`}</span>
                   </h4>
                 </div>
 
@@ -1340,7 +1349,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                       <Building2 className="w-3 h-3 text-indigo-400" /> Companies Capital
                     </div>
                     <div className="text-base font-black text-indigo-300 mt-0.5">{formatBtc(companiesWealth)} BTC</div>
-                    <div className="text-[9px] text-slate-500 font-sans mt-0.5">{liveCompanies.length || currentProfile.companiesCount || 0} companies owned</div>
+                    <div className="text-[9px] text-slate-500 font-sans mt-0.5">{`${liveCompanies.length || currentProfile.companiesCount || 0} companies owned`}</div>
                   </div>
 
                   <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
@@ -1376,7 +1385,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                       txTypeFilter === 'all' ? 'bg-amber-500 text-slate-950 shadow-sm' : 'bg-slate-950 text-slate-400 border border-slate-800 hover:text-white'
                     }`}
                   >
-                    All ({tabCounts.all})
+                    {`All (${tabCounts.all})`}
                   </button>
                   <button
                     type="button"
@@ -1385,7 +1394,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                       txTypeFilter === 'wage' ? 'bg-emerald-500 text-slate-950 shadow-sm' : 'bg-slate-950 text-emerald-400 border border-emerald-900/40 hover:bg-emerald-950/40'
                     }`}
                   >
-                    Wages ({tabCounts.wage})
+                    {`Wages (${tabCounts.wage})`}
                   </button>
                   <button
                     type="button"
@@ -1394,7 +1403,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                       txTypeFilter === 'trading' ? 'bg-cyan-500 text-slate-950 shadow-sm' : 'bg-slate-950 text-cyan-400 border border-cyan-900/40 hover:bg-cyan-950/40'
                     }`}
                   >
-                    Trading Commodities ({tabCounts.trading})
+                    {`Trading Commodities (${tabCounts.trading})`}
                   </button>
                   <button
                     type="button"
@@ -1403,7 +1412,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                       txTypeFilter === 'market' ? 'bg-indigo-500 text-white shadow-sm' : 'bg-slate-950 text-indigo-400 border border-indigo-900/40 hover:bg-indigo-950/40'
                     }`}
                   >
-                    Item Market ({tabCounts.market})
+                    {`Item Market (${tabCounts.market})`}
                   </button>
                   <button
                     type="button"
@@ -1412,7 +1421,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                       txTypeFilter === 'donation' ? 'bg-amber-500 text-slate-950 shadow-sm' : 'bg-slate-950 text-amber-400 border border-amber-900/40 hover:bg-amber-950/40'
                     }`}
                   >
-                    Donations ({tabCounts.donation})
+                    {`Donations (${tabCounts.donation})`}
                   </button>
                   {tabCounts.other > 0 && (
                     <button
@@ -1422,7 +1431,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                         txTypeFilter === 'other' ? 'bg-purple-500 text-white shadow-sm' : 'bg-slate-950 text-purple-400 border border-purple-900/40 hover:bg-purple-950/40'
                       }`}
                     >
-                      Tips &amp; Fees ({tabCounts.other})
+                      {`Tips & Fees (${tabCounts.other})`}
                     </button>
                   )}
                 </div>
@@ -1680,7 +1689,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                   <div className="text-right font-mono shrink-0">
                     <div className="text-[10px] text-slate-400 uppercase font-sans">Mgmt Bot Boost</div>
                     <div className="text-base font-black text-emerald-400">
-                      +{activeSkillBreakdown.management * 2}% Output
+                      {`+${activeSkillBreakdown.management * 2}% Output`}
                     </div>
                   </div>
                 </div>
@@ -1717,7 +1726,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                   </div>
                 ) : (
                   <div className="p-3 bg-slate-900/80 border border-slate-800 rounded-xl text-xs text-slate-400 font-mono text-center">
-                    Individual skill node breakdown not exposed by API for this citizen (Total SP: {currentProfile.ecoSkillPoints} Eco / {currentProfile.warSkillPoints} War). No synthetic split displayed.
+                    {`Individual skill node breakdown not exposed by API for this citizen (Total SP: ${currentProfile.ecoSkillPoints} Eco / ${currentProfile.warSkillPoints} War). No synthetic split displayed.`}
                   </div>
                 )}
 
@@ -1746,62 +1755,20 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                 )}
               </div>
 
-              {/* Aggregate Portfolio Summary */}
-              <div className="p-4 bg-slate-950 border border-slate-800 rounded-2xl grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
-                <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
-                  <div className="text-[10px] text-slate-400 font-sans">Live Synced Companies</div>
-                  <div className="text-xl font-black text-white mt-0.5">
-                    {liveCompanies.length}
-                  </div>
-                  <div className="text-[10px] text-slate-500 font-sans mt-0.5">
-                    Profile reports {currentProfile.companiesCount ?? liveCompanies.length} owned ({currentProfile.activeCompaniesCount ?? 2} slots)
-                  </div>
-                </div>
+              {/* Live Company, Manager & Bot Workforce Portfolio Analyzer (v0.27) */}
+              <CompanyPortfolioAnalyzer
+                initialUserId={currentProfile.userId}
+                initialUsername={currentProfile.username}
+                showPlayerSearch={false}
+              />
 
-                <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
-                  <div className="text-[10px] text-slate-400 font-sans">Verified Company Wealth</div>
-                  <div className="text-xl font-black text-indigo-300 mt-0.5">
-                    {formatBtc(companiesWealth)} BTC
-                  </div>
-                  <div className="text-[10px] text-slate-500 font-sans mt-0.5">Reported in Game Profile</div>
-                </div>
-
-                <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
-                  <div className="text-[10px] text-slate-400 font-sans">Highest Storage Upgrade</div>
-                  <div className="text-xl font-black text-amber-300 mt-0.5">
-                    {maxStorageAcrossCompanies > 0 ? (
-                      <>
-                        Level {maxStorageAcrossCompanies} <span className="text-xs text-slate-400 font-normal">/ 7</span>
-                      </>
-                    ) : (
-                      <span className="text-sm text-slate-500">Not Synced</span>
-                    )}
-                  </div>
-                  <div className="text-[10px] text-slate-500 font-sans mt-0.5">PP storage buffer</div>
-                </div>
-
-                <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
-                  <div className="text-[10px] text-slate-400 font-sans">Max Automation Engine</div>
-                  <div className="text-xl font-black text-cyan-300 mt-0.5">
-                    {maxAutoAcrossCompanies > 0 ? (
-                      <>
-                        Level {maxAutoAcrossCompanies} <span className="text-xs text-slate-400 font-normal">/ 7</span>
-                      </>
-                    ) : (
-                      <span className="text-sm text-slate-500">Not Synced</span>
-                    )}
-                  </div>
-                  <div className="text-[10px] text-slate-500 font-sans mt-0.5">Peak engine upgrade</div>
-                </div>
-              </div>
-
-              {/* Itemized Multi-Company Cards Deck */}
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
-                    <span>Live Registered Companies, Breakroom Lvl 3 &amp; Bot Workforce Roster</span>
+              {/* Itemized Multi-Company Trait Simulator & Infrastructure Cards Deck */}
+              <details className="p-4 bg-slate-950 border border-slate-800 rounded-2xl space-y-2.5 group">
+                <summary className="flex items-center justify-between flex-wrap gap-2 cursor-pointer select-none">
+                  <div className="text-xs sm:text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                    <span>Piraterers 29-Trait Sandbox &amp; Breakroom Override Inspector</span>
                     <span className="px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[10px] font-mono">
-                      {companiesToRender.length} Live API Record(s)
+                      {`${companiesToRender.length} Live API Record(s)`}
                     </span>
                   </div>
 
@@ -1842,13 +1809,14 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                                 : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-white'
                             }`}
                           >
-                            {code}
+                            {translateCommodity(code)}
                           </button>
                         ))}
                       </div>
                     )}
                   </div>
-                </div>
+                </summary>
+                <div className="pt-3 border-t border-slate-800 space-y-3">
 
                 {isLoadingCompanies ? (
                   <div className="p-8 bg-slate-950 border border-slate-800 rounded-2xl text-center text-xs text-slate-400 animate-pulse">
@@ -1903,7 +1871,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                                     {comp.name}
                                   </span>
                                   <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 text-[11px] uppercase font-mono font-bold">
-                                    {comp.itemCode}
+                                    {translateCommodity(comp.itemCode || '')}
                                   </span>
                                   <span
                                     className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono font-bold ${
@@ -2361,7 +2329,8 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                     </div>
                   </div>
                 )}
-              </div>
+                </div>
+              </details>
             </div>
           )}
 
@@ -2458,7 +2427,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                       )}
                     </div>
                     <div className="text-[9px] text-slate-500 font-sans mt-0.5">
-                      Calibrated at {militaryCreditRate} BTC per 1,000 DMG
+                      {`Calibrated at ${militaryCreditRate} BTC per 1,000 DMG`}
                     </div>
                   </div>
 
@@ -2484,7 +2453,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
         {/* Footer */}
         <div className="p-4 border-t border-slate-800 bg-slate-950/80 flex items-center justify-between rounded-b-3xl">
           <div className="text-[11px] text-slate-400 font-mono">
-            Audit Baseline: <strong className="text-slate-200">{currentProfile.auditBaselineStatus === 'audited' ? `${auditPeriodDays}D Verified Receipts` : 'Day-1 Provisional Baseline'}</strong>
+            <span>Audit Baseline:</span> <strong className="text-slate-200">{currentProfile.auditBaselineStatus === 'audited' ? `${auditPeriodDays}D Verified Receipts` : 'Day-1 Provisional Baseline'}</strong>
           </div>
           <button
             type="button"

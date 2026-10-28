@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan for fixing the Citizen Radar filter bar alignment, eliminating unwanted scrollbars in both the Citizen Radar table and Citizen Audit Modal, and building the dedicated top-level Economic War-Readiness Evaluation module with per-state and coalition-wide metrics (Active Population, War-Ready Lvl 25+, Average War Participants, and Tier-5 Industrial Citizens with 12 companies at Automation Level 5).",
-  "updatedAt":  "2026-10-28T05:26:04.299867738Z",
+  "summary":  "Comprehensive plan to fix the I18n DOM observer text-node corruption (which caused leaderboard rank/amount desyncs, zeroed KPI stats, stuck Spanish header text, and theme label resets), restyle the Period Share column for Spanish readability, and add Citizen Level + Build Role badges next to usernames in the Leaderboard.",
+  "updatedAt":  "2026-10-28T17:37:15.067056411Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

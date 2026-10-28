@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { WareraCountry } from '../types/warera';
 import {
   Globe,
@@ -11,7 +11,13 @@ import {
   ShieldCheck,
   ShieldAlert,
   Activity,
+  Palette,
+  Moon,
+  Sun,
+  Check,
 } from 'lucide-react';
+import { useI18n } from '../i18n/I18nContext';
+import { useTheme } from '../theme/ThemeContext';
 
 interface HeaderProps {
   countries: WareraCountry[];
@@ -40,8 +46,26 @@ export const Header: React.FC<HeaderProps> = ({
   activeMode,
   onToggleMode,
 }) => {
+  const { lang, setLang, tx } = useI18n();
+  const { activeTheme, setThemeId, themes } = useTheme();
   const [isCountryMenuOpen, setIsCountryMenuOpen] = useState(false);
+  const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const themeMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isThemeMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (themeMenuRef.current && !themeMenuRef.current.contains(e.target as Node)) {
+        setIsThemeMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isThemeMenuOpen]);
+
+  const darkThemes = themes.filter((t) => t.mode === 'dark');
+  const lightThemes = themes.filter((t) => t.mode === 'light');
 
   const filteredCountries = countries.filter(
     (c) =>
@@ -74,7 +98,10 @@ export const Header: React.FC<HeaderProps> = ({
   };
 
   return (
-    <header className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 text-white">
+    <header
+      data-no-dom-i18n="true"
+      className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 text-white"
+    >
       <div className="max-w-[1760px] w-full mx-auto px-4 sm:px-6 xl:px-10 h-18 py-2.5 flex items-center justify-between gap-4">
         {/* Logo / Branding */}
         <div className="flex items-center gap-3.5 shrink-0">
@@ -87,11 +114,11 @@ export const Header: React.FC<HeaderProps> = ({
                 WAR<span className="text-amber-400">ERA</span>
               </span>
               <span className="text-xs px-2.5 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 font-mono font-bold">
-                BTC Donations
+                {tx('BTC Donations', 'Donaciones BTC')}
               </span>
             </div>
             <p className="text-xs text-slate-300 hidden sm:block">
-              Daily, Weekly &amp; Monthly Citizen Audit
+              {tx('Daily, Weekly & Monthly Citizen Audit', 'Auditoría Ciudadana Diaria, Semanal y Mensual')}
             </p>
           </div>
         </div>
@@ -112,7 +139,7 @@ export const Header: React.FC<HeaderProps> = ({
                 {selectedCountry ? getFlagEmoji(selectedCountry.code) : '🌐'}
               </span>
               <span className={`truncate ${!selectedCountry ? 'font-black text-amber-300' : 'font-extrabold text-slate-100'}`}>
-                {selectedCountry ? selectedCountry.name : 'Choose Country to Audit...'}
+                {selectedCountry ? selectedCountry.name : tx('Choose Country to Audit...', 'Elegir País a Auditar...')}
               </span>
               {selectedCountry && (
                 <span className="text-xs sm:text-sm text-amber-400 bg-amber-400/10 px-2.5 py-0.5 rounded-full border border-amber-400/20 font-mono font-bold hidden md:inline">
@@ -192,45 +219,224 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             type="button"
             onClick={() => onToggleMode('leaderboard')}
-            className={`px-3.5 py-2 rounded-lg text-xs sm:text-sm font-bold transition flex items-center gap-1.5 ${
+            className={`px-3.5 py-2 rounded-lg text-xs sm:text-sm font-bold transition flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeMode === 'leaderboard'
                 ? 'bg-amber-500 text-slate-950 shadow-sm font-black'
                 : 'text-slate-300 hover:text-white'
             }`}
-            title="Public citizen donation rankings"
+            title={tx('Public citizen donation rankings', 'Clasificación pública de donaciones ciudadanas')}
           >
-            <span>Leaderboard</span>
+            <span>{tx('Leaderboard', 'Clasificación')}</span>
           </button>
           <button
             type="button"
             onClick={() => onToggleMode('ministry')}
-            className={`px-3.5 py-2 rounded-lg text-xs sm:text-sm font-bold transition flex items-center gap-1.5 ${
+            className={`px-3.5 py-2 rounded-lg text-xs sm:text-sm font-bold transition flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeMode === 'ministry'
                 ? 'bg-amber-500 text-slate-950 shadow-sm font-black'
                 : 'text-slate-300 hover:text-white'
             }`}
-            title="Executive Ministry of Economy tools (Leech radar, inter-state transfers, market advisor)"
+            title={tx(
+              'Executive Ministry of Economy tools (Leech radar, inter-state transfers, market advisor)',
+              'Herramientas del Ministerio de Economía (Radar de contribución, transferencias y mercado)'
+            )}
           >
-            <span>🏛️ Ministry</span>
+            <span>{tx('🏛️ Ministry', '🏛️ Ministerio')}</span>
           </button>
         </div>
 
-        {/* Right Actions: API Token Button & Sync */}
-        <div className="flex items-center gap-2.5">
+        {/* Right Actions: Theme Switcher, Language Pill, API Token Button & Sync */}
+        <div className="flex items-center gap-2">
+          {/* Theme Switcher Dropdown */}
+          <div className="relative shrink-0" ref={themeMenuRef}>
+            <button
+              type="button"
+              onClick={() => setIsThemeMenuOpen((prev) => !prev)}
+              className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-200 text-xs font-bold transition whitespace-nowrap shadow-sm"
+              title={tx(
+                'Change color theme (5 Dark & 4 Light high-readability themes)',
+                'Cambiar tema de color (5 temas oscuros y 4 claros de alta legibilidad)'
+              )}
+              aria-label={tx('Theme Switcher', 'Selector de Tema')}
+            >
+              <Palette className="w-4 h-4 text-amber-400 shrink-0" />
+              <span className="hidden xl:inline max-w-[130px] truncate">
+                {lang === 'es' ? activeTheme.nameEs.replace(' (Predeterminado)', '') : activeTheme.nameEn.replace(' (Default)', '')}
+              </span>
+              <span className="flex items-center gap-0.5 shrink-0">
+                <span
+                  className="w-2.5 h-2.5 rounded-full border border-slate-600"
+                  style={{ backgroundColor: activeTheme.swatches[0] }}
+                />
+                <span
+                  className="w-2.5 h-2.5 rounded-full border border-slate-600"
+                  style={{ backgroundColor: activeTheme.swatches[3] }}
+                />
+              </span>
+            </button>
+
+            {isThemeMenuOpen && (
+              <div className="absolute right-0 mt-2 w-80 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl p-3 z-50 space-y-3 animate-fade-in">
+                <div className="flex items-center justify-between px-1 pb-1.5 border-b border-slate-800">
+                  <div className="text-xs font-black text-slate-100 flex items-center gap-1.5">
+                    <Palette className="w-3.5 h-3.5 text-amber-400" />
+                    <span>{tx('Readability Color Themes', 'Temas de Alta Legibilidad')}</span>
+                  </div>
+                  <span className="text-[10px] font-mono text-slate-400">
+                    {tx('WCAG Contrast', 'Contraste WCAG')}
+                  </span>
+                </div>
+
+                {/* Dark Themes Group (Default + 4 Dark) */}
+                <div className="space-y-1">
+                  <div className="px-1.5 text-[10px] font-mono font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                    <Moon className="w-3 h-3 text-amber-400" />
+                    <span>{tx('Dark Themes (5)', 'Temas Oscuros (5)')}</span>
+                  </div>
+                  <div className="space-y-1">
+                    {darkThemes.map((t) => {
+                      const isSelected = t.id === activeTheme.id;
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          onClick={() => {
+                            setThemeId(t.id);
+                            setIsThemeMenuOpen(false);
+                          }}
+                          className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl text-left transition border ${
+                            isSelected
+                              ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                              : 'bg-slate-950/60 hover:bg-slate-800 border-transparent text-slate-200'
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold truncate flex items-center gap-1.5">
+                              <span>{lang === 'es' ? t.nameEs : t.nameEn}</span>
+                            </div>
+                            <div className="text-[10px] text-slate-400 truncate">
+                              {lang === 'es' ? t.descEs : t.descEn}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <div className="flex items-center -space-x-1">
+                              {t.swatches.map((hex, i) => (
+                                <span
+                                  key={i}
+                                  className="w-3.5 h-3.5 rounded-full border border-slate-600 shadow-sm"
+                                  style={{ backgroundColor: hex }}
+                                />
+                              ))}
+                            </div>
+                            {isSelected && <Check className="w-3.5 h-3.5 text-amber-400 shrink-0" />}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Light Themes Group (4 Light) */}
+                <div className="space-y-1 pt-1 border-t border-slate-800">
+                  <div className="px-1.5 text-[10px] font-mono font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                    <Sun className="w-3 h-3 text-amber-400" />
+                    <span>{tx('Light Themes (4)', 'Temas Claros (4)')}</span>
+                  </div>
+                  <div className="space-y-1">
+                    {lightThemes.map((t) => {
+                      const isSelected = t.id === activeTheme.id;
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          onClick={() => {
+                            setThemeId(t.id);
+                            setIsThemeMenuOpen(false);
+                          }}
+                          className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl text-left transition border ${
+                            isSelected
+                              ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                              : 'bg-slate-950/60 hover:bg-slate-800 border-transparent text-slate-200'
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold truncate flex items-center gap-1.5">
+                              <span>{lang === 'es' ? t.nameEs : t.nameEn}</span>
+                            </div>
+                            <div className="text-[10px] text-slate-400 truncate">
+                              {lang === 'es' ? t.descEs : t.descEn}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <div className="flex items-center -space-x-1">
+                              {t.swatches.map((hex, i) => (
+                                <span
+                                  key={i}
+                                  className="w-3.5 h-3.5 rounded-full border border-slate-500 shadow-sm"
+                                  style={{ backgroundColor: hex }}
+                                />
+                              ))}
+                            </div>
+                            {isSelected && <Check className="w-3.5 h-3.5 text-amber-400 shrink-0" />}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Language Switcher Pill (EN | ES) */}
+          <div
+            className="flex items-center p-1 bg-slate-950 border border-slate-800 rounded-xl shrink-0"
+            role="group"
+            aria-label={tx('Language Switcher', 'Selector de Idioma')}
+          >
+            <button
+              type="button"
+              onClick={() => setLang('en')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-mono font-bold transition whitespace-nowrap shrink-0 ${
+                lang === 'en'
+                  ? 'bg-amber-500 text-slate-950 shadow-sm font-black'
+                  : 'text-slate-300 hover:text-white'
+              }`}
+              title="Switch language to English (Default)"
+            >
+              EN
+            </button>
+            <button
+              type="button"
+              onClick={() => setLang('es')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-mono font-bold transition whitespace-nowrap shrink-0 ${
+                lang === 'es'
+                  ? 'bg-amber-500 text-slate-950 shadow-sm font-black'
+                  : 'text-slate-300 hover:text-white'
+              }`}
+              title="Cambiar idioma a Español (terminología oficial War Era)"
+            >
+              ES
+            </button>
+          </div>
+
           {/* API Key Status Pill */}
           <button
             type="button"
             onClick={onOpenKeyModal}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold border transition ${
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold border transition whitespace-nowrap shrink-0 ${
               apiKey
                 ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25'
                 : 'bg-rose-500/20 text-rose-300 border-rose-500/40 hover:bg-rose-500/30 animate-pulse'
             }`}
-            title="Configure War Era API Token for live daily/weekly transaction streams"
+            title={tx(
+              'Configure War Era API Token for live daily/weekly transaction streams',
+              'Configurar Token API de War Era para recibos diarios y semanales en vivo'
+            )}
           >
             {apiKey ? <ShieldCheck className="w-4 h-4 text-emerald-400" /> : <ShieldAlert className="w-4 h-4 text-rose-400" />}
             <span className="hidden sm:inline">
-              {apiKey ? 'API Key Active' : 'Connect API Token'}
+              {apiKey ? tx('API Key Active', 'API Key Activa') : tx('Connect API Token', 'Conectar Token API')}
             </span>
           </button>
 
@@ -239,11 +445,14 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               type="button"
               onClick={onOpenDiagnostics}
-              className="p-2 sm:px-3 sm:py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 text-xs sm:text-sm font-bold flex items-center gap-1.5 transition"
-              title="Open War Era API Outbound Request Diagnostics Inspector"
+              className="p-2 sm:px-3 sm:py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 text-xs sm:text-sm font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0"
+              title={tx(
+                'Open War Era API Outbound Request Diagnostics Inspector',
+                'Abrir Inspector de Diagnóstico de Solicitudes API de War Era'
+              )}
             >
               <Activity className="w-4 h-4 text-amber-400" />
-              <span className="hidden lg:inline text-xs">Inspector</span>
+              <span className="hidden lg:inline text-xs">{tx('Inspector', 'Inspector')}</span>
             </button>
           )}
 
@@ -254,7 +463,7 @@ export const Header: React.FC<HeaderProps> = ({
                 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                 : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
             }`}
-            title={isOnline ? 'Online' : 'Offline'}
+            title={isOnline ? tx('Online', 'En línea') : tx('Offline', 'Sin conexión')}
           >
             {isOnline ? <Wifi className="w-4 h-4" /> : <WifiOff className="w-4 h-4" />}
           </div>
@@ -264,11 +473,11 @@ export const Header: React.FC<HeaderProps> = ({
             type="button"
             disabled={isSyncing}
             onClick={onSync}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-extrabold bg-amber-500 hover:bg-amber-400 text-slate-950 transition disabled:opacity-50 shadow-md shadow-amber-500/20"
-            title="Refresh donations from War Era API"
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-extrabold bg-amber-500 hover:bg-amber-400 text-slate-950 transition disabled:opacity-50 shadow-md shadow-amber-500/20 whitespace-nowrap shrink-0"
+            title={tx('Refresh donations from War Era API', 'Actualizar donaciones desde la API de War Era')}
           >
             <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
-            <span>{isSyncing ? 'Syncing...' : 'Sync Donors'}</span>
+            <span>{isSyncing ? tx('Syncing...', 'Sincronizando...') : tx('Sync Donors', 'Sincronizar')}</span>
           </button>
         </div>
       </div>

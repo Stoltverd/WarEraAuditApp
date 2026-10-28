@@ -189,6 +189,8 @@ export interface DonorRankingItem {
   transactions: WareraTransaction[];
   donations: WareraTransaction[];
   isCumulativeOnly?: boolean;
+  level?: number;
+  playstyle?: 'pure-eco' | 'pure-war' | 'hybrid';
 }
 
 export interface RankingSummary {
@@ -253,6 +255,106 @@ export type EmployeeTraitId =
   | 'scavenger'
   | 'foreman';
 
+export interface WareraWorkDailyStat {
+  dailyDate: string;
+  automatedEngine?: number;
+  employeeProd?: number;
+  workerProd?: number;
+  selfWork?: number;
+  wage?: number;
+  total?: number;
+}
+
+export interface WareraCompanyManager {
+  _id: string;
+  user: string;
+  company: string;
+  employer?: string;
+  rateManagement?: number;
+  maxHourlyWage?: number;
+  accrued?: number;
+  unpaidHours?: number;
+  totalEarned?: number;
+  hiredAt?: string;
+  lockedUntil?: string;
+  canEndAt?: string;
+  managementLevel?: number;
+  isInactive?: boolean;
+  hourlyWage?: number;
+  productionBonusPercent?: number;
+  hasPendingRateReduction?: boolean;
+}
+
+export interface WareraCompanyManagerOffer {
+  _id?: string;
+  company?: string;
+  rateManagement?: number;
+  maxHourlyWage?: number;
+}
+
+export interface WareraRosterEmployeeRaw {
+  _id?: string;
+  id?: string;
+  name?: string;
+  nationality?: string;
+  country?: string;
+  age?: number;
+  sex?: string;
+  gender?: string;
+  base?: {
+    production?: number;
+    luck?: number;
+    responsibility?: number;
+  };
+  breakdown?: {
+    production?: {
+      base?: number;
+      total?: number;
+      contributions?: Array<{ source: string; value?: number; amount?: number }>;
+    };
+    luck?: {
+      base?: number;
+      total?: number;
+    };
+    responsibility?: {
+      base?: number;
+      total?: number;
+    };
+  };
+  productionBonus?: {
+    total?: number;
+    contributions?: Array<{ source: string; percent: number }>;
+  };
+  happinessBreakdown?: {
+    value?: number;
+    quitChance?: number;
+    contributions?: Array<{ source: string; value?: number; amount?: number }>;
+  };
+  estimate?: {
+    production?: number;
+    wage?: number;
+  };
+  wage?: number;
+  traits?: Array<{ code?: string; name?: string; revealed?: boolean } | string>;
+}
+
+export interface WareraCompanyRosterResponse {
+  employees?: WareraRosterEmployeeRaw[];
+  hourly?: {
+    production?: number;
+    wageCost?: number;
+    toolboxes?: number;
+    cap?: number;
+  };
+}
+
+export interface WareraRegionRecord {
+  _id: string;
+  name: string;
+  country: string;
+  [key: string]: any;
+}
+
 export interface WareraBotEmployee {
   id: string;
   name: string;
@@ -275,15 +377,25 @@ export interface WareraBotEmployee {
   };
   traits: EmployeeTraitId[];
   hourlyWageBtc: number;
+  // Live v0.27 API fields from employee.getCompanyRoster
+  productionBonusPct?: number;
+  productionBonusDetail?: string;
+  hourlyOutputPts?: number;
+  quitChance?: number;
+  revealedTraitCodes?: string[];
 }
 
 export interface WareraCompany {
   _id: string;
   user: string;
   region?: string;
+  regionName?: string;
+  hostCountryId?: string;
+  hostCountryName?: string;
   name: string;
   itemCode: string;
   isFull?: boolean;
+  disabledAt?: string | null;
   concreteInvested?: number;
   production: number;
   activeUpgradeLevels?: {
@@ -297,10 +409,20 @@ export interface WareraCompany {
   managerId?: string;
   managerName?: string;
   hasManager?: boolean;
+  managerContract?: WareraCompanyManager | null;
+  managerOffer?: WareraCompanyManagerOffer | null;
+  workStatsHistory?: WareraWorkDailyStat[];
+  rosterHourly?: {
+    production?: number;
+    wageCost?: number;
+    toolboxes?: number;
+    cap?: number;
+  } | null;
   isHomelandSafeRegion?: boolean;
   isOperatingActive?: boolean;
   estimatedValue?: number;
   createdAt?: string;
   updatedAt?: string;
 }
+
 

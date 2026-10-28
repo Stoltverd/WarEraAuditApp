@@ -343,16 +343,16 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                   Executive Sovereign Command
                 </span>
                 <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-mono text-[10px] font-bold border border-emerald-500/30">
-                  {countryName} Ministry of Economy
+                  {`${countryName} Ministry of Economy`}
                 </span>
                 <span className="px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono text-[10px] font-bold border border-slate-700 flex items-center gap-1.5 shadow-sm">
                   <Users className="w-3 h-3 text-amber-400" />
-                  {authoritativeActiveCount} Active Citizens (Lvl 10+)
+                  <span>{`${authoritativeActiveCount} Active Citizens (Lvl 10+)`}</span>
                 </span>
                 {isCensusAuditing ? (
                   <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-mono text-[10px] font-bold border border-amber-500/40 flex items-center gap-1.5 animate-pulse">
                     <Loader2 className="w-3 h-3 animate-spin text-amber-400" />
-                    Auditing Census: {profiles.length}/{authoritativeActiveCount} ({censusPct}%)
+                    <span>{`Auditing Census: ${profiles.length}/${authoritativeActiveCount} (${censusPct}%)`}</span>
                   </span>
                 ) : streamState.isRunning || profiles.some((p) => p.auditBaselineStatus !== 'audited') ? (
                   <span className="px-2.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 font-mono text-[10px] font-bold border border-cyan-500/40 flex items-center gap-1.5">
@@ -639,9 +639,9 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                 <Eye className="w-3.5 h-3.5 text-amber-400" /> Under Surveillance
               </div>
               <div className="text-2xl font-black font-mono text-white">
-                {watchedCitizens.length} Citizens
+                {`${watchedCitizens.length} Citizens`}
               </div>
-              <div className="text-slate-500 text-[11px] mt-1">Active citizens monitored in {countryName}</div>
+              <div className="text-slate-500 text-[11px] mt-1">{`Active citizens monitored in ${countryName}`}</div>
             </div>
 
             <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 shadow-md">

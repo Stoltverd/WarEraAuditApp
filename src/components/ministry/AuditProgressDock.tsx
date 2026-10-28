@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AutoAuditStreamState, auditStreamService } from '../../services/auditStreamService';
+import { useI18n } from '../../i18n/I18nContext';
 import {
   RefreshCw,
   Pause,
@@ -28,6 +29,7 @@ export const AuditProgressDock: React.FC<AuditProgressDockProps> = ({
   bufferedCount = 0,
   onApplyBufferedUpdates,
 }) => {
+  const { tx } = useI18n();
   const [isMinimized, setIsMinimized] = useState(false);
   const [isDismissed, setIsDismissed] = useState(false);
   const [showSpeedExplainer, setShowSpeedExplainer] = useState(false);
@@ -92,8 +94,9 @@ export const AuditProgressDock: React.FC<AuditProgressDockProps> = ({
                 </span>
               </div>
               <div className="text-[10px] font-mono text-slate-400 truncate">
-                {state.auditedCount} / {state.totalTargetCount} citizens verified
-                {state.failedCount > 0 ? ` · ${state.failedCount} deferred` : ''}
+                {`${state.auditedCount} / ${state.totalTargetCount} citizens verified${
+                  state.failedCount > 0 ? ` · ${state.failedCount} deferred` : ''
+                }`}
               </div>
             </div>
           </div>
@@ -107,7 +110,7 @@ export const AuditProgressDock: React.FC<AuditProgressDockProps> = ({
                   ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
                   : 'bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white'
               }`}
-              title="Why per-citizen receipt streaming takes time & how 4-Worker Delta Sync accelerates it"
+              title="Why per-citizen receipt streaming takes time & how 4-Thread Delta Sync accelerates it"
             >
               <HelpCircle className="w-3.5 h-3.5" />
             </button>
@@ -179,7 +182,7 @@ export const AuditProgressDock: React.FC<AuditProgressDockProps> = ({
               className="w-full py-2 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs font-mono flex items-center justify-center gap-2 transition shadow-lg shadow-emerald-500/20 active:scale-[0.99]"
             >
               <RefreshCw className="w-3.5 h-3.5 stroke-[2.5]" />
-              <span>Apply {bufferedCount} Verified Updates to Table</span>
+              <span>{`Apply ${bufferedCount} Verified Updates to Table`}</span>
             </button>
           </div>
         )}
@@ -190,7 +193,7 @@ export const AuditProgressDock: React.FC<AuditProgressDockProps> = ({
             <div className="font-bold text-cyan-300 flex items-center justify-between">
               <span className="flex items-center gap-1">
                 <Zap className="w-3 h-3 text-amber-400" />
-                <span>4-Worker Priority Delta Sync Active</span>
+                <span>4-Thread Priority Delta Sync Active</span>
               </span>
               <button
                 type="button"
@@ -204,19 +207,22 @@ export const AuditProgressDock: React.FC<AuditProgressDockProps> = ({
               <strong className="text-white">Why per-citizen queries are required:</strong> The War Era API (<code className="text-cyan-300">transaction.getPaginatedTransactions</code>) only returns personal wages and market trades per <code className="text-cyan-300">userId</code> cursor—it does not expose a bulk country-wide personal ledger endpoint.
             </p>
             <p>
-              <strong className="text-white">How we maximize speed safely:</strong> All countries run <strong className="text-emerald-300">4 parallel workers</strong> with <strong className="text-emerald-300">100-receipt page batching</strong>, <strong className="text-emerald-300">Priority-First ordering</strong> (auditing top wealth &amp; potential leeches first), and <strong className="text-emerald-300">Incremental Delta Short-Circuiting</strong> (stopping pagination immediately upon reaching an already-cached receipt ID), paced by a token bucket to prevent HTTP 429 bans.
+              <strong className="text-white">How we maximize speed safely:</strong> All countries run <strong className="text-emerald-300">4 parallel threads</strong> with <strong className="text-emerald-300">100-receipt page batching</strong>, <strong className="text-emerald-300">Priority-First ordering</strong> (auditing top wealth &amp; potential leeches first), and <strong className="text-emerald-300">Incremental Delta Short-Circuiting</strong> (stopping pagination immediately upon reaching an already-cached receipt ID), paced by a token bucket to prevent HTTP 429 bans.
             </p>
           </div>
         )}
 
-        {/* Expanded Real-Time Multi-Worker Telemetry (Zero Blinking Between Citizens) */}
+        {/* Expanded Real-Time Multi-Thread Telemetry (Zero Blinking Between Citizens) */}
         {!isMinimized && (
           <div className="space-y-2 pt-0.5 text-[11px] font-sans">
             {activeWorkers.length > 0 ? (
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
                   <span className="text-cyan-300 font-bold">
-                    Concurrent Workers ({activeWorkers.length} Active):
+                    {tx(
+                      `Concurrent Threads (${activeWorkers.length} Active):`,
+                      `Hilos Concurrentes (${activeWorkers.length} Activos):`
+                    )}
                   </span>
                   <span className="flex items-center gap-1">
                     <Clock className="w-3 h-3 text-cyan-400" />
@@ -263,7 +269,7 @@ export const AuditProgressDock: React.FC<AuditProgressDockProps> = ({
             {state.failedCount > 0 && !state.isRunning && (
               <div className="pt-1 flex items-center justify-between gap-2 border-t border-slate-800">
                 <span className="text-[10px] text-amber-300 font-mono">
-                  {state.failedCount} citizen(s) timed out on API
+                  {`${state.failedCount} citizen(s) timed out on API`}
                 </span>
                 <button
                   type="button"
@@ -271,7 +277,7 @@ export const AuditProgressDock: React.FC<AuditProgressDockProps> = ({
                   className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-[10px] font-mono font-bold flex items-center gap-1 transition"
                 >
                   <RefreshCw className="w-3 h-3" />
-                  <span>Retry {state.failedCount} Failed</span>
+                  <span>{`Retry ${state.failedCount} Failed`}</span>
                 </button>
               </div>
             )}
