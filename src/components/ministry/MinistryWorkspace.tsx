@@ -4,6 +4,7 @@ import { TreasuryLedger } from './TreasuryLedger';
 import { StockpileTracker } from './StockpileTracker';
 import { MarketAdvisor } from './MarketAdvisor';
 import { WorkforceAdvisor } from './WorkforceAdvisor';
+import { WarReadinessEvaluation } from './WarReadinessEvaluation';
 import { AuditProgressDock } from './AuditProgressDock';
 import { auditStreamService, AutoAuditStreamState } from '../../services/auditStreamService';
 import {
@@ -60,6 +61,7 @@ import {
   Sparkles,
   SlidersHorizontal,
   RotateCcw,
+  Swords,
 } from 'lucide-react';
 import {
   generateMinisterialNudge,
@@ -135,7 +137,7 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
   onUpdateProfile,
   onUpdateProfilesBatch,
 }) => {
-  const [activeTab, setActiveTab] = useState<'radar' | 'workforce' | 'treasury' | 'stockpiles' | 'market' | 'watch'>('radar');
+  const [activeTab, setActiveTab] = useState<'radar' | 'war-readiness' | 'workforce' | 'treasury' | 'stockpiles' | 'market' | 'watch'>('radar');
   const [watchSearch, setWatchSearch] = useState('');
   const [isAddWatchModalOpen, setIsAddWatchModalOpen] = useState(false);
   const [selectedAddUserId, setSelectedAddUserId] = useState('');
@@ -440,7 +442,7 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
         </div>
 
         {/* Recommended Daily Protocol Banner */}
-        <div className="mt-4 px-3.5 py-2.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex items-center gap-2.5 shadow-inner">
+        <div className="mt-4 px-4 py-3 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-200 text-xs sm:text-sm flex items-center gap-2.5 shadow-inner">
           <ShieldCheck className="w-4 h-4 text-amber-400 shrink-0" />
           <span className="leading-snug">
             <strong>Daily Protocol Recommendation:</strong> Use the <strong>Backup &amp; Safeguards</strong> button above to download a daily backup file, safeguarding your historical citizen wealth snapshots, watchlist, and custom policy configurations against browser cache clearing or disk cleaner utilities.
@@ -448,27 +450,40 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
         </div>
 
         {/* Sub-Office Navigation Tabs */}
-        <div className="flex flex-wrap items-center gap-1.5 mt-6 pt-4 border-t border-slate-800/80">
+        <div className="flex flex-wrap items-center gap-2 mt-6 pt-4 border-t border-slate-800/80">
           <button
             type="button"
             onClick={() => setActiveTab('radar')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 ${
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition flex items-center gap-2 ${
               activeTab === 'radar'
                 ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-white'
+                : 'bg-slate-800/80 hover:bg-slate-800 text-slate-200 hover:text-white'
             }`}
           >
             <Users className="w-4 h-4" />
-            <span>Citizen Leech & Wealth Radar</span>
+            <span>Citizen Leech &amp; Wealth Radar</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('war-readiness')}
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition flex items-center gap-2 ${
+              activeTab === 'war-readiness'
+                ? 'bg-amber-500 text-slate-950 shadow-md font-black'
+                : 'bg-slate-800/80 hover:bg-slate-800 text-slate-200 hover:text-white'
+            }`}
+          >
+            <Swords className="w-4 h-4" />
+            <span>War-Readiness Evaluation</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('workforce')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 ${
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition flex items-center gap-2 ${
               activeTab === 'workforce'
                 ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-white'
+                : 'bg-slate-800/80 hover:bg-slate-800 text-slate-200 hover:text-white'
             }`}
           >
             <Sparkles className="w-4 h-4" />
@@ -478,24 +493,24 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('treasury')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 ${
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition flex items-center gap-2 ${
               activeTab === 'treasury'
                 ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-white'
+                : 'bg-slate-800/80 hover:bg-slate-800 text-slate-200 hover:text-white'
             }`}
           >
             <Coins className="w-4 h-4" />
             <span>Inter-State Transfers</span>
-            <span className="text-[10px] opacity-75 font-mono">({transactions.length})</span>
+            <span className="text-xs opacity-80 font-mono">({transactions.length})</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('stockpiles')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 ${
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition flex items-center gap-2 ${
               activeTab === 'stockpiles'
                 ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-white'
+                : 'bg-slate-800/80 hover:bg-slate-800 text-slate-200 hover:text-white'
             }`}
           >
             <Package className="w-4 h-4" />
@@ -505,10 +520,10 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('market')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 ${
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition flex items-center gap-2 ${
               activeTab === 'market'
                 ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-white'
+                : 'bg-slate-800/80 hover:bg-slate-800 text-slate-200 hover:text-white'
             }`}
           >
             <TrendingUp className="w-4 h-4" />
@@ -518,21 +533,21 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('watch')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 relative ${
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition flex items-center gap-2 relative ${
               activeTab === 'watch'
                 ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-white'
+                : 'bg-slate-800/80 hover:bg-slate-800 text-slate-200 hover:text-white'
             }`}
           >
             <Eye className="w-4 h-4" />
             <span>Citizens on watch</span>
             {watchedCitizens.length > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full bg-amber-400 text-slate-950 font-mono text-[10px] font-black">
+              <span className="px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 font-mono text-xs font-black">
                 {watchedCitizens.length}
               </span>
             )}
             {unacknowledgedAlerts.length > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full bg-red-500 text-white font-mono text-[10px] font-bold" title="Unacknowledged respec alerts">
+              <span className="px-2 py-0.5 rounded-full bg-red-500 text-white font-mono text-xs font-bold" title="Unacknowledged respec alerts">
                 !
               </span>
             )}
@@ -562,6 +577,14 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
           commodities={commodities}
           onUpdateProfile={onUpdateProfile}
           onUpdateProfilesBatch={onUpdateProfilesBatch}
+        />
+      )}
+
+      {activeTab === 'war-readiness' && (
+        <WarReadinessEvaluation
+          auditedCountryId={countryId}
+          auditedCountryName={countryName}
+          countries={countries}
         />
       )}
 

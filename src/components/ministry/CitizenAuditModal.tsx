@@ -773,13 +773,13 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
       onClick={onClose}
     >
       <div
-        className="bg-slate-900 border border-slate-700/80 rounded-3xl max-w-5xl w-full p-5 sm:p-7 shadow-2xl relative max-h-[92vh] flex flex-col overscroll-contain"
+        className="bg-slate-900 border border-slate-700/80 rounded-3xl max-w-[1480px] w-full p-5 sm:p-6 shadow-2xl relative max-h-[95vh] flex flex-col overscroll-contain"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="shrink-0 flex items-start justify-between pb-4 border-b border-slate-800">
-          <div className="flex items-center gap-4">
-            <div className="w-14 h-14 rounded-2xl bg-amber-500/20 border-2 border-amber-400/50 overflow-hidden shrink-0 flex items-center justify-center font-black text-amber-300 text-xl shadow-lg">
+        <div className="shrink-0 flex items-start justify-between pb-3 border-b border-slate-800">
+          <div className="flex items-center gap-3.5">
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border-2 border-amber-400/50 overflow-hidden shrink-0 flex items-center justify-center font-black text-amber-300 text-lg shadow-lg">
               {currentProfile.avatarUrl ? (
                 <img
                   src={currentProfile.avatarUrl}
@@ -796,7 +796,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
 
             <div>
               <div className="flex items-center gap-2.5 flex-wrap">
-                <h3 className="text-xl sm:text-2xl font-black text-white tracking-tight">
+                <h3 className="text-lg sm:text-xl font-black text-white tracking-tight">
                   {currentProfile.username || `Citizen #${(currentProfile.userId || '').slice(-6)}`}
                 </h3>
                 {/* Unified Master Standing Badge (only shown once audited or historical pillar) */}
@@ -832,13 +832,13 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
               </div>
 
               {/* Citizen ID & Respec Tenure Subtitle */}
-              <div className="flex items-center gap-3 text-xs text-slate-400 mt-1 font-mono flex-wrap">
+              <div className="flex items-center gap-2.5 text-xs text-slate-400 mt-0.5 font-mono flex-wrap">
                 <span className="flex items-center gap-1">
                   Citizen ID: {currentProfile.userId}
                   <button
                     type="button"
                     onClick={handleCopyId}
-                    className="p-1 hover:text-white transition rounded hover:bg-slate-800"
+                    className="p-0.5 hover:text-white transition rounded hover:bg-slate-800"
                     title="Copy Citizen ID"
                   >
                     {copiedId ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-slate-500" />}
@@ -857,7 +857,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
             {/* Timeframe Window Selector */}
             <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl p-1 text-xs font-mono">
               <span className="text-[10px] text-slate-500 uppercase px-2 font-bold font-sans">Window:</span>
@@ -903,31 +903,31 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
           </div>
         </div>
 
-        {/* Navigation Tabs */}
-        <div className="shrink-0 flex items-center gap-2 border-b border-slate-800 py-3 px-0.5 text-xs sm:text-sm font-bold overflow-x-auto">
+        {/* Navigation Tabs (no vertical scrollbar) */}
+        <div className="shrink-0 flex flex-wrap items-center gap-1.5 border-b border-slate-800 py-2.5 px-0.5 text-xs font-bold overflow-hidden">
           <button
             type="button"
             onClick={() => setActiveTab('cashflow')}
-            className={`shrink-0 px-4 py-2 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
+            className={`px-3.5 py-1.5 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
               activeTab === 'cashflow'
                 ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent'
             }`}
           >
-            <Calculator className="w-4 h-4 shrink-0" />
+            <Calculator className="w-3.5 h-3.5 shrink-0" />
             <span>Financial &amp; Solvency Audit</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('transactions')}
-            className={`shrink-0 px-4 py-2 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
+            className={`px-3.5 py-1.5 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
               activeTab === 'transactions'
                 ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent'
             }`}
           >
-            <FileText className="w-4 h-4 shrink-0" />
+            <FileText className="w-3.5 h-3.5 shrink-0" />
             <span>Line-Item Transaction Ledger ({timeframeTransactions.length})</span>
             {isSyncingLedger && <RefreshCw className="w-3 h-3 animate-spin text-amber-400 shrink-0" />}
           </button>
@@ -935,39 +935,39 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('companies')}
-            className={`shrink-0 px-4 py-2 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
+            className={`px-3.5 py-1.5 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
               activeTab === 'companies'
                 ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 shadow-sm'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent'
             }`}
           >
-            <Building2 className="w-4 h-4 shrink-0" />
+            <Building2 className="w-3.5 h-3.5 shrink-0" />
             <span>Companies &amp; Bot Workforce</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('defense')}
-            className={`shrink-0 px-4 py-2 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
+            className={`px-3.5 py-1.5 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
               activeTab === 'defense'
                 ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-sm'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent'
             }`}
           >
-            <Swords className="w-4 h-4 shrink-0" />
+            <Swords className="w-3.5 h-3.5 shrink-0" />
             <span>Military &amp; Battlefield Defense</span>
           </button>
         </div>
 
         {/* Scrollable Content */}
-        <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">
+        <div className="pt-3 px-1 sm:px-2 overflow-y-auto space-y-3 flex-1">
           {/* TAB 1: FINANCIAL & SOLVENCY AUDIT */}
           {activeTab === 'cashflow' && (
-            <div className="space-y-4 animate-fade-in">
+            <div className="space-y-3 animate-fade-in">
               {/* Sync Action Header */}
               {apiKey ? (
                 <div className="space-y-2">
-                  <div className="p-3 bg-slate-950 border border-slate-800 rounded-2xl flex items-center justify-between gap-3 flex-wrap">
+                  <div className="p-2.5 bg-slate-950 border border-slate-800 rounded-2xl flex items-center justify-between gap-3 flex-wrap">
                     <div className="flex items-center gap-2 text-xs text-slate-300 font-mono">
                       <RefreshCw className={`w-4 h-4 text-cyan-400 ${isSyncingLedger ? 'animate-spin' : ''}`} />
                       <span>

@@ -1,1 +1,45 @@
 @import "tailwindcss";
+
+@layer base {
+  html {
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  @media (min-width: 1280px) {
+    html {
+      font-size: 16.5px;
+    }
+  }
+
+  @media (min-width: 1600px) {
+    html {
+      font-size: 17px;
+    }
+  }
+}
+
+/* Global Legibility Floor: Prevent eye-straining sub-12px micro-typography across all views & modals */
+.text-\[8px\],
+.text-\[9px\],
+.text-\[10px\] {
+  font-size: 0.78rem !important;
+  line-height: 1.35 !important;
+}
+
+.text-\[11px\] {
+  font-size: 0.82rem !important;
+  line-height: 1.4 !important;
+}
+
+.text-xs {
+  font-size: 0.85rem !important;
+  line-height: 1.45 !important;
+}
+
+/* Boost dim slate-500 contrast on dark slate-900/950 surfaces for effortless reading */
+.text-slate-500 {
+  color: #94a3b8 !important;
+}

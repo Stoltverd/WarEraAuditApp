@@ -184,84 +184,87 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
   };
 
   return (
-    <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-4 sm:p-6 shadow-xl">
+    <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-5 sm:p-7 shadow-xl">
       {/* Table Header Controls */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 mb-5">
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 mb-6">
         <div>
-          <h3 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
-            <TrendingUp className="w-5 h-5 text-amber-400" />
+          <h3 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2.5">
+            <TrendingUp className="w-6 h-6 text-amber-400" />
             Citizen Donation Leaderboard
           </h3>
-          <p className="text-xs text-slate-400 mt-0.5">
+          <p className="text-sm text-slate-300 mt-1">
             Showing all {filteredAndSorted.length} contributing citizens for {timeframe}
           </p>
         </div>
 
         {/* Search input */}
-        <div className="relative w-full sm:w-72">
-          <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+        <div className="relative w-full sm:w-80">
+          <Search className="w-4 h-4 absolute left-3.5 top-3 text-slate-400" />
           <input
             type="text"
             placeholder="Search citizen username or ID..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full bg-slate-800/80 border border-slate-700/80 rounded-xl pl-9 pr-3 py-2 text-xs sm:text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-amber-400"
+            className="w-full bg-slate-800/80 border border-slate-700/80 rounded-xl pl-10 pr-4 py-2.5 text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:border-amber-400"
           />
         </div>
       </div>
 
       {/* Table Container */}
       <div id="leaderboard-table-anchor" className="overflow-x-auto rounded-2xl border border-slate-800">
-        <table className="w-full text-left border-collapse text-xs sm:text-sm">
+        <table className="w-full text-left border-collapse text-sm sm:text-base">
           <thead>
-            <tr className="bg-slate-800/70 border-b border-slate-700/80 text-slate-400 font-semibold uppercase tracking-wider text-[11px]">
+            <tr className="bg-slate-800/80 border-b border-slate-700/80 text-slate-300 font-bold uppercase tracking-wider text-xs sm:text-sm">
               <th
                 onClick={() => handleSort('rank')}
-                className="py-3.5 px-3 sm:px-4 cursor-pointer hover:text-white transition w-16"
+                className="py-4 px-4 sm:px-5 cursor-pointer hover:text-white transition w-20"
               >
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1.5">
                   <span>Rank</span>
-                  <ArrowUpDown className="w-3 h-3" />
+                  <ArrowUpDown className="w-3.5 h-3.5" />
                 </div>
               </th>
-              <th className="py-3.5 px-3 sm:px-4">Citizen</th>
+              <th className="py-4 px-4 sm:px-5">Citizen</th>
+              <th className="py-4 px-4 sm:px-5 hidden lg:table-cell w-64">
+                Period Share
+              </th>
               <th
                 onClick={() => handleSort('amount')}
-                className="py-3.5 px-3 sm:px-4 cursor-pointer hover:text-white transition text-right"
+                className="py-4 px-4 sm:px-5 cursor-pointer hover:text-white transition text-right"
               >
-                <div className="flex items-center justify-end gap-1">
-                  <Coins className="w-3.5 h-3.5 text-amber-400" />
+                <div className="flex items-center justify-end gap-1.5">
+                  <Coins className="w-4 h-4 text-amber-400" />
                   <span>Total BTC Donated</span>
-                  <ArrowUpDown className="w-3 h-3" />
+                  <ArrowUpDown className="w-3.5 h-3.5" />
                 </div>
               </th>
               <th
                 onClick={() => handleSort('events')}
-                className="py-3.5 px-3 sm:px-4 cursor-pointer hover:text-white transition text-center hidden sm:table-cell"
+                className="py-4 px-4 sm:px-5 cursor-pointer hover:text-white transition text-center hidden sm:table-cell"
               >
-                <div className="flex items-center justify-center gap-1">
-                  <Layers className="w-3.5 h-3.5 text-slate-400" />
+                <div className="flex items-center justify-center gap-1.5">
+                  <Layers className="w-4 h-4 text-slate-400" />
                   <span>Donations</span>
-                  <ArrowUpDown className="w-3 h-3" />
+                  <ArrowUpDown className="w-3.5 h-3.5" />
                 </div>
               </th>
               <th
                 onClick={() => handleSort('lastDonation')}
-                className="py-3.5 px-3 sm:px-4 cursor-pointer hover:text-white transition text-right hidden md:table-cell"
+                className="py-4 px-4 sm:px-5 cursor-pointer hover:text-white transition text-right hidden md:table-cell"
               >
-                <div className="flex items-center justify-end gap-1">
-                  <Clock className="w-3.5 h-3.5 text-slate-400" />
+                <div className="flex items-center justify-end gap-1.5">
+                  <Clock className="w-4 h-4 text-slate-400" />
                   <span>Last Donation</span>
-                  <ArrowUpDown className="w-3 h-3" />
+                  <ArrowUpDown className="w-3.5 h-3.5" />
                 </div>
               </th>
-              <th className="py-3.5 px-3 sm:px-4 text-right">Audit</th>
+              <th className="py-4 px-4 sm:px-5 text-right">Audit</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
             {filteredAndSorted.length === 0 ? (
               <tr>
-                <td colSpan={6} className="py-12 text-center text-slate-500 text-sm">
+                <td colSpan={7} className="py-14 text-center text-slate-400 text-base">
                   {search
                     ? `No citizens found matching "${search}"`
                     : 'No donation records found for this period.'}
@@ -269,40 +272,41 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
               </tr>
             ) : (
               paginatedItems.map((donor) => {
-                const percentage =
+                const pctNum =
                   totalAmountDonated > 0
-                    ? ((donor.totalAmount / totalAmountDonated) * 100).toFixed(1)
-                    : '0';
+                    ? (donor.totalAmount / totalAmountDonated) * 100
+                    : 0;
+                const percentage = pctNum.toFixed(1);
 
                 return (
                   <tr
                     key={donor.userId}
-                    className="hover:bg-slate-800/40 transition group cursor-pointer"
+                    className="hover:bg-slate-800/45 transition group cursor-pointer"
                     onClick={() => onSelectDonor(donor.userId)}
                   >
                     {/* Rank Badge */}
-                    <td className="py-3.5 px-3 sm:px-4 font-mono font-bold">
+                    <td className="py-4 px-4 sm:px-5 font-mono font-bold">
                       {donor.rank === 1 ? (
-                        <span className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/40 flex items-center justify-center text-xs font-black shadow-sm">
+                        <span className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/40 flex items-center justify-center text-sm font-black shadow-sm">
                           1
                         </span>
                       ) : donor.rank === 2 ? (
-                        <span className="w-7 h-7 rounded-lg bg-slate-300/20 text-slate-200 border border-slate-300/40 flex items-center justify-center text-xs font-black">
+                        <span className="w-9 h-9 rounded-xl bg-slate-300/20 text-slate-200 border border-slate-300/40 flex items-center justify-center text-sm font-black">
                           2
                         </span>
                       ) : donor.rank === 3 ? (
-                        <span className="w-7 h-7 rounded-lg bg-amber-700/20 text-amber-500 border border-amber-700/40 flex items-center justify-center text-xs font-black">
+                        <span className="w-9 h-9 rounded-xl bg-amber-700/20 text-amber-500 border border-amber-700/40 flex items-center justify-center text-sm font-black">
                           3
                         </span>
                       ) : (
-                        <span className="text-slate-400 pl-2">#{donor.rank}</span>
+                        <span className="text-slate-300 text-base pl-2">#{donor.rank}</span>
                       )}
                     </td>
 
                     {/* Citizen Profile with Avatar */}
-                    <td className="py-3.5 px-3 sm:px-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-9 h-9 rounded-xl bg-slate-800 border border-slate-700 overflow-hidden shrink-0 flex items-center justify-center font-bold text-slate-300 text-xs shadow-sm">
+                    <td className="py-4 px-4 sm:px-5">
+                      <div className="flex items-center gap-3.5">
+                        <div className="w-11 h-11 rounded-xl bg-slate-800 border border-slate-700 overflow-hidden shrink-0 flex items-center justify-center font-bold text-slate-200 text-sm shadow-sm">
                           {donor.avatarUrl ? (
                             <img
                               src={donor.avatarUrl}
@@ -314,94 +318,111 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
                             />
                           ) : donor.username.startsWith('Citizen #') ? (
                             <div className="w-full h-full flex items-center justify-center bg-slate-800 text-amber-400">
-                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              <RefreshCw className="w-4 h-4 animate-spin" />
                             </div>
                           ) : (
                             donor.username.slice(0, 2).toUpperCase()
                           )}
                         </div>
-                        <div className="truncate max-w-[150px] sm:max-w-xs">
+                        <div className="min-w-0">
                           {donor.username.startsWith('Citizen #') ? (
                             <div className="flex items-center gap-1.5 py-0.5">
-                              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-xs font-mono text-amber-300 animate-pulse">
-                                <RefreshCw className="w-3 h-3 animate-spin text-amber-400 shrink-0" />
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-500/10 border border-amber-500/30 text-xs sm:text-sm font-mono text-amber-300 animate-pulse">
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400 shrink-0" />
                                 Syncing Citizen #{donor.userId.slice(-6)}...
                               </span>
                             </div>
                           ) : (
-                            <div className="font-extrabold text-slate-200 group-hover:text-amber-400 transition truncate text-sm">
+                            <div className="font-extrabold text-slate-100 group-hover:text-amber-400 transition truncate text-base sm:text-lg">
                               {donor.username}
                             </div>
                           )}
-                          <div className="text-[11px] text-slate-500 font-mono truncate">
+                          <div className="text-xs text-slate-400 font-mono truncate mt-0.5">
                             ID: {donor.userId}
                           </div>
                         </div>
                       </div>
                     </td>
 
+                    {/* Period Share Visual Bar (Reclaims empty horizontal chasm) */}
+                    <td className="py-4 px-4 sm:px-5 hidden lg:table-cell">
+                      <div className="space-y-1.5 max-w-xs">
+                        <div className="flex items-center justify-between text-xs font-mono">
+                          <span className="text-slate-300 font-bold">{percentage}%</span>
+                          <span className="text-slate-400">of period funds</span>
+                        </div>
+                        <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden border border-slate-700/60">
+                          <div
+                            className="h-full bg-gradient-to-r from-amber-500 to-yellow-400 rounded-full transition-all duration-300"
+                            style={{ width: `${Math.max(3, Math.min(100, pctNum))}%` }}
+                          />
+                        </div>
+                      </div>
+                    </td>
+
                     {/* BTC Amount */}
-                    <td className="py-3.5 px-3 sm:px-4 text-right font-mono">
-                      <div className="font-black text-amber-400 text-sm sm:text-base">
+                    <td className="py-4 px-4 sm:px-5 text-right font-mono">
+                      <div className="font-black text-amber-400 text-base sm:text-xl">
                         {formatBtc(donor.totalAmount)}{' '}
-                        <span className="text-xs font-bold text-amber-500/90">BTC</span>
+                        <span className="text-xs sm:text-sm font-bold text-amber-500/90">BTC</span>
                       </div>
                       {donor.damageAmount > 0 ? (
-                        <div className="text-[10px] text-slate-400 flex items-center justify-end gap-1.5 mt-0.5">
+                        <div className="text-xs text-slate-300 flex items-center justify-end gap-1.5 mt-0.5">
                           <span className="text-emerald-400">{formatBtc(donor.directAmount)} direct</span>
                           <span>+</span>
                           <span className="text-red-400 font-bold">{formatBtc(donor.damageAmount)} dmg</span>
                         </div>
                       ) : (
-                        <div className="text-[10px] text-slate-500">
+                        <div className="text-xs text-slate-400 lg:hidden">
                           {percentage}% of period funds
                         </div>
                       )}
                     </td>
 
                     {/* Donations count */}
-                    <td className="py-3.5 px-3 sm:px-4 text-center font-mono text-slate-300 hidden sm:table-cell">
+                    <td className="py-4 px-4 sm:px-5 text-center font-mono text-slate-200 hidden sm:table-cell">
                       {donor.isCumulativeOnly ? (
                         <span
-                          className="px-2.5 py-1 rounded-md border text-xs font-semibold bg-slate-800/80 border-slate-700 text-slate-300"
+                          className="px-3 py-1 rounded-lg border text-xs sm:text-sm font-semibold bg-slate-800/80 border-slate-700 text-slate-200"
                           title="Official lifetime treasury record on register"
                         >
                           Lifetime
                         </span>
                       ) : (donor.transactionCount || donor.donations.length) > 0 ? (
                         <span
-                          className="px-2.5 py-1 rounded-md border text-xs font-semibold bg-amber-500/10 border-amber-500/30 text-amber-300"
+                          className="px-3 py-1 rounded-lg border text-sm font-bold bg-amber-500/15 border-amber-500/35 text-amber-300"
                           title={`${donor.transactionCount || donor.donations.length} verified individual donations`}
                         >
                           {donor.transactionCount || donor.donations.length}
                         </span>
                       ) : (
-                        <span className="px-2 py-0.5 rounded-full bg-red-500/20 border border-red-500/30 text-red-300 text-[10px] font-bold whitespace-nowrap">
+                        <span className="px-2.5 py-1 rounded-full bg-red-500/20 border border-red-500/30 text-red-300 text-xs font-bold whitespace-nowrap">
                           War Only
                         </span>
                       )}
                     </td>
 
                     {/* Last Donation Timestamp */}
-                    <td className="py-3.5 px-3 sm:px-4 text-right text-slate-400 text-xs hidden md:table-cell font-mono" title={formatDateDDMMYYYY(donor.lastDonationAt)}>
+                    <td className="py-4 px-4 sm:px-5 text-right text-slate-300 text-sm hidden md:table-cell font-mono" title={formatDateDDMMYYYY(donor.lastDonationAt)}>
                       {donor.directAmount === 0 && donor.damageAmount > 0 ? (
-                        <span className="text-red-400 font-semibold text-[11px]">War Mode Active</span>
+                        <span className="text-red-400 font-semibold text-xs sm:text-sm">War Mode Active</span>
                       ) : (
                         formatRelativeTime(donor.lastDonationAt)
                       )}
                     </td>
 
                     {/* Action */}
-                    <td className="py-3.5 px-3 sm:px-4 text-right">
+                    <td className="py-4 px-4 sm:px-5 text-right">
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
                           onSelectDonor(donor.userId);
                         }}
-                        className="p-1.5 rounded-xl bg-slate-800 text-slate-400 group-hover:text-amber-400 group-hover:bg-slate-700 transition"
+                        className="px-3 py-2 rounded-xl bg-slate-800 text-slate-200 group-hover:text-amber-300 group-hover:bg-slate-700 border border-slate-700 transition inline-flex items-center gap-1.5 text-xs sm:text-sm font-bold"
                         title="View audit details"
                       >
+                        <span className="hidden sm:inline">Inspect</span>
                         <ChevronRight className="w-4 h-4" />
                       </button>
                     </td>

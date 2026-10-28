@@ -1184,17 +1184,17 @@ export default function App() {
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <main className="flex-1 max-w-[1760px] w-full mx-auto px-4 sm:px-6 xl:px-10 py-6">
         {/* Offline Banner if disconnected */}
         {!isOnline && (
-          <div className="mb-6 p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between">
+          <div className="mb-6 p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-sm flex items-center justify-between">
             <div className="flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>
                 <strong>Offline Mode:</strong> Viewing cached donation records from local storage.
               </span>
             </div>
-            <span className="font-mono text-[11px] bg-amber-500/20 px-2 py-0.5 rounded font-bold">
+            <span className="font-mono text-xs bg-amber-500/20 px-2.5 py-0.5 rounded font-bold">
               Cached locally
             </span>
           </div>
@@ -1202,11 +1202,11 @@ export default function App() {
 
         {/* API Key Status Notice */}
         {!apiKey && (
-          <div className="mb-6 p-4 rounded-2xl bg-gradient-to-r from-amber-500/15 via-slate-900 to-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg">
+          <div className="mb-6 p-4 rounded-2xl bg-gradient-to-r from-amber-500/15 via-slate-900 to-amber-500/10 border border-amber-500/30 text-amber-200 text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg">
             <div className="flex items-center gap-3">
               <Key className="w-5 h-5 text-amber-400 shrink-0" />
               <div>
-                <strong className="text-white block text-sm">Unlock True Daily (24h) & Weekly (7d) Transaction Logs</strong>
+                <strong className="text-white block text-base">Unlock True Daily (24h) &amp; Weekly (7d) Transaction Logs</strong>
                 <span>
                   Currently viewing public all-time cumulative sums. To view exact individual donation receipts (e.g. 10 BTC) and accurate daily totals, connect your War Era API Token.
                 </span>
@@ -1215,7 +1215,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setIsKeyModalOpen(true)}
-              className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl text-xs transition shrink-0 shadow-md shadow-amber-500/20"
+              className="px-4 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl text-sm transition shrink-0 shadow-md shadow-amber-500/20"
             >
               Connect API Token
             </button>
@@ -1224,14 +1224,14 @@ export default function App() {
 
         {/* Active Granular Mode Indicator */}
         {apiKey && isGranularActive && (
-          <div className="mb-6 p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center justify-between">
-            <div className="flex items-center gap-2">
+          <div className="mb-6 p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-sm flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
               <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
               <span>
                 <strong>Granular Transaction Stream Active:</strong> Displaying exact individual donation receipts and precise Daily, Weekly, and Monthly rollups.
               </span>
             </div>
-            <span className="font-mono text-[11px] bg-emerald-500/20 px-2 py-0.5 rounded font-bold text-emerald-300">
+            <span className="font-mono text-xs bg-emerald-500/20 px-2.5 py-1 rounded font-bold text-emerald-300">
               {transactions.length} Verified Receipts
             </span>
           </div>
@@ -1240,16 +1240,16 @@ export default function App() {
         {/* Live Sync Progress Indicator */}
         {syncProgress && (
           <div className="mb-6 p-4 rounded-2xl bg-slate-900 border border-slate-800 shadow-lg">
-            <div className="flex items-center justify-between text-xs mb-2">
-              <span className="font-bold text-slate-300 flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+            <div className="flex items-center justify-between text-sm mb-2">
+              <span className="font-bold text-slate-200 flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping" />
                 {syncProgress.message}
               </span>
-              <span className="font-mono text-slate-400 font-semibold">
+              <span className="font-mono text-slate-300 font-semibold">
                 {syncProgress.fetchedItems} items loaded
               </span>
             </div>
-            <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+            <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
               <div
                 className={`h-full transition-all duration-300 ${
                   syncProgress.status === 'error'
@@ -1261,8 +1261,8 @@ export default function App() {
               />
             </div>
             {syncError && (
-              <div className="mt-2 text-xs text-rose-400 flex items-center gap-1.5">
-                <AlertCircle className="w-3.5 h-3.5" />
+              <div className="mt-2 text-sm text-rose-400 flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4" />
                 <span>{syncError}</span>
               </div>
             )}
@@ -1306,55 +1306,55 @@ export default function App() {
         ) : (
           <>
             {/* Period Control Bar */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 bg-slate-900/60 border border-slate-800/80 p-3 sm:p-4 rounded-2xl">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 bg-slate-900/60 border border-slate-800/80 p-3.5 sm:p-4 rounded-2xl">
           {/* Timeframe Selector Tabs */}
-          <div className="flex items-center gap-1.5 bg-slate-950/80 p-1 rounded-xl border border-slate-800 overflow-x-auto">
+          <div className="flex items-center gap-1.5 bg-slate-950/80 p-1.5 rounded-xl border border-slate-800 overflow-x-auto">
             <button
               type="button"
               onClick={() => setTimeframe('daily')}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap ${
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition whitespace-nowrap ${
                 timeframe === 'daily'
                   ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                  : 'text-slate-400 hover:text-white'
+                  : 'text-slate-300 hover:text-white'
               }`}
             >
-              <CalendarDays className="w-3.5 h-3.5" />
+              <CalendarDays className="w-4 h-4" />
               <span>Daily (24h)</span>
             </button>
 
             <button
               type="button"
               onClick={() => setTimeframe('weekly')}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap ${
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition whitespace-nowrap ${
                 timeframe === 'weekly'
                   ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                  : 'text-slate-400 hover:text-white'
+                  : 'text-slate-300 hover:text-white'
               }`}
             >
-              <CalendarDays className="w-3.5 h-3.5" />
+              <CalendarDays className="w-4 h-4" />
               <span>Weekly (7d)</span>
             </button>
 
             <button
               type="button"
               onClick={() => setTimeframe('monthly')}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap ${
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition whitespace-nowrap ${
                 timeframe === 'monthly'
                   ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                  : 'text-slate-400 hover:text-white'
+                  : 'text-slate-300 hover:text-white'
               }`}
             >
-              <CalendarDays className="w-3.5 h-3.5" />
+              <CalendarDays className="w-4 h-4" />
               <span>Monthly (30d)</span>
             </button>
 
             <button
               type="button"
               onClick={() => setTimeframe('all')}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap ${
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition whitespace-nowrap ${
                 timeframe === 'all'
                   ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                  : 'text-slate-400 hover:text-white'
+                  : 'text-slate-300 hover:text-white'
               }`}
             >
               <span>All-Time</span>
@@ -1364,13 +1364,13 @@ export default function App() {
             <button
               type="button"
               onClick={() => setTimeframe('custom')}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap ${
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition whitespace-nowrap ${
                 timeframe === 'custom'
                   ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                  : 'text-slate-400 hover:text-white'
+                  : 'text-slate-300 hover:text-white'
               }`}
             >
-              <SlidersHorizontal className="w-3.5 h-3.5" />
+              <SlidersHorizontal className="w-4 h-4" />
               <span>Custom Range</span>
             </button>
           </div>
@@ -1380,10 +1380,10 @@ export default function App() {
             <button
               type="button"
               onClick={() => setIsExportOpen(true)}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 text-xs font-bold transition shadow-sm"
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-100 border border-slate-700 text-sm font-bold transition shadow-sm"
               title="Export leaderboard to Discord or CSV"
             >
-              <Share2 className="w-3.5 h-3.5 text-amber-400" />
+              <Share2 className="w-4 h-4 text-amber-400" />
               <span>Export Leaderboard</span>
             </button>
           </div>

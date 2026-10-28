@@ -573,3 +573,41 @@ export interface MinisterialMessage {
   overDonationArchetype?: OverDonationWarningArchetype;
   suggestedAmountBtc?: number;
 }
+
+export type WarReadinessRole =
+  | 'allied-main'
+  | 'allied-supporter'
+  | 'opponent-main'
+  | 'opponent-supporter';
+
+export interface WarReadinessCitizenSummary {
+  userId: string;
+  username: string;
+  avatarUrl?: string;
+  level: number;
+  companiesSkillCap: number;
+  totalCompanies: number;
+  auto5CompaniesCount: number;
+  isWarReady: boolean;
+  isTier5Industrial: boolean;
+}
+
+export interface StateWarReadinessReport {
+  countryId: string;
+  countryName: string;
+  countryCode: string;
+  role: WarReadinessRole;
+  officialActivePopulation: number;
+  activePopulation: number;
+  warReadyCitizensCount: number;
+  averageWarParticipants: number;
+  tier5IndustrialCitizensCount: number;
+  warReadyRoster: WarReadinessCitizenSummary[];
+  tier5IndustrialRoster: WarReadinessCitizenSummary[];
+  scanStatus: 'idle' | 'fetching-census' | 'scanning-companies' | 'completed' | 'error';
+  scannedCandidates: number;
+  totalCandidates: number;
+  lastEvaluatedAt?: string;
+  error?: string;
+}
+

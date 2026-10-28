@@ -1,144 +1,124 @@
-# Sovereign Audit & Diplomatic Engine Refinement Plan
+# Implementation Plan
 
-This update fixes the unresponsive **Reset to Live API** button, declutters the **Companies & Bot Workforce** cards by moving manual controls into a clean collapsible drawer, fixes tab clipping, scales up modal width and typography for effortless reading, introduces a **3x–5x Growth & Speculation Buffer** so productive traders can compound their economy while extreme hoarders (like `N3V1T5`) are still flagged, and upgrades the Diplomatic Telegram Generator with **3 Adaptive Modes (`Treasury Nudge`, `Merit-Based Patriot Commendation`, and `Over-Donation Burnout Warning`)**—including **custom merit-based congratulations** for **Active Historical Pillars** (who keep giving via donations or combat damage), **Sovereign Treasury Patriots**, **Battlefield Frontline Heroes**, and **Dual-Crown Vanguards**.
+## Overview
 
----
+We are upgrading the **War Era Sovereign Ministry of Economy** workspace across three focused objectives:
 
-## User Review & Confirmed Decisions
-
-> [!IMPORTANT]
-> **Confirmed Product & UX Decisions:**
-> - **Confirmed Decision 1 — Decluttered Company Cards & Drawer Controls**: Each company card in the **Companies & Bot Workforce** tab will be a clean, uncluttered summary card (Company Icon, Title, Item & Recipe line, 4 KPI tiles, and a single `"Inspect Bots & Traits"` toggle). All manual configuration controls (Breakroom level selector, Manager toggle, Reset to Live API button, and Bot Slot Trait editors) are moved inside the collapsible drawer.
-> - **Confirmed Decision 2 — Healthy Speculation & Economic Growth Buffer (3x–5x Shield)**: Citizens are granted a **Growth & Speculation Buffer** (shielding up to `3.5x` the country median stockpile, or `2.5x` weekly company input/expansion needs, whichever is higher) so active traders can reinvest, upgrade factories, or buy better war gear without being penalized. Only **excess hoards above this growth buffer** (such as `N3V1T5` at `35.22x` country median) are taxed under the Resource Stockpiler archetype.
-> - **Confirmed Decision 3 — Adaptive Diplomatic Modes (`Nudge`, `Merit Commendation`, `Over-Donation Warning`)**: The Diplomatic Modal automatically evaluates each citizen relative to their own solvency, combat record, lifetime standing, and country benchmarks, displaying an **Evaluation & Recommendation Banner** that pre-selects the appropriate mode while allowing the user to freely switch modes and sub-archetypes.
-> - **Confirmed Decision 4 — Custom Merit-Based Commendations (Updated per Feedback)**: Congratulations are dynamically tailored to the specific merits of the citizen, with **4 selectable Commendation Archetypes** (auto-selecting the best match):
->   1. **🏛️ Active Historical Pillar (Still Giving)**: For lifetime pillars (`isHistoricalPillar` / top all-time donors) who continue contributing in the current period—whether through fresh **treasury BTC donations**, **frontline battlefield damage**, or **both**.
->   2. **🌟 Sovereign Treasury Patriot**: For citizens meeting or exceeding their playstyle's Patriot donation quota through active economic contributions.
->   3. **⚔️ Battlefield Frontline Hero**: For warriors and illiquid combatants who pour their capital into weapons/ammo and deal heavy battlefield damage for the nation.
->   4. **👑 Dual-Crown Vanguard (Treasury + Combat)**: For elite citizens who simultaneously donate BTC to the national treasury AND deal substantial combat damage on the frontlines.
-
----
-
-## 1. Overview & Core Concept
-
-- **What It Does**:
-  1. **Working "Reset to Live API" Action**: Fixes the storage key mismatch (`warera_company_workforce_overrides` vs. `warera_company_workforce_overrides_v1`) and property synchronization (`breakRoom` vs. `breakRoomLevel`) so clicking **Reset to Live API** immediately purges the manual override from both React state and `localStorage` and restores live API values.
-  2. **Clean Company Summary Cards & Working "Inspect Bots & Traits" Drawer**: Eliminates stacked badge clutter and duplicate footer buttons on company cards. Clicking **Inspect Bots & Traits** opens a dedicated workspace drawer where users can adjust Breakroom level, toggle Manager, configure 1–3 bot slots, or reset to Live API—even when the public API returns 0 private worker traits.
-  3. **Spacious, Unclipped Navigation Tabs**: Adds `shrink-0` and generous vertical padding (`py-3`) to the modal tab bar so tabs never clip vertically or spawn a miniature scrollbar.
-  4. **Enhanced Readability on Text-Heavy Modals**: Expands the Diplomatic Modal container to `max-w-4xl` / `max-w-5xl` and upgrades body text from cramped `10px–11px` micro-text to comfortable `13px–15px` (`text-sm` / `text-base`) with `leading-relaxed` line height.
-  5. **Growth-Aware Speculation Buffer**: Distinguishes healthy market speculation and capital compounding (`1.5x–3.5x` country median or active company expansion reserve) from extreme dead-weight hoarding (`>3.5x` country median, e.g., `N3V1T5` at `35.22x`).
-  6. **Adaptive Diplomatic Feedback (`Nudge`, `Merit Commendation`, `Over-Donation Warning`)**: Evaluates each citizen's exact merits—treasury BTC donated, lifetime pillar status, battlefield damage dealt, and personal solvency—to recommend either a **Treasury Nudge**, a **Merit-Specific Commendation**, or a **Protective Over-Donation Warning**.
+1. **Unified Single-Tier Citizen Radar Filter Bar**: Restructure the filter and control bar in `CitizenRadar.tsx` so that the search input, `7D Audit Active` pill, `>7d Inactive` toggle button, and the three classification `<select>` dropdowns share an identical height (`h-9` / `36px`), unified border/focus styling, and clean responsive grid/flex alignment—replacing the raw native browser checkbox with a custom segmented toggle pill.
+2. **Scroll-Free Audit Experience (Radar Table & Forensic Audit Modal)**:
+   - **Citizen Radar Table**: Remove the forced `min-w-[960px]` horizontal scroll trigger and compact the 7 columns (`Citizen`, `Net Worth`, `7D Inflow & Net Flow`, `7D Donated`, `Fiscal Standing`, `Build & Grade`, `Actions`) using tight horizontal padding, tabular monospace numerals, and responsive wrapping so the table fits standard desktop viewports without a horizontal scrollbar.
+   - **Citizen Forensic Audit Modal**: Fix the dual/nested scrollbar on the modal navigation tab strip (`overflow-x-auto` causing a tiny vertical scrollbar next to `Military & Battlefield Defense`) and streamline the modal header and card vertical density so audit panels fit cleanly without cramped double scrollbars.
+3. **Dedicated "Economic War-Readiness Evaluation" Top-Level Ministry Tab**:
+   - Add a dedicated top-level tab in `MinistryWorkspace.tsx` (`⚔️ War-Readiness Evaluation`) alongside Citizen Radar, Workforce & Bot Advisor, National Treasury, Sovereign Stockpiles, and Market & Trade.
+   - **Participant & Coalition Builder (Step A)**: Automatically pre-select the currently audited country (`countryId`) as the **Allied Primary State**. Allow the user to select an **Opponent Primary State**, plus any number of **Allied Supporting States** and **Opponent Supporting States** from the global `WareraCountry[]` roster (with search and duplicate-selection prevention across sides).
+   - **Live Multi-State Census & Company Scanner (Steps B, C, D)**: For each participating state, fetch and evaluate active citizens (`fetchCountryCitizens` + `batchResolveUsers`) and inspect company automation rosters (`fetchUserCompanies`) with progressive status feedback and local caching:
+     - **Active Population**: Total verified active citizens in the state.
+     - **War-Ready Citizens (Step B)**: Active citizens filtered to **Level 25+** (`isActive && level >= 25`).
+     - **Average War Participants (Step C)**: Estimated battlefield turnout calculated as **Active Population ÷ 2** (`activePopulation / 2`).
+     - **Tier-5 Industrial Citizens (Step D)**: Active citizens who own **12 companies, all upgraded to Automation Engine Level 5+** (`companies.length >= 12` and at least 12 companies with `activeUpgradeLevels.automatedEngine >= 5`).
+   - **Per-State Formula Transparency & Head-to-Head Coalition Totals (Step F)**: Display a **Coalition Comparison Banner** (Allied Bloc vs. Opponent Bloc totals and ratios) at the top, followed by individual **State War-Readiness Cards** showing every metric separately alongside an explicit formula breakdown badge explaining how each number was derived.
 
 ---
 
-## 2. User Experience & Visual Design
+## User Choices & Decisions
 
-- **Key User Flows**:
-  - **Company Inspection Flow**:
-    1. User opens **Companies & Bot Workforce** in the Citizen Audit Modal.
-    2. Each company renders as a clean single-elevation card: Company Name + Item Icon on the left, unboxed metadata (`Recipe: 10 PP + 10 Limestone = 1 Concrete · Live Price: 1.725 BTC · Breakroom Lvl 2/3`), and one **Inspect Bots & Traits** button on the right, followed by the 4-column tabular KPI row (`Daily Output`, `Bot Payroll`, `Real Daily Profit`, `Infrastructure`).
-    3. Clicking **Inspect Bots & Traits** smoothly expands the interactive inspector drawer containing the Breakroom level dropdown, Manager toggle, **+ Configure Bot Slot** button, 3-slot trait selectors, and **Reset to Live API** button.
-  - **Adaptive Diplomatic Modal Flow**:
-    1. User clicks the diplomatic action button on any citizen row in the Citizen Radar.
-    2. The widened, high-legibility modal opens with a prominent **Ministerial Evaluation & Recommended Action Banner** at the top explaining the citizen's standing, growth capacity, and combat/donation merits relative to their country.
-    3. Below the banner is the **3-Mode Segmented Selector**:
-       - **Mode 1: Treasury Nudge** — Sub-archetypes: `Weekly Cashflow Step-Up`, `Idle Liquid BTC Hoarder`, `Resource Stockpiler (Above 3.5x Growth Buffer)`.
-       - **Mode 2: Patriot Commendation (Merit-Tailored)** — Sub-archetypes:
-         - **🏛️ Active Historical Pillar (Continuing Legacy)**: Recognizes top all-time donors who *keep on giving* in the current window via fresh BTC donations, frontline combat damage, or both (citing their exact lifetime total alongside their active period BTC/damage).
-         - **🌟 Sovereign Treasury Patriot**: Commends citizens whose current-period BTC donations meet or exceed their playstyle's Patriot threshold.
-         - **⚔️ Battlefield Frontline Hero**: Salutes combat veterans and illiquid fighters based on their exact battlefield damage dealt (`damageDealt` / `damageValueBtc`war credit) and combat gear commitment.
-         - **👑 Dual-Crown Vanguard**: Honors citizens contributing both significant treasury BTC and high frontline combat damage in the same period.
-       - **Mode 3: Over-Donation Warning (Protect Citizen Growth)** — Sub-archetypes:
-         - **⚠️ Economic Burnout / Under-Capitalized Donor**: Warns citizens who are donating a high share of their income (`>35%`) while their liquid cash or company infrastructure is below healthy national benchmarks, advising them to pause donations and upgrade their companies first.
-         - **🛡️ Combatant Liquidity Drain Warning**: Advises frontline fighters who are over-donating liquid BTC needed for ammo, armor repairs, and combat consumables to prioritize their war chest.
-    4. The recommended mode and sub-archetype are pre-selected automatically, and the user can click any mode, sub-archetype, or tone (`Warm / Diplomatic`, `Audit / Analytical`, `Firm / Urgent`) to customize the message.
+- **Module Placement**: Dedicated top-level tab in `MinistryWorkspace.tsx` (`Economic War-Readiness Evaluation`) for full-width coalition building and side-by-side state cards.
+- **Terminology for 12x Auto-5 Citizens**: **Tier-5 Industrial Citizens** (representing active citizens with 12 companies all at Automation Level 5+).
+- **Aggregation Scope**: Display both **Head-to-Head Coalition Totals** (Allied Bloc vs. Opponent Bloc) and **Per-State Breakdown Cards** with individual formula explanations.
+- **Audit Scroll Fixes**: Fix both the **Citizen Audit Modal** (eliminating the tab-strip scrollbar and compacting modal vertical layout) and the **Citizen Radar Table** (eliminating horizontal scroll on desktop viewports).
 
 ---
 
-## 3. Comparative Architectural Solutions & Trade-Offs
+## Architecture & Design
 
-### Decision 1: Decluttering Company Cards & Fixing "Inspect Bots & Traits"
-- **Proposal A (Chosen & Recommended)**: **Clean Summary Card + Consolidated Collapsible Inspector Drawer**
-  - *Pros*: Removes 70% of visual noise from the default company list; gives the **Inspect Bots & Traits** button a clear, predictable purpose (opening all workforce simulation and override tools in one place); prevents accidental overrides while scrolling.
-  - *Cons*: Requires one click on **Inspect Bots & Traits** to change Breakroom or Manager overrides.
-- **Proposal B**: **Compact Table View + Slide-Out Drawer**
-  - *Pros*: Ultra-compact for citizens with 12+ companies.
-  - *Cons*: Loses immediate visibility of the 4 key production/profit metrics per company.
-- **Proposal C**: **Keep Controls on Card Header, Remove Text Footer Only**
-  - *Pros*: Minimal code change.
-  - *Cons*: Header still wraps awkwardly on 4+ controls and still looks cluttered.
+### Comparative Architecture Proposals
 
-### Decision 2: Balancing Healthy Speculation & Economic Growth vs. Extreme Hoarding
-- **Proposal A (Chosen & Recommended)**: **Dynamic Growth & Speculation Shield (`3.5x` Country Median + Company Upgrade Reserve Deduction)**
-  - *Pros*: Explicitly protects a citizen's working capital and speculative growth buffer (`Protected Growth Reserve = max(3.5 × Country Resource Median, 1.5 × 7D Factory Input Cost + Next Upgrade Reserve)`). A moderate speculator holding `2x–3.5x` median resources to flip or upgrade factories is recognized as **Healthy Growth Speculation** (taxed lightly on regular cashflow rather than forced to liquidate inventory), whereas an extreme hoarder like `N3V1T5` holding `35.22x` country median (`43,742 BTC` vs. `~4,300 BTC` protected growth buffer) still has `~39,400 BTC` in taxable excess hoard.
-  - *Cons*: Slightly more detailed formula, which we make transparent in the `[?]` breakdown popover.
-- **Proposal B**: **Flat 50% Stockpile Exemption**
-  - *Pros*: Simple math.
-  - *Cons*: Under-protects developing players in poor countries while over-rewarding mega-whales holding `40,000+ BTC`.
-- **Proposal C**: **Level-Only Tiered Multipliers**
-  - *Pros*: Easy to compute from player level.
-  - *Cons*: Ignores actual company count, live commodity prices, and country median wealth.
+#### Proposal 1: On-Demand Multi-State Scanner with Two-Stage Hydration & IndexedDB Caching (Recommended)
+- **Architecture**: Create a dedicated `WarReadinessEvaluation.tsx` component and a `warReadinessService.ts` engine. Stage 1 immediately computes **Active Population**, **War-Ready Citizens (Lvl 25+)**, and **Average War Participants (`Active / 2`)** via bulk `fetchCountryCitizens` + cached `usersMap` in ~1 second per country. Stage 2 filters candidates who can hold 12 companies (citizens with `skills.companies.value >= 12` or `stats.companiesCount >= 12` or `stats.wealth.companies > 0`, falling back to active Lvl 25+ citizens if skill metadata is unhydrated) and queries `fetchUserCompanies(userId)` via the rate-limited queue to verify **Tier-5 Industrial Citizens** (`12 companies @ automatedEngine >= 5`), caching results in `localStorage`/`IndexedDB` so subsequent comparisons are instantaneous.
+- **Pros**:
+  - Instant feedback for Steps B & C while Step D (company automation verification) streams live progress (`Scanning 12-company industrial rosters: 14/38 candidates...`).
+  - Avoids unnecessary `company.getCompanies` API calls for low-level citizens who do not own 12 companies, cutting API traffic by 70%–85%.
+  - Persists evaluated state snapshots so switching tabs or adding a new supporter country does not re-scan already-verified states.
+- **Cons**:
+  - Requires a lightweight candidate pre-filter and progressive state reducer per country.
+- **Expert Reasoning**: Because War Era's tRPC API requires per-user `company.getCompanies` + `company.getById` calls to verify individual factory `automatedEngine` levels, scanning every citizen blindly across 6+ coalition countries could trigger hundreds of requests. Pre-filtering to active citizens capable of holding 12 companies and streaming via the existing rate-limited queue delivers 100% live accuracy without API rate-limit stalls.
 
-### Decision 3: Custom Merit-Based Congratulations & Over-Donation Warnings
-- **Proposal A (Chosen & Recommended)**: **Unified 3-Mode Adaptive Diplomatic Modal with 4 Merit-Specific Commendation Sub-Archetypes & 2 Over-Donation Warning Sub-Archetypes**
-  - *Pros*: Automatically distinguishes *why* a citizen deserves praise—whether they are an **Active Historical Pillar** who keeps giving in BTC or combat damage, a **Sovereign Treasury Patriot** funding the state, a **Battlefield Hero** dealing heavy combat damage, or a **Dual-Crown Vanguard** doing both—and generates telegrams citing their exact numbers (`totalDonatedBtc`, `periodDonatedBtc`, `damageDealt`, `damageValueBtc`, `contributionRatio`). Also lets the user manually switch between any of the 4 commendation types or 2 warning types.
-  - *Cons*: Requires comprehensive merit classification and template generation in `ministryService.ts`.
-- **Proposal B**: **Single Generic "Thank You" Template**
-  - *Pros*: Fast to implement.
-  - *Cons*: Fails to distinguish a frontline warrior dealing millions of damage from an eco industrialist donating BTC or a historic pillar still contributing every week.
-- **Proposal C**: **Separate Modals for Nudge vs. Commendation**
-  - *Pros*: Dedicated UI per action.
-  - *Cons*: Prevents the user from seamlessly comparing all 3 options and switching modes inside a single unified workflow.
+#### Proposal 2: Eager Full-Roster Sequential Scan Without Candidate Pre-Filtering
+- **Architecture**: Whenever a country is added to either coalition, sequentially call `fetchUserCompanies` for every single citizen in that country regardless of level or company count skill.
+- **Pros**: Simple loop implementation.
+- **Cons**: For a coalition of 4–6 countries with 100+ citizens each, querying `company.getCompanies` + 12x `company.getById` for every citizen can exceed 3,000 HTTP requests, causing slow evaluation times (60–120s).
+
+#### Proposal 3: Heuristic Estimation from Country Wealth Rankings Only
+- **Architecture**: Estimate Tier-5 Industrial Citizens purely from `stats.wealth.companies` thresholds without inspecting actual company upgrade levels.
+- **Pros**: Zero `company.getById` network calls.
+- **Cons**: Violates strict data honesty—cannot distinguish between a citizen with 12 Level-5 automated companies and a citizen with 8 high-storage manual companies.
+
+> **Recommendation**: **Proposal 1** is strongly recommended because it guarantees 100% authentic verification of `12 companies @ Automation Level 5` while keeping evaluation fast, responsive, and rate-limit safe.
 
 ---
 
-## 4. Technical Architecture, Edge Case Mitigation & Phased Plan
+### Edge Case Mitigation Strategy
 
-### Architecture & Data Flow Diagram
+1. **Duplicate State Selection Across Coalitions**:
+   - *Risk*: A user accidentally selects the same country as both an Allied Supporter and the Opponent Main State (or Opponent Supporter).
+   - *Mitigation*: Automatically exclude any already-assigned country from the other coalition selector dropdowns, and provide a one-click "Swap Role / Remove" action on each state chip.
+2. **Primary Audited State Switching**:
+   - *Risk*: The user switches the active country in the top Header while viewing the War-Readiness tab.
+   - *Mitigation*: Automatically sync the Allied Primary State to the newly selected header country (unless the user has locked a custom scenario) and immediately reuse the already-loaded `profiles` in memory for zero-latency evaluation of the home state.
+3. **API Rate Limits & Partial Company Scan Cancellation**:
+   - *Risk*: Scanning a large coalition (e.g., 8 countries) takes several seconds and the user removes a country mid-scan or navigates away.
+   - *Mitigation*: Track per-country `AbortController` / scan tokens and store per-country evaluation state (`idle | scanning-census | scanning-companies | completed | error`) with a `Refresh State` and `Pause/Cancel Scan` control.
+4. **Citizens with >12 Companies vs. Exactly 12 Companies**:
+   - *Risk*: Some high-level citizens or historical accounts may have 12+ registered companies in the API where 12 active companies are at Automation Level 5+ (`automatedEngine >= 5`, up to Level 7 in v0.27).
+   - *Mitigation*: Count a citizen as a **Tier-5 Industrial Citizen** if they are active and own at least 12 companies whose `activeUpgradeLevels.automatedEngine >= 5` (supporting both exact Level 5 and higher engine upgrades 5–7).
+5. **Empty Supporter Lists or Single-State Preview**:
+   - *Risk*: The user hasn't picked an Opponent Primary State or any Supporters yet.
+   - *Mitigation*: Immediately render the Allied Primary State's full evaluation card and coalition totals on load, while showing a clean interactive selector prompt for the Opponent Primary State and optional Allied/Opponent Supporters.
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                        CITIZEN AUDIT & DIPLOMATIC ENGINE                     │
-└───────────────────────────────────────┬──────────────────────────────────────┘
-                                        │
-        ┌───────────────────────────────┴───────────────────────────────┐
-        ▼                                                               ▼
-┌───────────────────────────────────────┐     ┌────────────────────────────────────────┐
-│   COMPANIES & BOT WORKFORCE TAB       │     │   ADAPTIVE DIPLOMATIC MODAL (max-w-4xl)│
-│  • Unclipped Tab Strip (shrink-0)     │     │  • Auto-Evaluation & Recommendation    │
-│  • Clean Company Summary Card:        │     │    Banner (Citizen + Country Context)  │
-│    - Icon + Name + Unboxed Recipe     │     │  • 3 Selectable Diplomatic Modes:      │
-│    - 4 Tabular KPI Tiles              │     │    1. Treasury Nudge (with 3.5x Growth │
-│  • Collapsible "Inspect Bots" Drawer: │     │       Speculation Shield & Slider)     │
-│    - Breakroom & Manager Controls     │     │    2. Merit Commendation:              │
-│    - + Add/Edit Bot Slots (1–3)       │     │       - Active Historical Pillar       │
-│    - Fixed "Reset to Live API"        │     │         (Still Giving BTC or Damage)   │
-│      (clears state + localStorage)    │     │       - Sovereign Treasury Patriot     │
-│                                       │     │       - Battlefield Frontline Hero     │
-│                                       │     │       - Dual-Crown Vanguard            │
-│                                       │     │    3. Over-Donation Burnout Warning:   │
-│                                       │     │       - Economic Growth / CapEx Strain │
-│                                       │     │       - Combatant War-Chest Strain     │
-└───────────────────────────────────────┘     └────────────────────────────────────────┘
-```
+---
 
-### Edge Case Mitigation
-1. **Stale LocalStorage Keys on "Reset to Live API"**: `storage.clearCompanyWorkforceOverride(compId)` will purge the company ID from both `warera_company_workforce_overrides` and legacy `warera_company_workforce_overrides_v1`, and normalize `breakRoom` / `breakRoomLevel` so the card immediately reverts to live API state in a single click.
-2. **Historical Pillars Resting vs. Historical Pillars Still Giving**: If a Historical Pillar (`isHistoricalPillar === true`) has `periodDonatedBtc > 0` OR `damageDealt > 0` (`damageValueBtc > 0`), the evaluator highlights them as an **Active Historical Pillar (Continuing Legacy)** and commends both their lifetime foundation and their active period contributions (donations, combat damage, or both). If they have 0 period donations and 0 combat damage, the commendation still honors their historic legacy while noting their current peacetime/reserve status.
-3. **Inspecting Companies with 0 Public API Bot Traits**: When a user clicks **Inspect Bots & Traits** on a company where the API hides employee traits, the drawer opens cleanly with the Breakroom selector, Manager toggle, and a one-click **+ Add Simulated Bot Slot** workspace so the button always feels responsive and useful.
-4. **Zero or Unverified Income When Evaluating Over-Donation**: If a citizen has donated a large sum (`periodDonated > 0`) while their liquid cash + company equity is below the country median (or donation exceeds `35%` of their 7D projected output + liquid buffer), the evaluator safely classifies them as `over-donation-warning` without dividing by zero.
-5. **492-Character In-Game Telegram Limit**: All new Merit Commendation and Over-Donation Warning templates pass through `enforceMaxTelegramLength(body, username, 492)` so copied messages never get truncated by the War Era in-game chat box.
+## Implementation Phases
 
-### Phased Task Decomposition
-- **Phase 1: Fix "Reset to Live API", Tab Clipping & Declutter Company Cards**
-  - **Phase 1.1**: Add `clearCompanyWorkforceOverride(companyId)` in `storage.ts` and unify `breakRoom` / `breakRoomLevel` keys so **Reset to Live API** works instantaneously.
-  - **Phase 1.2**: Add `shrink-0 py-3` to the navigation tab bar in `CitizenAuditModal.tsx` so tabs never clip vertically.
-  - **Phase 1.3**: Redesign each company card in `CitizenAuditModal.tsx` into a clean summary card with unboxed metadata and move the Breakroom dropdown, Manager toggle, Reset button, and Bot Slot configuration inside the **Inspect Bots & Traits** collapsible drawer.
-- **Phase 2: Growth-Aware Speculation Shield & Merit-Based Diplomatic Engine**
-  - **Phase 2.1**: Update `ministry.ts` and `ministryService.ts` to compute each citizen's **Protected Growth & Speculation Reserve** (`max(3.5 × resourceMedian, 1.5 × weeklyRawInputs + companyUpgradeBuffer)`), deducting it before calculating `taxableExcessResourceBtc` so moderate speculators can grow their economy while extreme hoarders (`>3.5x` median, like `N3V1T5`) are still taxed on their excess above the buffer.
-  - **Phase 2.2**: Add the **Diplomatic Mode & Merit Evaluator** (`recommendedDiplomaticMode: 'nudge' | 'commendation' | 'over-donation-warning'`) with the 4 custom **Commendation Sub-Archetypes** (`active-historical-pillar`, `sovereign-treasury-patriot`, `battlefield-frontline-hero`, `dual-crown-vanguard`) and 2 **Over-Donation Warning Sub-Archetypes** (`capex-growth-strain`, `combat-ammo-strain`), plus their deterministic 3-tone telegram generators.
-- **Phase 3: High-Legibility Adaptive Diplomatic Modal UI**
-  - **Phase 3.1**: Widen the Diplomatic Modal in `CitizenRadar.tsx` and `MinistryWorkspace.tsx` to `max-w-4xl` and increase font sizes (`text-sm` / `text-base`) and padding for comfortable reading.
-  - **Phase 3.2**: Render the **Evaluation & Recommendation Banner**, the 3-way **Diplomatic Mode Selector**, and the sub-archetype selector cards (so ministers can see why a citizen was classified as an Active Historical Pillar, Battlefield Hero, Sovereign Patriot, or Over-Donating Citizen, and freely switch between any option).
-- **Phase 4: Build & Verification**
-  - **Phase 4.1**: Run `compile_applet` to verify zero TypeScript or bundler errors.
+### Phase 1: Citizen Radar Filter Bar Alignment & Citizen Audit Scroll Elimination
+- **Phase 1.1 (Citizen Radar Filter Bar Redesign)**:
+  - Refactor the filter control bar in `/src/components/ministry/CitizenRadar.tsx` into a structured, single-elevation toolbar where all controls share `h-9` (`36px`) height, consistent `px-3` spacing, and clean flex/grid wrapping.
+  - Replace the raw `<input type="checkbox">` inside the `>7d Inactive` pill with a custom interactive toggle button featuring a crisp status indicator dot/check icon, matching the `7D Audit Active` pill height and typography.
+- **Phase 1.2 (Citizen Radar Table No-Scroll Layout)**:
+  - Remove `min-w-[960px]` on the table in `/src/components/ministry/CitizenRadar.tsx` and optimize column widths, cell padding (`px-2.5 py-2.5`), and compact badge labels so all 7 columns fit comfortably inside the standard container width without horizontal scrolling.
+- **Phase 1.3 (Citizen Audit Modal Tab & Viewport Scroll Cleanup)**:
+  - In `/src/components/ministry/CitizenAuditModal.tsx`, fix the navigation tab bar (`overflow-y-hidden overflow-x-auto no-scrollbar`) so it never renders a miniature vertical scrollbar on the right edge, and tighten header/card vertical padding so the modal content is spacious and easy to read.
+
+### Phase 2: Economic War-Readiness Evaluation Engine (`warReadinessService.ts`)
+- **Phase 2.1 (Data Types & State Evaluation Interfaces)**:
+  - Add `StateWarReadinessReport` and `CoalitionWarReadinessSummary` interfaces to `/src/types/ministry.ts`, capturing:
+    - `countryId`, `countryName`, `role` (`allied-main` | `allied-supporter` | `opponent-main` | `opponent-supporter`)
+    - `activePopulation`: Verified active citizens count
+    - `warReadyCitizens`: Active citizens with `level >= 25` (plus list of top war-ready citizens)
+    - `averageWarParticipants`: `activePopulation / 2` (displayed with exact decimal/rounded breakdown)
+    - `tier5IndustrialCitizens`: Active citizens with `>= 12` companies at `automatedEngine >= 5` (plus expandable list of qualifying citizens and their company counts)
+    - `scanStatus`, `scannedCompanyCandidates`, `totalCompanyCandidates`, `lastEvaluatedAt`
+- **Phase 2.2 (Two-Stage Census & Industrial Verification Service)**:
+  - Create `/src/services/warReadinessService.ts` implementing `evaluateCountryWarReadiness(country, existingUsersMap, onProgress, forceRefresh)`:
+    - **Stage 1**: Uses existing `profiles`/`usersMap` if the country is already loaded, or calls `fetchCountryCitizens(country._id)` + `batchResolveUsers` to hydrate all active citizens (`isActive && level >= 10`, cross-checked against `country.rankings.countryActivePopulation.value`). Filters `level >= 25` for **War-Ready Citizens** and computes `activePopulation / 2` for **Average War Participants**.
+    - **Stage 2**: Identifies active citizens eligible for 12 companies and inspects their live enterprises via `fetchUserCompanies(userId)` to verify those with **12 companies at Automation Level 5+** (`automatedEngine >= 5`). Caches the verified report per country.
+
+### Phase 3: Economic War-Readiness Evaluation UI & Ministry Workspace Integration
+- **Phase 3.1 (Coalition Builder & Head-to-Head Comparison UI)**:
+  - Create `/src/components/ministry/WarReadinessEvaluation.tsx` featuring:
+    - **Participant & Supporter Selector Matrix**: Automatically sets the currently audited country as **Allied Primary State**. Provides searchable country selectors for **Opponent Primary State**, **Allied Supporters (Multi-Select)**, and **Opponent Supporters (Multi-Select)**.
+    - **Coalition Force Balance Banner**: Side-by-side comparison of Allied Coalition vs. Opponent Coalition totals across all 4 core metrics (**Total Active Population**, **Total War-Ready Lvl 25+**, **Combined Avg War Participants**, and **Total Tier-5 Industrial Citizens**), with proportional visual bars.
+    - **Per-State Breakdown Cards & Formula Explanations**: Dedicated cards for each participating country showing all 4 metrics separately, explicit formula callouts (`Active Citizens filtered by Level ≥ 25`, `Active Population ÷ 2`, `Active Citizens with 12 Companies @ Automation Engine Lvl 5+`), and an expandable roster drawer to inspect the exact citizens who qualified as War-Ready or Tier-5 Industrial Citizens.
+- **Phase 3.2 (Top-Level Ministry Tab Wiring)**:
+  - Register the new `war-readiness` tab (`⚔️ War-Readiness`) in `/src/components/ministry/MinistryWorkspace.tsx` and pass `countryId`, `countryName`, `countries`, `profiles`, and `usersMap` so the home country is pre-populated and evaluated immediately upon opening.
+
+### Phase 4: Verification & Build Audit
+- **Phase 4.1**: Run `lint_applet` (`tsc --noEmit`) and `compile_applet` (`npm run build`) to verify zero TypeScript or bundle errors.
+
+---
+
+## Key Technical Details
+
+- **Active Citizen Definition**: Consistent with the rest of the app, active citizens are resolved from `user.getUsersByCountry` + `user.getUserById` where `Boolean(user.isActive !== false)` and `level >= 10`. Both the verified roster count and any official `rankings.countryActivePopulation.value` census delta are displayed transparently in the formula explanation.
+- **War-Ready Citizen Filter (Step B)**: `activeCitizens.filter(u => Number(u.leveling?.level ?? u.level ?? 0) >= 25)`.
+- **Average War Participants Formula (Step C)**: `activeCitizens.length / 2` (displayed as exact value e.g. `47.5` / `~48 citizens per battle`, alongside official census `/ 2` if applicable).
+- **Tier-5 Industrial Citizens Filter (Step D)**: Active citizens where `companies.filter(c => Number(c.activeUpgradeLevels?.automatedEngine ?? 1) >= 5).length >= 12`.

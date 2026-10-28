@@ -866,68 +866,78 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
         </div>
       </div>
 
-      {/* Control Bar: Filters, Audit Status, Search & Build Filters */}
-      <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between shadow-lg">
-        <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-0">
-          <div className="relative flex-1 min-w-[180px] max-w-xs">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+      {/* Control Bar: Unified Single-Tier Toolbar with Uniform 40px (h-10) Controls */}
+      <div className="p-3.5 sm:p-4 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-wrap items-center justify-between gap-2.5 shadow-lg">
+        <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-[260px]">
+          <div className="relative flex-1 min-w-[200px] max-w-[280px]">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search citizen username or ID..."
-              className="w-full pl-10 pr-4 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 transition"
+              placeholder="Search citizen or ID..."
+              className="w-full h-10 pl-10 pr-3.5 bg-slate-950 border border-slate-800 rounded-xl text-xs sm:text-sm text-white placeholder-slate-400 focus:outline-none focus:border-amber-500 transition"
             />
           </div>
 
           {/* Compact Continuous Audit Status Pill */}
-          <div className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-cyan-950/40 border border-cyan-800/40 text-cyan-300 text-xs shadow-inner shrink-0">
+          <div className="h-10 inline-flex items-center gap-2 px-3.5 rounded-xl bg-cyan-950/40 border border-cyan-800/40 text-cyan-300 text-xs sm:text-sm shadow-inner shrink-0">
             {isAuditing ? (
-              <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin shrink-0" />
+              <Loader2 className="w-4 h-4 text-cyan-400 animate-spin shrink-0" />
             ) : (
-              <CheckCircle2 className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+              <CheckCircle2 className="w-4 h-4 text-cyan-400 shrink-0" />
             )}
-            <span className="font-semibold">{config?.analysisPeriodDays ?? 7}D Audit Active</span>
+            <span className="font-semibold whitespace-nowrap">{config?.analysisPeriodDays ?? 7}D Audit Active</span>
             {onRunIncomeAudit && (
               <button
                 type="button"
                 onClick={onRunIncomeAudit}
                 disabled={isAuditing}
                 title={`Force refresh ${config?.analysisPeriodDays ?? 7}-day income growth audit`}
-                className="ml-1 p-0.5 text-cyan-400 hover:text-cyan-200 rounded transition disabled:opacity-50"
+                className="ml-0.5 p-1 text-cyan-400 hover:text-cyan-200 rounded-lg hover:bg-cyan-900/40 transition disabled:opacity-50"
               >
-                <RefreshCw className={`w-3 h-3 ${isAuditing ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`w-3.5 h-3.5 ${isAuditing ? 'animate-spin' : ''}`} />
               </button>
             )}
           </div>
 
-          {/* Inactive Donor Alert Toggle */}
-          <label className={`flex items-center gap-2 px-3 py-2 border rounded-xl text-xs font-semibold cursor-pointer select-none transition shrink-0 ${
-            onlyInactiveDonors
-              ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
-              : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
-          }`}>
-            <input
-              type="checkbox"
-              checked={onlyInactiveDonors}
-              onChange={(e) => setOnlyInactiveDonors(e.target.checked)}
-              className="rounded accent-amber-500 w-3.5 h-3.5"
-            />
-            <Clock className="w-3.5 h-3.5 text-amber-400" />
-            <span>&gt;7d Inactive ({isCohortAuditing ? `${inactiveDonorCount} found...` : inactiveDonorCount})</span>
-          </label>
+          {/* Inactive Donor Alert Toggle Button (replaces raw browser checkbox) */}
+          <button
+            type="button"
+            onClick={() => setOnlyInactiveDonors((prev) => !prev)}
+            className={`h-10 inline-flex items-center gap-2 px-3.5 border rounded-xl text-xs sm:text-sm font-semibold select-none transition shrink-0 ${
+              onlyInactiveDonors
+                ? 'bg-amber-500/20 text-amber-200 border-amber-500/50 shadow-sm'
+                : 'bg-slate-950 border-slate-800 text-slate-200 hover:border-slate-700 hover:text-white'
+            }`}
+            title="Filter citizens who have not donated in over 7 days"
+          >
+            <span
+              className={`w-4 h-4 rounded flex items-center justify-center border transition ${
+                onlyInactiveDonors
+                  ? 'bg-amber-400 border-amber-300 text-slate-950'
+                  : 'bg-slate-900 border-slate-700 text-transparent'
+              }`}
+            >
+              <Check className="w-3 h-3 stroke-[3]" />
+            </span>
+            <Clock className="w-4 h-4 text-amber-400 shrink-0" />
+            <span className="whitespace-nowrap">
+              &gt;7d Inactive ({isCohortAuditing ? `${inactiveDonorCount}...` : inactiveDonorCount})
+            </span>
+          </button>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
           {/* Fiscal Standing Filter */}
           <select
             value={filterFiscalStanding}
             onChange={(e) => setFilterFiscalStanding(e.target.value)}
-            className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 font-medium focus:outline-none focus:border-amber-500 transition cursor-pointer"
+            className="h-10 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs sm:text-sm text-slate-200 font-medium focus:outline-none focus:border-amber-500 transition cursor-pointer"
             title="Filter by sovereign fiscal standing"
           >
             <option value="all">
-              All Fiscal Standings {isCohortAuditing ? `(auditing ${profiles.length}/${targetCohortSize}...)` : `(${activeCount})`}
+              All Fiscal Standings {isCohortAuditing ? `(${profiles.length}/${targetCohortSize}...)` : `(${activeCount})`}
             </option>
             <option value="critical">
               🚨 Needs Attention / Leeches {isCohortAuditing ? '(auditing...)' : `(${criticalLeechCount})`}
@@ -943,7 +953,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
           <select
             value={filterBuild}
             onChange={(e) => setFilterBuild(e.target.value)}
-            className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 font-medium focus:outline-none focus:border-amber-500 transition cursor-pointer"
+            className="h-10 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs sm:text-sm text-slate-200 font-medium focus:outline-none focus:border-amber-500 transition cursor-pointer"
             title="Filter by build and commitment"
           >
             <option value="all">All Citizen Builds</option>
@@ -957,7 +967,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
           <select
             value={filterBuildGrade}
             onChange={(e) => setFilterBuildGrade(e.target.value)}
-            className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 font-medium focus:outline-none focus:border-amber-500 transition cursor-pointer"
+            className="h-10 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs sm:text-sm text-slate-200 font-medium focus:outline-none focus:border-amber-500 transition cursor-pointer"
             title="Filter by War Era v0.27 BuhDeuce Build Evaluation Grade"
           >
             <option value="all">All v0.27 Build Grades</option>
@@ -972,14 +982,14 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
 
       {/* Day-1 Baseline Audit Notice Banner */}
       {showBaselineBanner && profiles.some((p) => p.auditBaselineStatus === 'baseline-today') && (
-        <div className="p-4 rounded-2xl bg-cyan-950/40 border border-cyan-800/50 text-xs text-cyan-200 flex items-start justify-between gap-3 shadow-md animate-fade-in">
+        <div className="p-4 rounded-2xl bg-cyan-950/40 border border-cyan-800/50 text-xs sm:text-sm text-cyan-200 flex items-start justify-between gap-3 shadow-md animate-fade-in">
           <div className="flex items-start gap-2.5">
             <Info className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
             <div className="space-y-1">
               <span className="font-bold text-cyan-300 block">
                 Continuous Fiscal Audit Active — Day-1 Provisional Baseline
               </span>
-              <p className="text-[11px] text-slate-300 leading-relaxed">
+              <p className="text-xs sm:text-sm text-slate-200 leading-relaxed">
                 Daily wealth snapshots are recorded to establish verified historical deltas. Click &quot;Audit&quot; on any citizen to inspect their full multi-channel cashflow ledger and company upgrade breakdown.
               </p>
             </div>
@@ -999,14 +1009,14 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
       <div className="relative overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/80 shadow-xl scrollbar-thin scrollbar-thumb-slate-700">
         {/* Automated Background Ledger Stream & Buffered Row-Lock Banner (Sticky while scrolling) */}
         {streamState.isRunning ? (
-          <div className="sticky top-0 z-20 bg-gradient-to-r from-cyan-950/95 via-slate-900/95 to-indigo-950/95 backdrop-blur-md border-b border-cyan-700/60 px-4 py-3 space-y-2 text-xs text-cyan-200 font-mono shadow-md">
+          <div className="sticky top-0 z-20 bg-gradient-to-r from-cyan-950/95 via-slate-900/95 to-indigo-950/95 backdrop-blur-md border-b border-cyan-700/60 px-4 py-3 space-y-2 text-xs sm:text-sm text-cyan-200 font-mono shadow-md">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2.5 flex-wrap">
                 <Loader2 className="w-4 h-4 text-cyan-400 shrink-0 animate-spin" />
                 <span className="font-black text-white uppercase tracking-wide">
                   4-Worker Delta Receipt Verification:
                 </span>
-                <span className="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 font-bold">
+                <span className="px-2.5 py-0.5 rounded bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 font-bold">
                   {streamState.auditedCount} / {streamState.totalTargetCount} Citizens ({streamState.pct}%)
                 </span>
                 {streamState.activeWorkers && streamState.activeWorkers.length > 0 && (
@@ -1014,7 +1024,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     {streamState.activeWorkers.map((w) => (
                       <span
                         key={w.workerIndex}
-                        className="px-2 py-0.5 rounded bg-slate-950/90 border border-cyan-500/30 text-[10px] text-cyan-200 flex items-center gap-1"
+                        className="px-2 py-0.5 rounded bg-slate-950/90 border border-cyan-500/30 text-xs text-cyan-200 flex items-center gap-1"
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
                         <strong className="text-white">{w.username}</strong>
@@ -1027,7 +1037,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     ))}
                   </div>
                 )}
-                <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-bold">
+                <span className="px-2.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 text-xs font-bold">
                   🔒 Row Positions Locked While Browsing ({bufferedCount} Staged)
                 </span>
               </div>
@@ -1037,17 +1047,17 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                   <button
                     type="button"
                     onClick={() => auditStreamService.retryFailed()}
-                    className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                    className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 rounded-lg text-xs font-bold flex items-center gap-1 transition"
                     title="Retry citizens whose receipt stream timed out or hit rate limits"
                   >
-                    <RotateCcw className="w-3 h-3" /> Retry {streamState.failedCount} Deferred
+                    <RotateCcw className="w-3.5 h-3.5" /> Retry {streamState.failedCount} Deferred
                   </button>
                 )}
                 {bufferedCount > 0 && (
                   <button
                     type="button"
                     onClick={handleApplyBufferedUpdates}
-                    className="px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-lg text-[10px] font-black flex items-center gap-1.5 transition shadow-sm"
+                    className="px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-lg text-xs font-black flex items-center gap-1.5 transition shadow-sm"
                     title="Commit buffered background audits to the table now"
                   >
                     <CheckCircle2 className="w-3.5 h-3.5" />
@@ -1058,28 +1068,28 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                   <button
                     type="button"
                     onClick={() => auditStreamService.resume()}
-                    className="px-2.5 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                    className="px-2.5 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 rounded-lg text-xs font-bold flex items-center gap-1 transition"
                     title="Resume background ledger stream"
                   >
-                    <Play className="w-3 h-3" /> Resume
+                    <Play className="w-3.5 h-3.5" /> Resume
                   </button>
                 ) : (
                   <button
                     type="button"
                     onClick={() => auditStreamService.pause()}
-                    className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                    className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-bold flex items-center gap-1 transition"
                     title="Pause background ledger stream"
                   >
-                    <Pause className="w-3 h-3" /> Pause
+                    <Pause className="w-3.5 h-3.5" /> Pause
                   </button>
                 )}
                 <button
                   type="button"
                   onClick={() => auditStreamService.stop()}
-                  className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-bold flex items-center gap-1 transition"
                   title="Stop background streaming"
                 >
-                  <Square className="w-3 h-3" /> Stop
+                  <Square className="w-3.5 h-3.5" /> Stop
                 </button>
               </div>
             </div>
@@ -1093,7 +1103,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
             </div>
           </div>
         ) : bufferedCount > 0 ? (
-          <div className="sticky top-0 z-20 bg-gradient-to-r from-emerald-950/95 via-slate-900/95 to-amber-950/95 backdrop-blur-md border-b border-emerald-500/50 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs text-emerald-200 font-mono shadow-md">
+          <div className="sticky top-0 z-20 bg-gradient-to-r from-emerald-950/95 via-slate-900/95 to-amber-950/95 backdrop-blur-md border-b border-emerald-500/50 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs sm:text-sm text-emerald-200 font-mono shadow-md">
             <div className="flex items-center gap-2 flex-wrap">
               <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
               <span>
@@ -1103,33 +1113,33 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
             <button
               type="button"
               onClick={handleApplyBufferedUpdates}
-              className="px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl text-[11px] font-black flex items-center gap-1.5 transition shadow-md"
+              className="px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl text-xs font-black flex items-center gap-1.5 transition shadow-md"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               <span>Apply {bufferedCount} Verified Updates to Table</span>
             </button>
           </div>
         ) : streamState.isPaused ? (
-          <div className="bg-amber-950/80 border-b border-amber-800/60 px-4 py-2 flex items-center justify-between text-xs text-amber-300 font-mono">
+          <div className="bg-amber-950/80 border-b border-amber-800/60 px-4 py-2.5 flex items-center justify-between text-xs sm:text-sm text-amber-300 font-mono">
             <span className="flex items-center gap-2">
-              <Pause className="w-3.5 h-3.5 text-amber-400" />
+              <Pause className="w-4 h-4 text-amber-400" />
               <span>Background Ledger Stream Paused ({streamState.auditedCount}/{streamState.totalTargetCount} verified)</span>
             </span>
             <button
               type="button"
               onClick={() => auditStreamService.resume()}
-              className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+              className="px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-bold flex items-center gap-1 transition"
             >
-              <Play className="w-3 h-3" /> Resume Stream
+              <Play className="w-3.5 h-3.5" /> Resume Stream
             </button>
           </div>
         ) : pendingAuditCount === 0 && displayedProfiles.length > 0 ? (
-          <div className="bg-emerald-950/60 border-b border-emerald-800/40 px-4 py-2 flex items-center justify-between text-xs text-emerald-300 font-mono">
+          <div className="bg-emerald-950/60 border-b border-emerald-800/40 px-4 py-2.5 flex items-center justify-between text-xs sm:text-sm text-emerald-300 font-mono">
             <span className="flex items-center gap-2">
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
               <span>100% Truth-Based: All {displayedProfiles.length} active citizens verified via live personal receipts</span>
               {pinnedInViewIds.size > 0 && (
-                <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px]">
+                <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs">
                   🔒 {pinnedInViewIds.size} updated row(s) pinned in current filter view
                 </span>
               )}
@@ -1139,7 +1149,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                 <button
                   type="button"
                   onClick={() => setPinnedInViewIds(new Set())}
-                  className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-[10px] font-bold transition"
+                  className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-bold transition"
                 >
                   Re-Filter View
                 </button>
@@ -1156,18 +1166,18 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     true
                   )
                 }
-                className="px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                className="px-3 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-bold flex items-center gap-1.5 transition"
                 title="Force re-audit of all citizen personal receipts"
               >
-                <RefreshCw className="w-3 h-3" /> Re-Audit All
+                <RefreshCw className="w-3.5 h-3.5" /> Re-Audit All
               </button>
             </div>
           </div>
         ) : (
           displayedProfiles.length > 0 && (
-            <div className="bg-amber-950/50 border-b border-amber-500/30 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-200 font-mono">
+            <div className="bg-amber-950/50 border-b border-amber-500/30 px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-xs sm:text-sm text-amber-200 font-mono">
               <span className="flex items-center gap-2">
-                <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                <Clock className="w-4 h-4 text-amber-400 shrink-0" />
                 <span>
                   <strong>{pendingAuditCount}</strong> of <strong>{displayedProfiles.length}</strong> citizens have unverified personal receipts ({auditedCount}/{displayedProfiles.length} verified). Unverified rows display no fabricated estimates.
                   {streamState.failedCount > 0 && (
@@ -1184,9 +1194,9 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                       <button
                         type="button"
                         onClick={() => auditStreamService.retryFailed()}
-                        className="px-3 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg text-[10px] font-black flex items-center gap-1.5 transition shadow-sm"
+                        className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg text-xs font-black flex items-center gap-1.5 transition shadow-sm"
                       >
-                        <RotateCcw className="w-3 h-3" /> Retry {streamState.failedCount} Failed Citizens
+                        <RotateCcw className="w-3.5 h-3.5" /> Retry {streamState.failedCount} Failed Citizens
                       </button>
                     )}
                     <button
@@ -1201,9 +1211,9 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                           false
                         )
                       }
-                      className="px-3 py-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-[10px] font-bold flex items-center gap-1.5 transition shadow-sm"
+                      className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-sm"
                     >
-                      <Zap className="w-3 h-3" /> Sync {pendingAuditCount} Pending Citizens Now
+                      <Zap className="w-3.5 h-3.5" /> Sync {pendingAuditCount} Pending Citizens Now
                     </button>
                     <button
                       type="button"
@@ -1217,13 +1227,13 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                           true
                         )
                       }
-                      className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-bold flex items-center gap-1.5 transition"
                     >
-                      <RefreshCw className="w-3 h-3" /> Re-Audit All
+                      <RefreshCw className="w-3.5 h-3.5" /> Re-Audit All
                     </button>
                   </>
                 ) : (
-                  <span className="text-[10px] text-amber-300 font-sans">
+                  <span className="text-xs text-amber-300 font-sans">
                     Configure War Era API Key in header to stream live personal receipts
                   </span>
                 )}
@@ -1231,22 +1241,22 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
             </div>
           )
         )}
-        <table className="w-full min-w-[960px] text-left border-collapse text-xs">
+        <table className="w-full text-left border-collapse text-xs sm:text-sm">
           <thead>
-            <tr className="bg-slate-950/90 border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider text-[11px]">
-              <th className="py-3.5 px-4">Citizen</th>
-              <th className="py-3.5 px-4 text-right">Net Worth (BTC)</th>
-              <th className="py-3.5 px-4 text-right">Gross Inflow &amp; Net Flow ({config?.analysisPeriodDays ?? 7}D)</th>
-              <th className="py-3.5 px-4 text-right">Donated ({config?.analysisPeriodDays ?? 7}D)</th>
-              <th className="py-3.5 px-4 text-center">Fiscal Assessment &amp; Ratio</th>
-              <th className="py-3.5 px-4 text-center">Playstyle &amp; Commitment ({config?.analysisPeriodDays ?? 7}d Respec)</th>
-              <th className="py-3.5 px-4 text-right">Diplomatic &amp; Audit Action</th>
+            <tr className="bg-slate-950/90 border-b border-slate-800 text-slate-300 font-bold uppercase tracking-wider text-xs">
+              <th className="py-3.5 px-3.5">Citizen</th>
+              <th className="py-3.5 px-3.5 text-right">Net Worth</th>
+              <th className="py-3.5 px-3.5 text-right">Inflow &amp; Net ({config?.analysisPeriodDays ?? 7}D)</th>
+              <th className="py-3.5 px-3.5 text-right">Donated ({config?.analysisPeriodDays ?? 7}D)</th>
+              <th className="py-3.5 px-3.5 text-center">Fiscal Standing</th>
+              <th className="py-3.5 px-3.5 text-center">Build &amp; Commitment</th>
+              <th className="py-3.5 px-3.5 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/80 font-mono">
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-12 text-center text-slate-500 text-xs font-sans">
+                <td colSpan={7} className="py-12 text-center text-slate-400 text-sm font-sans">
                   No citizens match the active filters in {countryName}.
                 </td>
               </tr>
@@ -1260,13 +1270,13 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                 const isPinned = c.manualTag && c.manualTag !== 'none';
 
                 return (
-                  <tr key={c.userId} className="hover:bg-slate-800/40 transition group">
+                  <tr key={c.userId} className="hover:bg-slate-800/45 transition group">
                     {/* Citizen Avatar & Username */}
-                    <td className="py-3.5 px-4 font-sans">
+                    <td className="py-3 px-3.5 font-sans">
                       <div className="flex items-center gap-3">
                         <div 
                           onClick={() => setSelectedAuditProfile(c)}
-                          className="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 overflow-hidden shrink-0 flex items-center justify-center font-bold text-slate-300 text-xs cursor-pointer hover:border-cyan-400 transition"
+                          className="w-9 h-9 rounded-xl bg-slate-800 border border-slate-700 overflow-hidden shrink-0 flex items-center justify-center font-bold text-slate-200 text-xs sm:text-sm cursor-pointer hover:border-cyan-400 transition"
                           title="Click to view economic audit breakdown"
                         >
                           {c.avatarUrl ? (
@@ -1275,54 +1285,54 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                             (c.username || c.userId || 'CZ').slice(0, 2).toUpperCase()
                           )}
                         </div>
-                        <div className="truncate max-w-[150px] sm:max-w-[220px]">
+                        <div className="min-w-0 max-w-[180px] xl:max-w-[260px]">
                           <div className="flex items-center gap-1.5 flex-wrap">
                             <button
                               type="button"
                               onClick={() => setSelectedAuditProfile(c)}
-                              className="font-bold text-white hover:text-cyan-400 transition truncate text-xs inline-flex items-center gap-1 text-left"
+                              className="font-extrabold text-white hover:text-cyan-400 transition truncate text-sm sm:text-base inline-flex items-center gap-1 text-left"
                               title="Click to inspect citizen full financial audit"
                             >
-                              <span>{c.username || `Citizen #${(c.userId || '').slice(-6)}`}</span>
-                              <HelpCircle className="w-3 h-3 text-cyan-400 shrink-0 opacity-70 hover:opacity-100" />
+                              <span className="truncate">{c.username || `Citizen #${(c.userId || '').slice(-6)}`}</span>
+                              <HelpCircle className="w-3.5 h-3.5 text-cyan-400 shrink-0 opacity-75 hover:opacity-100" />
                             </button>
                             {c.isHistoricalTopDonor && (
-                              <span className="text-[10px] text-amber-400 font-mono font-medium" title={`Top ${c.historicalRank ? `#${c.historicalRank}` : '10'} Lifetime Donor`}>
-                                ⭐ Top {c.historicalRank ? `#${c.historicalRank}` : '10'}
+                              <span className="text-xs text-amber-400 font-mono font-bold" title={`Top ${c.historicalRank ? `#${c.historicalRank}` : '10'} Lifetime Donor`}>
+                                ⭐ #{c.historicalRank || '10'}
                               </span>
                             )}
                             {c.isInactiveDonor && !c.isHistoricalTopDonor && (
-                              <span className="text-[10px] text-amber-400/80 font-mono font-medium" title={`Has not donated in ${c.daysSinceLastDonation} days`}>
-                                ⚠️ &gt;7d inactive
+                              <span className="text-xs text-amber-400/90 font-mono font-semibold" title={`Has not donated in ${c.daysSinceLastDonation} days`}>
+                                ⚠️ &gt;7d
                               </span>
                             )}
                           </div>
-                          <div className="text-[10px] text-slate-500 font-mono truncate">
-                            ID: {c.userId}
+                          <div className="text-xs text-slate-400 font-mono truncate">
+                            ID: {c.userId.slice(-8)}
                           </div>
                         </div>
                       </div>
                     </td>
 
                     {/* Net Worth */}
-                    <td className="py-3 px-4 text-right">
+                    <td className="py-3 px-3.5 text-right">
                       <button
                         type="button"
                         onClick={() => setSelectedAuditProfile(c)}
                         className="group/nw text-right hover:bg-slate-800/60 p-1 rounded-lg transition inline-block"
                         title="Click to inspect full asset portfolio & income audit calculation"
                       >
-                        <div className="font-bold text-slate-200 text-sm group-hover/nw:text-amber-300">
+                        <div className="font-extrabold text-slate-100 text-sm sm:text-base group-hover/nw:text-amber-300">
                           {formatBtc(c.wealthBtc)}
                         </div>
                         {typeof c.pastWealthBtc === 'number' && c.auditBaselineStatus === 'audited' ? (
-                          <span className={`text-[10px] font-mono font-bold block ${
+                          <span className={`text-xs font-mono font-bold block ${
                             c.wealthBtc >= c.pastWealthBtc ? 'text-emerald-400' : 'text-rose-400'
                           }`}>
                             {c.wealthBtc >= c.pastWealthBtc ? '+' : ''}{formatBtc(c.wealthBtc - c.pastWealthBtc)} ({config?.analysisPeriodDays ?? 7}d)
                           </span>
                         ) : (
-                          <span className="text-[10px] text-slate-500 font-sans group-hover/nw:text-amber-400 block" title="Initial snapshot baseline established today">
+                          <span className="text-xs text-slate-400 font-sans group-hover/nw:text-amber-400 block" title="Initial snapshot baseline established today">
                             Baseline: Today
                           </span>
                         )}
@@ -1330,46 +1340,43 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     </td>
 
                     {/* 7D Gross Inflow & Net Cashflow */}
-                    <td className="py-3 px-4 text-right font-mono">
+                    <td className="py-3 px-3.5 text-right font-mono">
                       {c.auditBaselineStatus === 'audited' ? (
                         <div className="inline-flex flex-col items-end max-w-full">
                           <button
                             type="button"
                             onClick={() => setSelectedAuditProfile(c)}
-                            className="group/inc text-right hover:bg-cyan-950/40 p-1.5 rounded-lg transition inline-block max-w-full"
+                            className="group/inc text-right hover:bg-cyan-950/40 p-1 rounded-lg transition inline-block max-w-full"
                             title="Click to inspect verified receipts: wages, trades, market orders, and net flow"
                           >
                             {/* Gross Inflow */}
-                            <div className="flex items-center justify-end gap-1.5 font-bold text-cyan-300 text-xs">
-                              <span className="text-[10px] uppercase font-mono text-cyan-500 font-semibold tracking-wider">Inflow</span>
+                            <div className="flex items-center justify-end gap-1 font-bold text-cyan-300 text-xs sm:text-sm">
+                              <span className="text-[10px] uppercase font-mono text-cyan-400 font-semibold">In</span>
                               <span>+{formatBtc(c.grossInflowBtc ?? c.grossIncomeBtc ?? 0)}</span>
-                              <Calculator className="w-3 h-3 text-cyan-400 opacity-60 group-hover/inc:opacity-100" />
+                              <Calculator className="w-3.5 h-3.5 text-cyan-400 opacity-60 group-hover/inc:opacity-100" />
                             </div>
                             {/* Net Cashflow */}
-                            <div className="flex items-center justify-end gap-1.5 text-xs font-mono font-bold mt-0.5">
-                              <span className="text-[10px] uppercase font-mono text-slate-500 font-semibold tracking-wider">Net</span>
+                            <div className="flex items-center justify-end gap-1 text-xs sm:text-sm font-mono font-bold mt-0.5">
+                              <span className="text-[10px] uppercase font-mono text-slate-400 font-semibold">Net</span>
                               <span className={(c.netCashflowBtc ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
                                 {(c.netCashflowBtc ?? 0) >= 0 ? '+' : ''}{formatBtc(c.netCashflowBtc ?? 0)}
                               </span>
                             </div>
-                            {/* Exact Audited Timestamp & Verified Receipt Count */}
-                            <div className="text-[10px] text-emerald-400 font-mono mt-1 flex flex-col items-end gap-0.5">
-                              <span className="font-semibold text-emerald-300 flex items-center gap-1">
-                                <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
-                                {typeof c.receiptCount === 'number' ? `${c.receiptCount} receipts verified` : `Verified (${config?.analysisPeriodDays ?? 7}D)`}
-                              </span>
-                              <span className="text-slate-400 font-sans text-[10px]">
-                                Last audited at: {c.auditedAt ? formatDateTimeDDMMYYYY(c.auditedAt) : 'Recently synced'}
+                            {/* Verified Receipt Count */}
+                            <div className="text-[10px] text-emerald-400 font-mono mt-0.5 flex items-center justify-end gap-1">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                              <span className="font-semibold text-emerald-300">
+                                {typeof c.receiptCount === 'number' ? `${c.receiptCount} receipts` : `Verified`}
                               </span>
                             </div>
                           </button>
                           {/* Dismissible Audit Delta Alert Badge */}
                           {c.auditDeltaAlert && (
                             <div
-                              className="mt-1 px-2 py-0.5 rounded bg-cyan-950/90 border border-cyan-500/50 text-[10px] text-cyan-200 font-sans text-right flex items-center gap-1.5 shadow-sm"
+                              className="mt-1 px-2 py-0.5 rounded bg-cyan-950/90 border border-cyan-500/50 text-[10px] text-cyan-200 font-sans text-right flex items-center gap-1 shadow-sm"
                               title={`Audited change: +${c.auditDeltaAlert.newReceiptsCount} new receipts found (${c.auditDeltaAlert.differenceBtc >= 0 ? '+' : ''}${formatBtc(c.auditDeltaAlert.differenceBtc)} BTC change). Click × to dismiss.`}
                             >
-                              <span>+{c.auditDeltaAlert.newReceiptsCount} receipts ({c.auditDeltaAlert.differenceBtc >= 0 ? '+' : ''}${formatBtc(c.auditDeltaAlert.differenceBtc)} BTC)</span>
+                              <span>+{c.auditDeltaAlert.newReceiptsCount} ({c.auditDeltaAlert.differenceBtc >= 0 ? '+' : ''}${formatBtc(c.auditDeltaAlert.differenceBtc)})</span>
                               <button
                                 type="button"
                                 onClick={(e) => {
@@ -1390,76 +1397,74 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                         <button
                           type="button"
                           onClick={() => setSelectedAuditProfile(c)}
-                          className="group/pending text-right p-1.5 rounded-lg hover:bg-slate-800/60 transition inline-flex flex-col items-end"
+                          className="group/pending text-right p-1 rounded-lg hover:bg-slate-800/60 transition inline-flex flex-col items-end"
                           title="Unverified citizen. No estimates displayed. Click to audit live personal receipts."
                         >
-                          <div className="px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[10px] font-sans font-semibold flex items-center gap-1 group-hover/pending:bg-amber-500/20 group-hover/pending:border-amber-500/40 transition">
-                            <Clock className="w-2.5 h-2.5 text-amber-400" />
-                            <span>Not Yet Streamed · Pending Audit</span>
+                          <div className="px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-300 text-xs font-sans font-semibold flex items-center gap-1.5 group-hover/pending:bg-amber-500/20 group-hover/pending:border-amber-500/40 transition">
+                            <Clock className="w-3 h-3 text-amber-400" />
+                            <span>Pending Audit</span>
                           </div>
-                          <span className="text-[9px] text-slate-500 font-sans mt-0.5 block">
-                            No estimates shown · Awaiting API stream
+                          <span className="text-[10px] text-slate-400 font-sans mt-0.5 block">
+                            Click to stream
                           </span>
                         </button>
                       )}
                     </td>
 
                     {/* Period Donated */}
-                    <td className="py-3 px-4 text-right font-mono">
-                      <div className={`font-bold text-sm ${
-                        (c.periodDonatedBtc ?? c.directDonatedBtc ?? 0) > 0 ? 'text-amber-400' : 'text-slate-500'
+                    <td className="py-3 px-3.5 text-right font-mono">
+                      <div className={`font-extrabold text-sm sm:text-base ${
+                        (c.periodDonatedBtc ?? c.directDonatedBtc ?? 0) > 0 ? 'text-amber-400' : 'text-slate-400'
                       }`}>
                         {formatBtc(c.periodDonatedBtc ?? c.directDonatedBtc ?? 0)}
                       </div>
-                      <div className="text-[10px] text-slate-400 font-sans">
-                        {formatBtc(c.totalDonatedBtc)} all-time
+                      <div className="text-xs text-slate-300 font-sans">
+                        {formatBtc(c.totalDonatedBtc)} life
                       </div>
-                      <div className="text-[10px] text-slate-500 font-sans">
+                      <div className="text-[10px] text-slate-400 font-sans">
                         {c.lastDonationAt ? (
-                          <span>Last: {formatDateDDMMYYYY(c.lastDonationAt)}</span>
+                          <span>{formatDateDDMMYYYY(c.lastDonationAt)}</span>
                         ) : (
                           <span className="text-red-400">0 donations</span>
                         )}
                       </div>
                       {typeof c.damageValueBtc === 'number' && c.damageValueBtc > 0 && (
-                        <div className="text-[9px] text-red-300 font-mono font-bold mt-0.5" title="Converted combat defense credit">
-                          +{c.damageValueBtc.toFixed(1)} BTC combat
+                        <div className="text-[10px] text-red-300 font-mono font-bold mt-0.5" title="Converted combat defense credit">
+                          +{c.damageValueBtc.toFixed(1)} BTC war
                         </div>
                       )}
                     </td>
 
                     {/* Fiscal Assessment & Ratio */}
-                    <td className="py-3 px-4 text-center font-sans">
-                      <div className="flex flex-col items-center gap-0.5">
-                        <div className="text-xs font-bold flex items-center gap-1.5">
+                    <td className="py-3 px-3.5 text-center font-sans">
+                      <div className="flex flex-col items-center gap-1">
+                        <div className="text-xs sm:text-sm font-bold flex items-center gap-1 whitespace-nowrap">
                           {c.auditBaselineStatus !== 'audited' && !isPillar ? (
-                            <span className="text-amber-300/90 text-xs font-semibold flex items-center gap-1">
-                              <span>⏳ Pending Stream</span>
-                            </span>
+                            <span className="text-amber-300/90 font-semibold">⏳ Pending</span>
                           ) : isPillar ? (
-                            <span className="text-amber-300">🏛️ Historical Pillar</span>
+                            <span className="text-amber-300">🏛️ Pillar</span>
                           ) : isCombatVeteran ? (
                             <span className="text-rose-300">⚔️ Frontline Hero</span>
                           ) : isLeech ? (
                             <span className="text-red-400">🚨 Critical Leech</span>
                           ) : isLow ? (
-                            <span className="text-amber-400">⚠️ Low Contributor</span>
+                            <span className="text-amber-400">⚠️ Low Donor</span>
                           ) : isPatriot ? (
                             <span className="text-emerald-400">🟢 Model Patriot</span>
                           ) : (
-                            <span className="text-slate-300">🔵 Moderate Contributor</span>
+                            <span className="text-slate-200">🔵 Moderate</span>
                           )}
                         </div>
-                        <div className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
+                        <div className="text-xs text-slate-300 font-mono flex items-center gap-1">
                           {c.auditBaselineStatus === 'audited' ? (
                             <>
-                              <span className="text-slate-200 font-bold">{c.contributionRatio}% ratio</span>
+                              <span className="text-white font-bold">{c.contributionRatio}%</span>
                               <span>·</span>
                               <span className="text-emerald-400 font-medium">Audited</span>
                             </>
                           ) : (
-                            <span className="text-slate-500 font-sans text-[10px]">
-                              Awaiting receipts
+                            <span className="text-slate-400 font-sans text-xs">
+                              Unverified
                             </span>
                           )}
                         </div>
@@ -1467,25 +1472,25 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     </td>
 
                     {/* Playstyle & Commitment (7-day Respec Pin) */}
-                    <td className="py-3 px-4 text-center font-sans">
+                    <td className="py-3 px-3.5 text-center font-sans">
                       <div className="flex flex-col items-center gap-1">
-                        <div className="text-xs font-bold text-slate-200 flex items-center gap-1">
+                        <div className="text-xs sm:text-sm font-bold text-slate-100 flex items-center gap-1 whitespace-nowrap">
                           {isPinned ? (
                             <span className={c.manualTag === 'perma-war' ? 'text-rose-300' : c.manualTag === 'perma-eco' ? 'text-emerald-300' : 'text-amber-300'}>
-                              {c.manualTag === 'perma-war' && '🛡️ Perma-War (Pinned)'}
-                              {c.manualTag === 'perma-eco' && '🌾 Perma-Eco (Pinned)'}
-                              {c.manualTag === 'mercenary' && '⚔️ Mercenary (Pinned)'}
-                              {c.manualTag === 'vip' && '⭐ VIP (Pinned)'}
-                              {c.manualTag === 'mixed-style' && '🔄 Mixed (Pinned)'}
+                              {c.manualTag === 'perma-war' && '🛡️ Perma-War'}
+                              {c.manualTag === 'perma-eco' && '🌾 Perma-Eco'}
+                              {c.manualTag === 'mercenary' && '⚔️ Mercenary'}
+                              {c.manualTag === 'vip' && '⭐ VIP'}
+                              {c.manualTag === 'mixed-style' && '🔄 Mixed'}
                             </span>
                           ) : (
                             <span>
-                              {c.playstyle === 'pure-eco' ? '🌾 Eco Build' : c.playstyle === 'pure-war' ? '⚔️ War Build' : '⚖️ Hybrid Build'}
+                              {c.playstyle === 'pure-eco' ? '🌾 Eco' : c.playstyle === 'pure-war' ? '⚔️ War' : '⚖️ Hybrid'}
                             </span>
                           )}
-                        </div>
-                        <div className="text-[10px] text-slate-500 font-mono">
-                          Lvl {c.level} · {c.ecoSkillPoints}E · {c.warSkillPoints}W
+                          <span className="text-xs text-slate-300 font-mono font-normal">
+                            · Lvl {c.level}
+                          </span>
                         </div>
 
                         {/* v0.27 Build Evaluation Badge */}
@@ -1494,7 +1499,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                             type="button"
                             onClick={() => setSelectedAuditProfile(c)}
                             title={c.buildEvaluation.summary}
-                            className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border transition ${
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border transition whitespace-nowrap ${
                               c.buildEvaluation.grade === 'optimal-meta'
                                 ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25'
                                 : c.buildEvaluation.grade === 'optimal-early-selfwork'
@@ -1510,17 +1515,11 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                           </button>
                         )}
 
-                        {c.skillBreakdown && (
-                          <div className="text-[9px] text-slate-400 font-mono" title="Companies / Leadership / Management / Energy / Production">
-                            C:{c.skillBreakdown.companies} L:{c.skillBreakdown.leadership} M:{c.skillBreakdown.management} E:{c.skillBreakdown.energy} P:{c.skillBreakdown.production}
-                          </div>
-                        )}
-
                         {/* Inline Respec Pin Selector */}
                         <select
                           value={c.manualTag}
                           onChange={(e) => onUpdateTag(c.userId, e.target.value as PlayerTag, c.notes)}
-                          className="mt-0.5 px-2 py-0.5 bg-slate-950 border border-slate-800 rounded text-[10px] text-slate-400 hover:text-white hover:border-slate-700 focus:outline-none focus:border-amber-500 cursor-pointer"
+                          className="mt-0.5 px-2 py-0.5 bg-slate-950 border border-slate-800 rounded-md text-[10px] text-slate-300 hover:text-white hover:border-slate-700 focus:outline-none focus:border-amber-500 cursor-pointer"
                           title="Set commitment pin: protects player from weekly 7-day cooldown skill point shifts"
                         >
                           <option value="none">Dynamic (Auto)</option>
@@ -1533,37 +1532,35 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     </td>
 
                     {/* Diplomatic & Watch Actions */}
-                    <td className="py-3.5 px-4 text-right">
+                    <td className="py-3 px-3.5 text-right">
                       <div className="flex items-center justify-end gap-1.5">
                         <button
                           type="button"
                           onClick={() => setSelectedAuditProfile(c)}
-                          className="px-2.5 py-1.5 bg-cyan-950/60 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-800/60 font-semibold rounded-xl text-xs transition active:scale-95 inline-flex items-center gap-1 shadow-sm"
+                          className="px-2.5 py-1.5 bg-cyan-950/60 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-800/60 font-bold rounded-xl text-xs transition active:scale-95 inline-flex items-center gap-1.5 shadow-sm"
                           title="Open comprehensive forensic financial audit: multi-company inventory, wages, trades, and hoarding analysis"
                         >
                           <Calculator className="w-3.5 h-3.5 text-cyan-400" />
-                          <span className="hidden sm:inline">Audit</span>
+                          <span>Audit</span>
                         </button>
 
                         {watchedUserIds.has(c.userId) ? (
                           <button
                             type="button"
                             onClick={() => handleOpenWatchModal(c)}
-                            className="px-2.5 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold rounded-xl text-xs transition active:scale-95 inline-flex items-center gap-1"
+                            className="p-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold rounded-xl text-xs transition active:scale-95 inline-flex items-center"
                             title="Citizen currently on watch. Click to view/edit surveillance note."
                           >
-                            <Eye className="w-3.5 h-3.5 text-amber-400" />
-                            <span className="hidden sm:inline">On Watch</span>
+                            <Eye className="w-4 h-4 text-amber-400" />
                           </button>
                         ) : (
                           <button
                             type="button"
                             onClick={() => handleOpenWatchModal(c)}
-                            className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 font-semibold rounded-xl text-xs transition active:scale-95 inline-flex items-center gap-1"
+                            className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 font-semibold rounded-xl text-xs transition active:scale-95 inline-flex items-center"
                             title="Place citizen on watch list with surveillance note"
                           >
-                            <Eye className="w-3.5 h-3.5 text-slate-400" />
-                            <span className="hidden sm:inline">Watch</span>
+                            <Eye className="w-4 h-4 text-slate-400" />
                           </button>
                         )}
 
