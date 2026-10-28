@@ -1,6 +1,6 @@
 {
-  "summary":  "Revised implementation plan for fixing the Policy & Leech Calibration modal scroll bleed and dynamic multi-country Spanish localization (ensuring {countryName} is 100% dynamic for any nation), integrating official WarEra country flags (flagcdn.com), and integrating all official WarEra item & equipment icons (media.warera.io). Includes 3 comparative architectural proposals, edge case mitigations, and tiered phased task decomposition.",
-  "updatedAt":  "2026-10-28T22:01:16.234903952Z",
+  "summary":  "Architectural and UX implementation plan to make Policies & Quotas dynamically re-evaluate all audited citizens in real time, credit battlefield combat damage across all builds using the exact (Damage / 1,000) * Rate formula without hidden caps, and display Actual vs. Policy Target Quota under Donor Classification.",
+  "updatedAt":  "2026-10-28T23:30:52.970417090Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

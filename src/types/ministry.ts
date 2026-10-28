@@ -22,9 +22,11 @@ export type PlayerTag = 'perma-war' | 'perma-eco' | 'weekly-cycler' | 'mixed-sty
 
 export type CitizenEconomicStanding =
   | 'evader-leech'
+  | 'low-contributor'
   | 'subsistence-worker'
   | 'illiquid-fighter'
   | 'sovereign-patriot'
+  | 'combat-veteran'
   | 'historical-pillar'
   | 'standard-contributor';
 
@@ -71,6 +73,7 @@ export interface PlayerTransactionSummary {
   ministerialVerdict?: MinisterialVerdict;
   ministerialVerdictReason?: string;
   periodDays: number;
+  windowReceiptCount?: number;
   dataSource: 'live-ledger' | 'estimated-capacity';
   primaryTradedResource?: 'oil' | 'iron' | 'food' | 'munitions' | 'general';
   // 8. Construction CapEx vs. Iron/Steel Speculation Tracking

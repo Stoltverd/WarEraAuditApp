@@ -1,101 +1,100 @@
-# Implementation Plan: Policy Calibration Modal Fix, Official Country Flags & Official WarEra Item Icons
+# Implementation Plan: Real-Time Policy & Quota Enforcement, Exact Battlefield Credit & Donor Classification Clarity
 
-## 1. Architectural Diagnosis & Root Cause Analysis
+## 1. Executive Summary & Root Cause Analysis
 
-### Issue 1: Policy & Leech Calibration Modal Untranslated Text, Dynamic `{countryName}` Tag & Header Scroll Overflow
-1. **Header Scroll Bleed (`src/components/ministry/CitizenRadar.tsx`, lines 1669–1673)**:
-   - The modal container currently uses `p-6 ... max-h-[90vh] overflow-y-auto` on the outer shell while the header bar inside uses `sticky top-0 bg-slate-900 z-10`.
-   - Because `p-6` (`padding-top: 1.5rem / 24px`) is applied to the scrolling container itself, `sticky top-0` sticks `24px` below the top border of the modal. As the user scrolls down, content passes behind the sticky header and becomes visible in the `24px` top padding gap above the title banner (where `"General Default Income Quotas (%)"` is seen peeking above `"Calibración de Políticas Soberanas y Leeches"` in the screenshot).
-   - **Fix**: Refactor the modal container into a 3-zone flex layout (`flex flex-col max-h-[90vh] overflow-hidden` without `p-6` on the outer shell):
-     1. **Fixed Top Header** (`px-6 pt-5 pb-4 border-b border-slate-800 bg-slate-900 shrink-0 z-20`)
-     2. **Dedicated Scrollable Body** (`p-6 overflow-y-auto flex-1 space-y-5`)
-     3. **Fixed Bottom Action Bar** (`px-6 py-4 border-t border-slate-800 bg-slate-900 shrink-0 z-20`)
-2. **Untranslated Strings & 100% Dynamic `{countryName}` Interpolation (`src/components/ministry/CitizenRadar.tsx` & `src/i18n/I18nContext.tsx`)**:
-   - The Policy & Leech Calibration modal must work dynamically for **every country in the world** using the active `countryName` prop (`selectedCountry?.name || tx('Selected Nation', 'Nación Seleccionada')`), never hardcoding any specific country name.
-   - Currently, strings with dynamic `{countryName}` interpolation—such as ``Customizable income donation ratios by playstyle for ${countryName}`` and ``Only citizens in the upper wealth brackets of ${countryName} (e.g. Top 25% / 75th percentile) can be classified as Critical Leeches if donating 0...``—as well as JSX blocks containing inline `<strong>` tags or Lucide icons (`<Swords />`), are split across multiple DOM text nodes or lack dynamic pattern rules in `I18nContext.tsx`.
-   - **Fix**: Explicitly localize every heading, subtitle, Policy Guide bullet, quota label, description paragraph, percentile button, checkbox label, and action button inside `CitizenRadar.tsx` using `tx(en, es)` with dynamic `${countryName}` template variables (e.g., `tx(\`Customizable income donation ratios by playstyle for \${countryName}\`, \`Proporciones personalizables de donación de ingresos según estilo de juego para \${countryName}\`)`), AND add universal dynamic regex rules (`/^Customizable income donation ratios by playstyle for (.+)$/i` $\rightarrow$ `'Proporciones personalizables de donación de ingresos según estilo de juego para $1'`) and static dictionary entries to `src/i18n/I18nContext.tsx` so all languages and any selected country translate seamlessly.
+Our forensic code audit identified three interlocking issues preventing **Policies & Quotas** from governing the **Citizen Radar (Overview)** and **Citizen Audit Modal**:
 
-### Issue 2: Official Country Flags from `https://arcana.warera.wiki/company`
-- Inspection of `https://arcana.warera.wiki/js/utils.js` and `https://arcana.warera.wiki/js/data.js` confirms that Arcana renders country flags using FlagCDN (`https://flagcdn.com/20x15/${iso.toLowerCase()}.png`, width `20`, height `15`, with `COUNTRY_ISO` mapping country names and 2-letter ISO codes).
-- In `src/components/Header.tsx`, the country selector currently uses a Unicode regional indicator helper (`getFlagEmoji(c.code)`, which renders as two-letter text abbreviations like `CO`, `US`, `PL` on Windows/Chromium desktop browsers) AND displays a raw `<span className="text-xs text-slate-400 uppercase font-mono">{c.code}</span>` abbreviation on the right side of each country option.
-- **Fix**: Create a reusable `<WareraCountryFlag />` component backed by the complete `COUNTRY_ISO` lookup table from `https://arcana.warera.wiki/js/data.js` + ISO-2 code normalization, rendering `<img src="https://flagcdn.com/20x15/${iso.toLowerCase()}.png" srcSet="https://flagcdn.com/40x30/${iso.toLowerCase()}.png 2x" width="20" height="15" ... />`. Replace the country code abbreviations and emoji fallbacks in the `Header.tsx` country selector button and dropdown list (as well as country lists in `CompanyPortfolioAnalyzer.tsx`, `TreasuryLedger.tsx`, and `WarReadinessEvaluation.tsx`) with the crisp graphical flag.
+1. **Frozen Audited Profiles Bypassing Policy Updates (`ministryService.ts` & `App.tsx`)**:
+   - In `auditCitizensIncomeGrowth` (`src/services/ministryService.ts`, lines 1282–1298), any citizen with `auditBaselineStatus === 'audited'` hits an early `continue;` statement that returns their previously cached `leechTier`, `contributionRatio`, `damageValueBtc`, and `economicStanding` without re-evaluating against the updated `MinistryConfig`.
+   - In `App.tsx` (`citizenEconomicProfiles` `useMemo`, lines 952–975), the UI reads `audited.leechTier`, `audited.contributionRatio`, and `audited.damageValueBtc` directly from the cached `auditedProfilesMap` instead of dynamically recomputing them when `ministryConfig` changes.
+   - In `CitizenRadar.tsx`, `displayedProfiles` holds a buffered state snapshot that did not immediately flush when `config` was updated.
 
-### Issue 3: Official Item & Product Icons from `https://arcana.warera.wiki/company`
-- Inspection of `https://arcana.warera.wiki/js/data.js` and `https://arcana.warera.wiki/js/utils.js` confirms the canonical item icon endpoint:
-  `https://media.warera.io/images/items/${imgName}.png?v=31`
-- Complete canonical item & equipment icon identifiers from `arcana.warera.wiki`:
-  - **Raw Materials & Manufactured Products (20 items)**: `grain`, `limestone`, `lead`, `petroleum`, `coca`, `iron`, `livestock`, `fish`, `wood`, `steel`, `concrete`, `oil`, `bread`, `steak`, `cookedFish`, `lightAmmo`, `ammo`, `heavyAmmo`, `cocain`, `paper`.
-  - **Cases & Salvage (4 items)**: `case1` (`case`), `case2` (`case_2` / elite case), `woodenCase` (`wooden_case`), `scraps` (`scrap`).
-  - **Combat Equipment & Weapons (`DC_ITEM_IMG`)**: `knife`, `gun`, `rifle`, `sniper`, `tank`, `jet`, `helmet` (`helmet1`–`helmet6`), `chest` (`chest1`–`chest6`), `pants` (`pants1`–`pants6`), `boots` (`boots1`–`boots6`), `gloves` (`gloves1`–`gloves6`).
-- Furthermore, `src/components/ministry/StockpileTracker.tsx` (line 833) and `src/components/ministry/MarketAdvisor.tsx` (line 294) currently point to a broken legacy URL (`https://warera.io/${item.id}.png`), which fails to load and falls back to generic Lucide icons.
-- **Fix**: Upgrade `src/components/common/WareraItemIcon.tsx` to load the official `https://media.warera.io/images/items/${imgName}.png?v=31` sprites for all commodities, company products, cases, scraps, and equipment across the entire application, and replace the broken `https://warera.io/${item.id}.png` image tags in `StockpileTracker.tsx` and `MarketAdvisor.tsx` with `<WareraItemIcon />`.
+2. **Hidden Playstyle Exclusion & Artificial Caps on Combat Damage (`ministryService.ts` & `CitizenAuditModal.tsx`)**:
+   - In `evaluateLeechTier` (`src/services/ministryService.ts`, lines 1060–1077), combat damage conversion was gated behind `playstyle !== 'pure-eco'` and secretly capped for Hybrid and non-Top-10 War players. Citizens like `Cali_Botera`—who dealt **1,775,094 DMG** in the 7-day war tournament and switched to an Eco build 1 day ago—received **+0.0 BTC** credit instead of the calibrated `(1,775,094 ÷ 1,000) × 0.08 = +142.01 BTC`.
+   - In `CitizenAuditModal.tsx` (line 434), the **Military & Battlefield Defense** tab read the stale `currentProfile.damageValueBtc` (`0`) rather than computing live credit from `config.includeDamageInLeechCalculation` and `config.damageConversionRateBtcPer1k`.
+
+3. **Unlabeled Percentage Under Donor Classification (`CitizenRadar.tsx`)**:
+   - In the `ESTADO FISCAL` (Donor Classification) column, the sub-label displayed a bare percentage (`4.8% · Auditado`) without stating what the percentage measures or what target quota the citizen is being judged against under the active **Policies & Quotas** rules.
 
 ---
 
-## 2. Comparative Architectural Proposals
+## 2. Comparative Architectural Solutions
 
-### Proposal A: Direct Inline Patching (Minimal Component Edits)
-- **Architecture**: Patch the modal container classes in `CitizenRadar.tsx`, rely primarily on `I18nContext.tsx` DOM text-node replacements for translations, and inline `flagcdn.com` and `media.warera.io` `<img>` tags directly inside `Header.tsx`, `StockpileTracker.tsx`, and `MarketAdvisor.tsx`.
+### Proposal A: Cache-Invalidation & Full Re-Audit on Policy Save
+- **Mechanism**: Whenever the user clicks **Save & Apply Policy**, invalidate `auditedProfilesMap` in `localStorage` and re-run `auditCitizensIncomeGrowth` across all cached personal transaction ledgers in IndexedDB.
 - **Pros**:
-  - Fastest initial file touch count.
+  - Guarantees persisted profiles in `localStorage` are overwritten with updated standing values.
 - **Cons**:
-  - Inline `<strong>` tags and icons inside `CitizenRadar.tsx` split strings into multiple DOM text nodes, causing fragile translations when only relying on DOM `MutationObserver`.
-  - Duplicating flag and item URL logic across multiple components makes fallback handling inconsistent.
+  - Requires asynchronous IndexedDB reads for every citizen on each policy slider change.
+  - Introduces a noticeable loading spinner delay (1–3 seconds) when toggling policies.
 
-### Proposal B: Dedicated Shared Visual Components (`WareraCountryFlag` & `WareraItemIcon`) + Explicit Bilingual `tx()` & Dictionary Sync (Recommended)
-- **Architecture**:
-  1. Refactor the `CitizenRadar.tsx` Policy Calibration modal into a 3-zone flex container (`shrink-0` header, `flex-1 overflow-y-auto` body, `shrink-0` footer) so scrolled content can never bleed behind or above the header banner.
-  2. Explicitly wrap every Policy Calibration modal string and Policy Guide paragraph in `CitizenRadar.tsx` with `tx(en, es)` using dynamic `${countryName}` interpolation for **any** selected nation, AND register all corresponding static strings and dynamic `{countryName}` regex rules in `src/i18n/I18nContext.tsx`.
-  3. Create `src/components/common/WareraCountryFlag.tsx` containing the complete `COUNTRY_ISO` mapping from `arcana.warera.wiki/js/data.js` and rendering `https://flagcdn.com/20x15/${iso.toLowerCase()}.png` (with `2x` retina `srcSet`). Replace both the broken emoji flags and the raw country code abbreviation badge in `Header.tsx` (plus country displays in `CompanyPortfolioAnalyzer.tsx`, `TreasuryLedger.tsx`, and `WarReadinessEvaluation.tsx`).
-  4. Upgrade `src/components/common/WareraItemIcon.tsx` with the complete `ITEMS` and `DC_ITEM_IMG` mapping from `arcana.warera.wiki` (`https://media.warera.io/images/items/${imgName}.png?v=31`), with automatic SVG fallback if offline, and use it across `CompanyPortfolioAnalyzer.tsx`, `StockpileTracker.tsx`, `MarketAdvisor.tsx`, and `CitizenRadar.tsx`.
+### Proposal B: Pure Reactive `useMemo` Re-Evaluation + Canonical Policy Engine (Recommended)
+- **Mechanism**:
+  1. Refactor `evaluateLeechTier` and `buildAuditedCitizenProfile` in `src/services/ministryService.ts` so that all **Policies & Quotas** parameters (Playstyle Quotas, Exact Combat Damage Conversion `(Damage ÷ 1,000) × Rate` for all builds without hidden caps, Wealth Percentile Floor, Historical Donor Grace Floor, Hall of Fame Top X Rank, and Raw Resource Wealth inclusion) are evaluated through a single deterministic pure function.
+  2. Update `auditCitizensIncomeGrowth` so already-audited citizens preserve their verified cashflow receipts (`grossInflowBtc`, `netCashflowBtc`, `periodDonatedBtc`, `receiptCount`) while **always re-evaluating** their `leechTier`, `contributionRatio`, `damageValueBtc`, `ministerialVerdict`, and `economicStanding` against the new `MinistryConfig`.
+  3. Update `App.tsx` (`citizenEconomicProfiles` `useMemo`), `CitizenRadar.tsx`, and `CitizenAuditModal.tsx` to reactively compute `evaluateLeechTier` and `resolveMasterCitizenStanding` using the live `ministryConfig` and verified cashflow metrics.
 - **Pros**:
-  - Completely eliminates scroll bleed above the modal header.
-  - Guarantees 100% instant, flicker-free Spanish/English translation inside the Policy Calibration modal for **every country dynamically** (`${countryName}`), even on paragraphs with bold formatting and icons.
-  - Centralizes official WarEra item sprites and FlagCDN country flags in reusable components with clean fallback states.
+  - **Zero-latency updates**: Toggling damage conversion or changing quota percentages immediately updates every row in the Citizen Radar, KPI summary counters, Donated column, and Citizen Audit Modal without re-fetching receipts.
+  - **100% Parity**: Guarantees the Overview table and all tabs of the Citizen Audit Modal always show the exact same BTC credit, contribution ratio, and fiscal standing.
 - **Cons**:
-  - Requires touching a few more files (`Header.tsx`, `WareraCountryFlag.tsx`, `WareraItemIcon.tsx`, `StockpileTracker.tsx`, `MarketAdvisor.tsx`, `CitizenRadar.tsx`, `I18nContext.tsx`), which is well worth the maintainability and visual consistency.
+  - Requires synchronizing both the reactive `useMemo` selector in `App.tsx` and the persisted `auditedProfilesMap` updater so page reloads retain the newly saved policy state.
 
-### Proposal C: Build-Time Local Asset Mirroring
-- **Architecture**: Download all 195 country flags from `flagcdn.com` and all 35+ item PNGs from `media.warera.io` into `/public/assets/` and reference them locally.
+### Proposal C: Separate Frontend Display Overlay for Policy Simulation
+- **Mechanism**: Keep `auditedProfilesMap` unchanged and apply a UI-only calculation layer inside `CitizenRadar.tsx` and `CitizenAuditModal.tsx`.
 - **Pros**:
-  - Works without external CDN requests.
+  - Minimal changes to `ministryService.ts`.
 - **Cons**:
-  - Bloats the repository with over 230 binary files and goes against directly referencing the live `arcana.warera.wiki` asset URLs (`?v=31`) when game sprites update.
+  - Creates risk of state drift between exported CSV/Telegram nudges and the table UI.
 
 ### Expert Recommendation
-**Proposal B** is the best engineering choice. It directly uses the canonical URLs and mappings from `https://arcana.warera.wiki/company`, fixes the broken `https://warera.io/${item.id}.png` URLs in `StockpileTracker` and `MarketAdvisor`, eliminates the modal scroll overflow permanently via flexbox layout isolation, and guarantees complete Spanish/English localization in the Policy Calibration modal with 100% dynamic `{countryName}` support for every country.
+**Proposal B** is the superior architectural choice. Separating **Receipt Aggregation** (expensive, cached from live in-game transactions) from **Policy & Quota Evaluation** (fast, deterministic math governed by `MinistryConfig`) ensures that any change in **Policies & Quotas** instantaneously recalculates every citizen's standing, quota target, and battlefield credit across the entire application and persists cleanly.
 
 ---
 
 ## 3. Edge Case Mitigation
 
-1. **Dynamic Country Name Interpolation (`{countryName}`) Across All ~195 Countries**:
-   - *Edge Case*: Any player from any country (e.g., Poland, Argentina, United States, Colombia, Spain, Japan) selects their nation in the header and opens Policy Calibration. If any string or translation rule hardcoded a specific country name, it would break for other nations or fail to translate.
-   - *Mitigation*: Pass the dynamic `countryName` prop (`selectedCountry?.name || tx('Selected Nation', 'Nación Seleccionada')`) into every `tx()` template string in `CitizenRadar.tsx` (e.g., `tx(\`Customizable income donation ratios by playstyle for \${countryName}\`, \`Proporciones personalizables de donación de ingresos según estilo de juego para \${countryName}\`)`), and add dynamic capture-group regexes in `I18nContext.tsx` (`/for (.+)$/i`, `/of (.+) \(e\.g\./i`) so any country name is dynamically preserved and translated. Also update `src/App.tsx` so the fallback when `selectedCountry` is loading is generic rather than a specific country.
-2. **Unmapped or Custom Country Names / API Country Codes**:
-   - *Edge Case*: The WarEra API returns a country with either an ISO-2 `code` (e.g. `"CO"`, `"PL"`, `"US"`), a full country name (`"Bosnia and Herzegovina"`, `"Côte d'Ivoire"`), or a non-standard internal ID.
-   - *Mitigation*: `WareraCountryFlag` will resolve the 2-letter ISO code by first checking if `code` is already a valid 2-letter ISO alpha-2 code (`/^[A-Za-z]{2}$/`), and if not, looking up `COUNTRY_ISO[name]` (case-insensitive and accent-normalized). If neither resolves or if the image fails to load (`onError`), it gracefully renders a clean globe badge.
-3. **Item ID Naming Variations Across API & Wiki (`cocain` vs `cocaine`, `cookedFish` vs `cooked_fish`, `case1` vs `case`, `helmet1`–`helmet6`)**:
-   - *Edge Case*: Different WarEra API endpoints and local services refer to items using snake_case (`cooked_fish`, `heavy_ammo`, `light_ammo`), camelCase (`cookedFish`, `heavyAmmo`, `lightAmmo`), display names (`"Cooked Fish"`, `"Cocaine"`, `"Concrete"`), or tiered equipment codes (`"helmet3"`, `"chest5"`).
-   - *Mitigation*: `WareraItemIcon` normalizes any input string (camelCase, snake_case, display label, or tiered gear code like `helmet1..6`) to the exact `media.warera.io/images/items/${imgName}.png?v=31` filename used by `arcana.warera.wiki` (`cookedFish`, `cocain`, `lightAmmo`, `ammo`, `heavyAmmo`, `case1`, `case2`, `woodenCase`, `scraps`, `helmet`, `chest`, `pants`, `boots`, `gloves`, `knife`, `gun`, `rifle`, `sniper`, `tank`, `jet`). If an image ever fails to load (`onError`), it automatically falls back to the bespoke SVG icon.
-4. **Modal Scroll Overflow on Small Viewports**:
-   - *Edge Case*: Opening the collapsible "Policy Guide" inside the Policy Calibration modal increases content height beyond `90vh` on laptops and mobile screens.
-   - *Mitigation*: By separating the modal into a `shrink-0` header, `flex-1 overflow-y-auto` scrollable content area, and `shrink-0` footer, expanding the Policy Guide smoothly scrolls inside the middle container without ever overlapping or bleeding above the header banner.
+1. **Citizens Who Respecced Mid-Week (e.g., War to Eco Build After Dealing Combat Damage)**:
+   - *Edge Case*: A citizen deals 1.77M combat damage during the week, then switches to an Eco build (`Cali_Botera`).
+   - *Mitigation*: When `includeDamageInLeechCalculation` is enabled, any citizen with `combatDamage > 0` receives the exact converted credit `(combatDamage / 1000) * damageConversionRateBtcPer1k` regardless of their current playstyle build, with zero hidden caps.
+2. **Contribution Ratio Calculation with War Credit Enabled vs. Disabled**:
+   - *Edge Case*: When `includeDamageInLeechCalculation` is active, a citizen may have `0 BTC` direct treasury donations but `+142.0 BTC` in converted war credit.
+   - *Mitigation*: Effective contribution is `periodDonatedBtc + damageValueBtc`. The citizen's effective contribution ratio (`(periodDonatedBtc + damageValueBtc) / grossInflowBtc`) is compared directly against their active Playstyle Quota target (`Eco`, `Hybrid`, or `War` quota in Policies & Quotas).
+3. **Zero Gross Inflow / Subsistence Citizens**:
+   - *Edge Case*: An audited citizen has `0 BTC` gross cash inflow during the window, causing division-by-zero when computing percentage of inflow, or has low wealth below the country's subsistence percentile floor.
+   - *Mitigation*: Guard all ratio divisions (`grossInflow > 0`), fallback cleanly to wealth-based quota or `+X.X BTC Credit` when inflow is zero, and honor the `minWealthFilterBtc` / subsistence floor configured in Policies & Quotas.
+4. **30-Day Audit Window in Citizen Audit Modal**:
+   - *Edge Case*: The user switches the Citizen Audit Modal between `7 Days` and `30 Days` while damage conversion is enabled.
+   - *Mitigation*: Compute live military credit in `CitizenAuditModal.tsx` using the active combat damage for the selected window (`snapshot30DayDamage ?? combatDamage`) multiplied by `config.damageConversionRateBtcPer1k` when `config.includeDamageInLeechCalculation` is enabled (and display the reference value clearly when disabled).
+5. **Buffered Table State During Background Audit Stream**:
+   - *Edge Case*: `CitizenRadar.tsx` buffers incoming background stream updates while the user inspects the table, which could block a manual **Policies & Quotas** change from appearing immediately.
+   - *Mitigation*: Track a `config` signature in `CitizenRadar.tsx` so any change to `MinistryConfig` immediately flushes and updates `displayedProfiles` and any open `selectedAuditProfile`.
 
 ---
 
 ## 4. Phased Task Decomposition
 
-### Phase 1: Policy & Leech Calibration Modal Layout & Dynamic Localization (`CitizenRadar.tsx`, `I18nContext.tsx`, `App.tsx`)
-- **Phase 1.1**: Refactor the Policy Calibration modal container in `src/components/ministry/CitizenRadar.tsx` from a single padded scrolling container into a 3-section flex container (`shrink-0` top header bar, `flex-1 overflow-y-auto p-6` scrollable body, and `shrink-0` bottom action bar) so scrolled text never appears behind or above the title banner.
-- **Phase 1.2**: Wrap all text inside the Policy Calibration modal and its collapsible Policy Guide in `src/components/ministry/CitizenRadar.tsx` with `tx(en, es)` using 100% dynamic `${countryName}` interpolation, and ensure `src/App.tsx` passes a generic fallback (`selectedCountry?.name || 'State'`) when no country is loaded yet.
-- **Phase 1.3**: Add all Policy Calibration static strings and dynamic `{countryName}` regex patterns to `src/i18n/I18nContext.tsx` for full coverage.
+### Phase 1: Canonical Policy & Damage Credit Engine (`src/services/ministryService.ts`)
+- **Phase 1.1**: Update `evaluateLeechTier` to credit all citizens who have `combatDamage > 0` using the exact formula `(combatDamage / 1000) * damageConversionRateBtcPer1k` whenever `config.includeDamageInLeechCalculation` is enabled—removing the `playstyle !== 'pure-eco'` restriction and removing all hidden quota-based caps.
+- **Phase 1.2**: Ensure `evaluateLeechTier` and `buildAuditedCitizenProfile` evaluate every **Policies & Quotas** setting (Eco/Hybrid/War Patriot & Moderate quotas, Low Contributor floor, Wealth Percentile Floor, Raw Resource Wealth toggle, Historical Donor Grace Floor, and Top X Hall of Fame cutoff) consistently.
+- **Phase 1.3**: Update `auditCitizensIncomeGrowth` so that when `customConfig` is applied, already-audited citizens retain their verified cashflow receipts (`playerCashflow`, `grossInflowBtc`, `netCashflowBtc`, `periodDonatedBtc`, `receiptCount`) while dynamically recomputing their `damageValueBtc`, `contributionRatio`, `leechTier`, `ministerialVerdict`, and `economicStanding`.
 
-### Phase 2: Official Country Flags Integration (`WareraCountryFlag.tsx` & `Header.tsx`)
-- **Phase 2.1**: Create `src/components/common/WareraCountryFlag.tsx` implementing the complete `COUNTRY_ISO` dictionary and `https://flagcdn.com/20x15/${iso.toLowerCase()}.png` (`2x` `40x30` retina `srcSet`) flag renderer from `https://arcana.warera.wiki/company`.
-- **Phase 2.2**: Update `src/components/Header.tsx` to display `<WareraCountryFlag />` in the country selector button and dropdown items, removing the raw country code abbreviation (`{c.code}`) and replacing `getFlagEmoji`. Also integrate `<WareraCountryFlag />` into `CompanyPortfolioAnalyzer.tsx` (player country & Lowest-Tax Countries badges), `TreasuryLedger.tsx`, and `WarReadinessEvaluation.tsx`.
+### Phase 2: Reactive State Propagation (`src/App.tsx`)
+- **Phase 2.1**: Update `citizenEconomicProfiles` `useMemo` in `src/App.tsx` so that even for cached audited profiles, `evaluateLeechTier` and `resolveMasterCitizenStanding` are computed live using the current `ministryConfig` and the citizen's verified `grossInflowBtc` and `periodDonatedBtc`.
 
-### Phase 3: Official WarEra Item & Equipment Icons Integration (`WareraItemIcon.tsx`, `StockpileTracker.tsx`, `MarketAdvisor.tsx`)
-- **Phase 3.1**: Upgrade `src/components/common/WareraItemIcon.tsx` to resolve all 24 commodities/cases/scraps and 11 combat equipment/weapon categories to `https://media.warera.io/images/items/${imgName}.png?v=31` (matching `https://arcana.warera.wiki/company`), with automatic fallback to the inline SVG icon on network error.
-- **Phase 3.2**: Replace the broken `https://warera.io/${item.id}.png` image elements in `src/components/ministry/StockpileTracker.tsx` and `src/components/ministry/MarketAdvisor.tsx` with `<WareraItemIcon />` so all item icons render consistently across every view.
-- **Phase 3.3**: Run `compile_applet` and `lint_applet` to verify zero TypeScript or build errors.
+### Phase 3: Donor Classification Target Quota UX & Donated War Credit Display (`src/components/ministry/CitizenRadar.tsx` & `src/i18n/translations.ts`)
+- **Phase 3.1**: Update the sub-label under **Donor Classification (`ESTADO FISCAL`)** in `CitizenRadar.tsx` to display **Actual vs. Policy Target Quota** (e.g., `4.8% / 7% Quota · Audited` or `4.8% / 7% Meta · Auditado` in Spanish), where the target percentage is dynamically pulled from the citizen's build (`pure-eco` → `ecoModerateThresholdPct`, `hybrid` → `hybridModerateThresholdPct`, `pure-war` → `warModerateThresholdPct`) in `MinistryConfig`, with a clear tooltip explaining the exact formula (`(Donated + War Credit) ÷ Gross Cash Inflow vs. Playstyle Policy Quota`).
+- **Phase 3.2**: Update the **Donated (`DONADO`)** column in `CitizenRadar.tsx` so that when `includeDamageInLeechCalculation` is enabled and a citizen has combat damage credit, it displays their direct treasury donation alongside a distinct `+X.X BTC War Credit` badge (`+X.X BTC Créd. Guerra`), and reflects the combined contribution in their standing.
+- **Phase 3.3**: Ensure `displayedProfiles` and `selectedAuditProfile` in `CitizenRadar.tsx` immediately sync whenever `config` (`MinistryConfig`) updates.
+
+### Phase 4: Citizen Audit Modal Live Defense Credit Synchronization (`src/components/ministry/CitizenAuditModal.tsx`)
+- **Phase 4.1**: Update `CitizenAuditModal.tsx` so `militaryCredit` is dynamically calculated from the active combat damage (`(activeCombatDamage / 1000) * militaryCreditRate`) when `config.includeDamageInLeechCalculation` is enabled, ensuring `Cali_Botera` (`1,775,094 DMG` at `0.08 BTC / 1k`) accurately displays `+142.01 BTC` in **Converted Military Credit** and **Total National Contribution**, and updates header standing badges immediately.
+
+### Phase 5: Verification & Build Check
+- **Phase 5.1**: Run TypeScript and production build verification (`compile_applet`) to ensure zero type or lint errors.
+
+---
+
+## 5. Contextual State Tracking
+- **Current Phase**: Planning & Architecture Review (Pre-Execution).
+- **Completed So Far**: Full forensic audit of `ministryService.ts`, `App.tsx`, `CitizenRadar.tsx`, and `CitizenAuditModal.tsx`; alignment on user preferences via clarifying questions; formulation of comparative proposals, edge-case mitigations, and phased execution plan.
+- **Immediate Next Steps**: Execute **Phase 1 through Phase 5** upon your approval of this plan.

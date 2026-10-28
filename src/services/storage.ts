@@ -23,7 +23,26 @@ import {
 
 const DB_NAME = 'warera_donations_granular_db';
 const DB_VERSION = 4;
-export const AUDIT_PROFILE_SCHEMA_VERSION = 2;
+export const AUDIT_PROFILE_SCHEMA_VERSION = 4;
+
+function isNonMonetaryReceiptNoise(t: any): boolean {
+  if (!t) return true;
+  const rawType = String(t.transactionType || t.type || t.action || '')
+    .toLowerCase()
+    .trim();
+  if (!rawType) return false;
+  return (
+    rawType.includes('opencase') ||
+    rawType.includes('open_case') ||
+    rawType === 'case' ||
+    rawType.includes('battleloot') ||
+    rawType.includes('battle_loot') ||
+    rawType.includes('loot') ||
+    rawType.includes('dismantle') ||
+    rawType.includes('craft') ||
+    rawType.includes('upgrade')
+  );
+}
 
 function extractRecordTimestampMs(item: any): number {
   if (!item) return 0;
@@ -431,7 +450,7 @@ class OfflineStorageService {
     if (!userId) return;
     const dedupMap = new Map<string, WareraTransaction>();
     for (const t of transactions) {
-      if (!t || !t._id) continue;
+      if (!t || !t._id || isNonMonetaryReceiptNoise(t)) continue;
       dedupMap.set(t._id, {
         ...t,
         userId,
@@ -465,7 +484,7 @@ class OfflineStorageService {
     try {
       const db = await this.initDB();
       if (!db.objectStoreNames.contains('personal_receipts')) {
-        return this.personalReceiptsMemory.get(userId) || [];
+        return (this.personalReceiptsMemory.get(userId) || []).filter((t) => !isNonMonetaryReceiptNoise(t));
       }
       return new Promise((resolve) => {
         const tx = db.transaction('personal_receipts', 'readonly');
@@ -475,18 +494,19 @@ class OfflineStorageService {
           const record = request.result;
           if (record && Array.isArray(record.transactions)) {
             const list = (record.transactions as WareraTransaction[])
+              .filter((t) => !isNonMonetaryReceiptNoise(t))
               .map((t) => ({ ...t, userId, isPersonalReceipt: true }))
               .sort(compareItemsNewestFirst);
             this.personalReceiptsMemory.set(userId, list);
             resolve(list);
           } else {
-            resolve(this.personalReceiptsMemory.get(userId) || []);
+            resolve((this.personalReceiptsMemory.get(userId) || []).filter((t) => !isNonMonetaryReceiptNoise(t)));
           }
         };
-        request.onerror = () => resolve(this.personalReceiptsMemory.get(userId) || []);
+        request.onerror = () => resolve((this.personalReceiptsMemory.get(userId) || []).filter((t) => !isNonMonetaryReceiptNoise(t)));
       });
     } catch {
-      return this.personalReceiptsMemory.get(userId) || [];
+      return (this.personalReceiptsMemory.get(userId) || []).filter((t) => !isNonMonetaryReceiptNoise(t));
     }
   }
 

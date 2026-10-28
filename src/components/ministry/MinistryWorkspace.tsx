@@ -1124,7 +1124,7 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                       </span>
                     </div>
                     <p className="text-sm text-slate-400 mt-0.5">
-                      Tailored in-game telegram for <strong className="text-amber-300">{activeNudgeProfile.username}</strong>
+                      <span>Tailored in-game telegram for</span> <strong className="text-amber-300">{activeNudgeProfile.username}</strong>
                     </p>
                   </div>
                 </div>
@@ -1146,7 +1146,7 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                 <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-3">
                   <div className="flex items-center justify-between gap-2 flex-wrap">
                     <span className="px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-400/40 text-amber-200 text-xs font-mono font-black uppercase">
-                      ★ Recommended Action: {nudgeRec.recommendedDiplomaticModeLabel} ({nudgeRec.recommendedDiplomaticBadge})
+                      {`★ Recommended Action: ${nudgeRec.recommendedDiplomaticModeLabel} (${nudgeRec.recommendedDiplomaticBadge})`}
                     </span>
                     {(diplomaticModeOverride || nudgeArchetypeOverride || commendationArchetypeOverride || overDonationArchetypeOverride) && (
                       <button
@@ -1160,7 +1160,8 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                         }}
                         className="text-xs text-amber-300 hover:text-amber-200 font-semibold flex items-center gap-1"
                       >
-                        <RotateCcw className="w-3.5 h-3.5" /> Reset to Recommended
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Reset to Recommended</span>
                       </button>
                     )}
                   </div>
@@ -1202,7 +1203,7 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                       {formatBtc(nudgeRec.liquidBtc)} BTC
                     </div>
                     <div className="text-xs text-slate-400 mt-0.5">
-                      {nudgeRec.liquidRatioToCountryMedian}x country median
+                      {`${nudgeRec.liquidRatioToCountryMedian}x country median`}
                     </div>
                   </div>
 
@@ -1212,7 +1213,7 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                       {formatBtc(nudgeRec.resourceWealthBtc)} BTC
                     </div>
                     <div className="text-xs text-slate-400 mt-0.5">
-                      {nudgeRec.resourceRatioToCountryMedian}x median (Shield: {formatBtc(nudgeRec.protectedGrowthReserveBtc)})
+                      {`${nudgeRec.resourceRatioToCountryMedian}x median (Shield: ${formatBtc(nudgeRec.protectedGrowthReserveBtc)})`}
                     </div>
                   </div>
 
@@ -1222,7 +1223,7 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                       {formatBtc(nudgeRec.grossIncomeBtc)} BTC
                     </div>
                     <div className="text-xs text-slate-400 mt-0.5">
-                      {nudgeRec.incomeRatioToCountryMedian}x country median
+                      {`${nudgeRec.incomeRatioToCountryMedian}x country median`}
                     </div>
                   </div>
 
@@ -1232,7 +1233,7 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                       {formatBtc(activeNudgeProfile.periodDonatedBtc ?? activeNudgeProfile.directDonatedBtc ?? 0)} BTC
                     </div>
                     <div className="text-xs text-slate-400 mt-0.5">
-                      Lifetime: {formatBtc(activeNudgeProfile.totalDonatedBtc)} BTC
+                      {`Lifetime: ${formatBtc(activeNudgeProfile.totalDonatedBtc)} BTC`}
                     </div>
                   </div>
                 </div>

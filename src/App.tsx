@@ -12,7 +12,7 @@ import {
   SyncProgress,
   DonorRankingItem,
 } from './types/warera';
-import { storage } from './services/storage';
+import { storage, AUDIT_PROFILE_SCHEMA_VERSION } from './services/storage';
 import { getCountries, ensureDonorsDamageStats, fetchCountryCitizens, getLiveCountryCensusIds, batchResolveUsers, fetchNationalTransfers, fetchCountryInventory, fetchCountryInventoryDetailed } from './services/apiService';
 import { fetchAllCommoditiesMarket, buildSovereignStockpileMatrix } from './services/marketService';
 import {
@@ -50,6 +50,7 @@ import {
   calculateDaysInBuild,
   evaluatePlaystyle,
   evaluateLeechTier,
+  evaluateMinisterialAuditVerdict,
   calculateCountryEconomicBenchmark,
   synthesizeCountryMinistryConfig,
   auditCitizensIncomeGrowth,
@@ -865,12 +866,13 @@ export default function App() {
       const isAuditedValid = Boolean(
         audited &&
           audited.auditBaselineStatus === 'audited' &&
-          audited.auditSchemaVersion === 2 &&
+          audited.auditSchemaVersion === AUDIT_PROFILE_SCHEMA_VERSION &&
           audited.auditedAt
       );
-      const currentWealthBasis = (ministryConfig.includeResourceWealth && resourceWealth > 0)
-        ? wealth + resourceWealth
-        : wealth;
+      const effectivePeriodDonated =
+        isAuditedValid && audited.periodDonatedBtc !== undefined
+          ? Math.max(audited.periodDonatedBtc, direct)
+          : direct;
 
       const historicalRank = historicalDonorRanks.get(user._id);
       const isHistoricalTopDonor = Boolean(historicalRank);
@@ -889,11 +891,15 @@ export default function App() {
         weeklyCombatDamage
       );
 
-      const { ratio, tier, reason, damageValueBtc } = evaluateLeechTier(
-        currentWealthBasis,
-        direct,
+      const auditedGrossInflow = isAuditedValid
+        ? (audited.grossInflowBtc ?? audited.grossIncomeBtc ?? 0)
+        : undefined;
+
+      const tierEval = evaluateLeechTier(
+        wealth,
+        effectivePeriodDonated,
         ministryConfig,
-        audited?.grossIncomeBtc,
+        auditedGrossInflow,
         playstyle,
         totalDonated,
         resourceWealth,
@@ -905,6 +911,27 @@ export default function App() {
         countryBenchmark,
         liquidMoney
       );
+      const { ratio, tier, reason, damageValueBtc } = tierEval;
+
+      const liveVerdict = isAuditedValid
+        ? evaluateMinisterialAuditVerdict(
+            {
+              level,
+              wealthBtc: wealth,
+              liquidBtc: liquidMoney,
+              resourceWealthBtc: resourceWealth,
+              totalCombatDamage: weeklyCombatDamage,
+              countryName,
+              ministerialVerdict: audited.ministerialVerdict,
+              ministerialVerdictReason: audited.ministerialVerdictReason,
+            },
+            effectivePeriodDonated,
+            tierEval,
+            ministryConfig,
+            countryBenchmark
+          )
+        : undefined;
+
       const tagInfo = playerTags[user._id];
       const watchedItem = watchedMap.get(user._id);
 
@@ -937,15 +964,15 @@ export default function App() {
         equipmentsWealthBtc: equipmentsWealth,
         weaponsWealthBtc: weaponsWealth,
         pastWealthBtc: audited?.pastWealthBtc,
-        grossIncomeBtc: isAuditedValid ? audited.grossIncomeBtc : undefined,
-        grossInflowBtc: isAuditedValid ? (audited.grossInflowBtc ?? audited.grossIncomeBtc) : undefined,
+        grossIncomeBtc: isAuditedValid ? auditedGrossInflow : undefined,
+        grossInflowBtc: isAuditedValid ? auditedGrossInflow : undefined,
         netCashflowBtc: isAuditedValid ? audited.netCashflowBtc : undefined,
-        periodDonatedBtc: isAuditedValid && audited.periodDonatedBtc !== undefined ? audited.periodDonatedBtc : direct,
+        periodDonatedBtc: effectivePeriodDonated,
         totalDonatedBtc: totalDonated,
-        directDonatedBtc: isAuditedValid && audited.directDonatedBtc !== undefined ? audited.directDonatedBtc : direct,
+        directDonatedBtc: effectivePeriodDonated,
         muDonationsBtc: isAuditedValid ? audited.muDonationsBtc : undefined,
         damageDonatedBtc: damageDonated,
-        damageValueBtc: isAuditedValid && audited.damageValueBtc !== undefined ? audited.damageValueBtc : damageValueBtc,
+        damageValueBtc: damageValueBtc ?? 0,
         totalCombatDamage: weeklyCombatDamage,
         lifetimeCombatDamage,
         isHistoricalTopDonor,
@@ -953,18 +980,18 @@ export default function App() {
         isNationalHeavyHitter,
         heavyHitterRank,
         tierReasonBadge: isAuditedValid
-          ? (audited.tierReasonBadge || reason)
+          ? (reason || audited.tierReasonBadge)
           : isHistoricalTopDonor
           ? reason
           : 'Pending personal receipt verification',
         donationCount,
         lastDonationAt: effectiveLastDonation,
-        contributionRatio: isAuditedValid ? audited.contributionRatio : 0,
-        leechTier: isAuditedValid ? audited.leechTier : (isHistoricalTopDonor ? 'historical-pillar' : 'moderate'),
+        contributionRatio: isAuditedValid ? ratio : 0,
+        leechTier: isAuditedValid ? tier : (isHistoricalTopDonor ? 'historical-pillar' : 'moderate'),
         economicStanding: isAuditedValid
           ? resolveMasterCitizenStanding(
-              audited.leechTier,
-              audited?.ministerialVerdict,
+              tier,
+              liveVerdict?.ministerialVerdict,
               isHistoricalTopDonor,
               isNationalHeavyHitter
             )
@@ -990,9 +1017,15 @@ export default function App() {
         receiptCount: isAuditedValid ? audited?.receiptCount : undefined,
         auditDeltaAlert: isAuditedValid ? audited?.auditDeltaAlert : undefined,
         auditMethodologyNote: isAuditedValid ? audited.auditMethodologyNote : 'Pending live personal receipt stream.',
-        ministerialVerdict: isAuditedValid ? audited?.ministerialVerdict : undefined,
-        ministerialVerdictReason: isAuditedValid ? audited?.ministerialVerdictReason : undefined,
-        playerCashflow: isAuditedValid ? audited.playerCashflow : undefined,
+        ministerialVerdict: isAuditedValid ? liveVerdict?.ministerialVerdict : undefined,
+        ministerialVerdictReason: isAuditedValid ? liveVerdict?.ministerialVerdictReason : undefined,
+        playerCashflow: isAuditedValid && audited.playerCashflow
+          ? {
+              ...audited.playerCashflow,
+              ministerialVerdict: liveVerdict?.ministerialVerdict ?? audited.playerCashflow.ministerialVerdict,
+              ministerialVerdictReason: liveVerdict?.ministerialVerdictReason ?? audited.playerCashflow.ministerialVerdictReason,
+            }
+          : undefined,
         companiesCount: isAuditedValid ? audited?.companiesCount : undefined,
         activeCompaniesCount: activeCompsCap,
         maxCompaniesCap: audited?.maxCompaniesCap ?? Number(user.skills?.companies?.value ?? 2),
@@ -1028,7 +1061,7 @@ export default function App() {
       const profilesForAudit = citizenEconomicProfiles.map((p) => {
         if (
           p.auditBaselineStatus === 'audited' &&
-          p.auditSchemaVersion === 2 &&
+          p.auditSchemaVersion === AUDIT_PROFILE_SCHEMA_VERSION &&
           typeof p.periodDonatedBtc === 'number'
         ) {
           return p;
@@ -1070,7 +1103,7 @@ export default function App() {
           const existing = prev[a.userId];
           if (
             existing?.auditBaselineStatus === 'audited' &&
-            existing.auditSchemaVersion === 2 &&
+            existing.auditSchemaVersion === AUDIT_PROFILE_SCHEMA_VERSION &&
             existing.auditedAt &&
             (a.auditBaselineStatus !== 'audited' ||
               ((existing.receiptCount || 0) > 0 && (a.receiptCount || 0) === 0))

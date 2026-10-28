@@ -343,6 +343,7 @@ export function normalizeTransactionType(rawType?: string): string {
   if (lower.includes('tip') || lower.includes('article') || lower.includes('newspaper')) return 'articleTip';
   if (lower.includes('application') || lower.includes('fee')) return 'applicationFee';
   if (lower.includes('case') || lower.includes('open')) return 'openCase';
+  if (lower.includes('loot') || lower.includes('battleloot')) return 'battleLoot';
   if (lower.includes('craft')) return 'craftItem';
   if (lower.includes('dismantle')) return 'dismantleItem';
   // State-to-state bilateral transfers
@@ -350,13 +351,42 @@ export function normalizeTransactionType(rawType?: string): string {
     lower.includes('bilateral') ||
     lower.includes('foreign_aid') ||
     lower.includes('state_transfer') ||
-    lower.includes('national_transfer')
+    lower.includes('national_transfer') ||
+    lower.includes('countrymoneytransfer')
   ) {
     return 'stateTransfer';
   }
   // Citizen-to-treasury transfer in War Era is a donation
   if (lower.includes('transfer')) return 'donation';
   return rawType;
+}
+
+/**
+ * Identifies non-monetary inventory/loot events (`openCase`, `battleLoot`, `dismantleItem`, `craftItem`, `upgrade`)
+ * that are inventory item operations rather than BTC financial cashflow transactions.
+ */
+export function isNonMonetaryInventoryNoise(itemOrTx: any): boolean {
+  if (!itemOrTx) return true;
+  const rawType = String(
+    itemOrTx.transactionType || itemOrTx.type || itemOrTx.action || ''
+  )
+    .toLowerCase()
+    .trim();
+  if (!rawType) return false;
+  if (
+    rawType.includes('opencase') ||
+    rawType.includes('open_case') ||
+    rawType === 'case' ||
+    rawType.includes('battleloot') ||
+    rawType.includes('battle_loot') ||
+    rawType.includes('loot') ||
+    rawType.includes('dismantle') ||
+    rawType.includes('craft') ||
+    rawType.includes('upgrade')
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function extractItemString(val: any): string {
@@ -515,8 +545,8 @@ export function extractCitizenFromTransaction(
 
 /**
  * Fetch individual granular donation transactions using the authenticated transaction endpoint.
- * This is the ONLY endpoint that contains actual individual donation amounts (e.g. 10 BTC)
- * and enables true Daily, Weekly, and Monthly rankings.
+ * Paginates strictly by time-horizon (`oldestTime < monthlyCutoff`) and cursor exhaustion (`!nextCursor`)
+ * with `seenCursors` loop protection — never truncating at an arbitrary page limit during mass-donation events.
  */
 export async function fetchGranularDonationTransactions(
   countryId: string,
@@ -528,14 +558,18 @@ export async function fetchGranularDonationTransactions(
   }
 
   const allTransactions: WareraTransaction[] = [];
+  const seenIds = new Set<string>();
+  const seenCursors = new Set<string>();
   let cursor: string | undefined = undefined;
   let hasMore = true;
-  let page = 0;
-  const maxPages = 40; // up to 2,000 transactions
   const monthlyCutoff = Date.now() - 35 * 24 * 60 * 60 * 1000; // past 35 days ceiling
 
-  while (hasMore && page < maxPages) {
-    page++;
+  while (hasMore) {
+    if (cursor) {
+      if (seenCursors.has(cursor)) break;
+      seenCursors.add(cursor);
+    }
+
     const queryInput: Record<string, any> = {
       countryId,
       transactionType: 'donation',
@@ -682,22 +716,34 @@ export async function fetchGranularDonationTransactions(
         };
       });
 
-    allTransactions.push(...items);
+    for (const it of items) {
+      if (it._id && !seenIds.has(it._id)) {
+        seenIds.add(it._id);
+        allTransactions.push(it);
+      }
+    }
     onProgress?.(allTransactions.length);
 
     // Stop paging if oldest transaction in raw page is older than monthly cutoff
+    const nextCursor: string | undefined = result?.nextCursor;
     const oldestRaw = rawItems[rawItems.length - 1];
-    const oldestTime = new Date(normalizeTransactionTimestamp(oldestRaw?.createdAt || oldestRaw?.timestamp || oldestRaw?.date)).getTime();
-    if (oldestRaw && oldestTime < monthlyCutoff) {
+    let oldestTime = extractItemTimestampMs(oldestRaw);
+    if (isNaN(oldestTime) && nextCursor && typeof nextCursor === 'string' && nextCursor.includes('|')) {
+      const cursorDateMs = new Date(nextCursor.split('|')[0]).getTime();
+      if (!isNaN(cursorDateMs)) {
+        oldestTime = cursorDateMs;
+      }
+    }
+    if (!isNaN(oldestTime) && oldestTime < monthlyCutoff) {
       hasMore = false;
       break;
     }
 
-    cursor = result?.nextCursor;
-    hasMore = Boolean(cursor && !String(cursor).includes('undefined') && rawItems.length > 0);
+    cursor = nextCursor;
+    hasMore = Boolean(cursor && !String(cursor).includes('undefined') && !seenCursors.has(cursor) && rawItems.length > 0);
 
     if (hasMore) {
-      await new Promise((r) => setTimeout(r, 60));
+      await new Promise((r) => setTimeout(r, 45));
     }
   }
 
@@ -708,24 +754,22 @@ export async function fetchGranularDonationTransactions(
 }
 
 /**
- * Fetch authenticated personal transactions for a specific user (Wages, Item Market, Trading, Tips, Donations).
+ * Fetch authenticated personal transactions for a specific user (Wages, Item Market, Trading, Tips, Fees, Donations).
  *
- * ⚠️ CRITICAL ARCHITECTURAL INVARIANT (DO NOT REMOVE OR RE-INTRODUCE PAGE-1 BREAKS):
- * 1. NEVER early-break pagination on `knownTxIds` / `hitKnownCachedTx`!
- *    Previously, encountering a single cached donation ID on Page 1 triggered `if (hitKnownCachedTx) break;`,
- *    aborting the stream on Page 1 and dropping all older market trades, itemMarket orders, and wages
- *    within the 7D/30D window. Always paginate until `!cursor` or `oldestTime < effectiveCutoff`.
- * 2. NEVER overwrite `userId` with `extractCitizenFromTransaction(item)`!
- *    When citizen `userId` buys a commodity on `trading` or equipment on `itemMarket`, `item.sellerId` is
- *    the counterparty seller. Calling `extractCitizenFromTransaction(item)` grabs `sellerId` first and
- *    corrupts `userId` into the counterparty's ID. `userId` on every personal receipt MUST remain the
- *    queried citizen `userId`.
- * 3. OFFICIAL WARERA `TransactionListItem` SCHEMA (`https://api2.warera.io/openapi.json`):
- *    - Input has `additionalProperties: false` (accepts ONLY `userId`, `limit: 100`, `cursor`, `transactionType`).
- *    - `sellerId === userId` => INFLOW (Wage earned by worker, Commodity sold on `trading`, Gear sold on `itemMarket`, `articleTip` received).
- *    - `buyerId === userId`  => OUTFLOW (Commodity bought on `trading`, Gear bought on `itemMarket`, Wage paid by employer, `donation` given, `articleTip` sent, `applicationFee`/`craftItem`/`dismantleItem`/`openCase`).
- *    - `itemCode` holds the commodity code on `trading` orders (e.g. `"iron"`, `"steel"`, `"oil"`, `"bread"`).
- *    - `sellerCountryId` holds the recipient country on `donation` transactions; `sellerMuId` holds the recipient Military Unit.
+ * ⚠️ CRITICAL ARCHITECTURAL INVARIANT:
+ * 1. ZERO ARBITRARY PAGE CAPS (`maxPages`):
+ *    Pagination is strictly time-bounded (`oldestTime < effectiveCutoff`) and cursor-exhaustion driven (`!nextCursor`)
+ *    with `seenCursors` loop protection. This guarantees 100% receipt capture even during extreme mass-liquidation
+ *    and mass-donation events (e.g., a retiring player liquidating all companies/inventories and making hundreds
+ *    or thousands of donations in a single day).
+ * 2. DUAL-CHANNEL STREAMING (`donation` + Cashflow `transactionType` filter):
+ *    - Channel 1 queries `{ userId, transactionType: 'donation', limit: 100 }` until `effectiveCutoff` or cursor end,
+ *      ensuring 100% of national treasury and Military Unit donations are captured even for players who opened
+ *      80,000+ loot cases (e.g. Chopper).
+ *    - Channel 2 queries `{ userId, transactionType: ['wage', 'trading', 'itemMarket', 'articleTip', 'applicationFee'], limit: 100 }`
+ *      until `effectiveCutoff` or cursor end, excluding non-monetary `openCase`, `battleLoot`, `dismantleItem`, and `craftItem` spam.
+ * 3. NEVER overwrite `userId` with `extractCitizenFromTransaction(item)`!
+ *    `userId` on every personal receipt MUST remain the queried citizen `userId`.
  */
 export async function fetchUserTransactions(
   userId: string,
@@ -741,197 +785,236 @@ export async function fetchUserTransactions(
 
   const allTransactions: WareraTransaction[] = [];
   const seenIds = new Set<string>();
-  let cursor: string | undefined = undefined;
-  let hasMore = true;
-  let page = 0;
-  const maxPages = 60; // up to 6,000 personal transactions (at 100/page; stops once effectiveCutoff date is reached)
+  let totalPagesFetched = 0;
   const effectiveCutoff = Date.now() - (daysLimit + 1) * 24 * 60 * 60 * 1000;
 
-  while (hasMore && page < maxPages) {
-    if (signal?.aborted) {
-      throw new DOMException('Transaction stream aborted', 'AbortError');
+  const extractIdStr = (val: any): string => {
+    if (!val) return '';
+    if (typeof val === 'string') return val.trim();
+    if (typeof val === 'object') return val._id || val.id || val.userId || '';
+    return '';
+  };
+
+  const mapRawItemToTransaction = (item: any): WareraTransaction => {
+    const rawTypeStr = (item.transactionType || item.type || item.action || '').toLowerCase();
+    const tType = normalizeTransactionType(rawTypeStr);
+
+    const rawSellerId = extractIdStr(item.sellerId || item.seller);
+    const rawBuyerId = extractIdStr(item.buyerId || item.buyer);
+    const rawSellerCountryId = extractIdStr(
+      item.sellerCountryId ||
+        item.targetCountry ||
+        item.targetCountryId ||
+        item.recipientCountryId ||
+        item.destinationCountryId ||
+        item.toCountryId ||
+        item.countryId
+    );
+    const rawSellerMuId = extractIdStr(item.sellerMuId || item.muId);
+    const rawCompanyId = extractIdStr(item.companyId || item.employerId || item.employer || item.employer?._id);
+    const rawAuthorId = extractIdStr(item.authorId || item.author || item.creatorId || item.creator);
+    const rawSenderId = extractIdStr(item.senderId || item.sender || item.fromId || item.from);
+    const rawRecipientId = extractIdStr(item.recipientId || item.recipient || item.toId || item.to || item.workerId || item.employeeId);
+
+    // In official WarEra TransactionListItem:
+    // - sellerId === userId for inflows (wages earned, trading sales, itemMarket sales, articleTip received)
+    // - buyerId === userId for outflows (trading purchases, itemMarket purchases, wages paid by employer, donations, fees)
+    let resolvedSellerId: string | undefined = rawSellerId || undefined;
+    let resolvedBuyerId: string | undefined = rawBuyerId || undefined;
+    const resolvedCompanyId: string | undefined = rawCompanyId || undefined;
+
+    if (tType === 'market' || tType === 'itemMarket' || tType === 'trading') {
+      if (rawBuyerId === userId) {
+        resolvedBuyerId = userId;
+      } else if (rawSellerId === userId) {
+        resolvedSellerId = userId;
+      } else if (item.action === 'buy' || rawTypeStr.includes('buy') || rawTypeStr.includes('purchase')) {
+        resolvedBuyerId = userId;
+      } else if (item.action === 'sell' || rawTypeStr.includes('sell')) {
+        resolvedSellerId = userId;
+      }
+    } else if (tType === 'articleTip') {
+      if (rawSellerId === userId || rawAuthorId === userId || rawRecipientId === userId) {
+        resolvedSellerId = userId;
+      } else if (rawBuyerId === userId || rawSenderId === userId) {
+        resolvedBuyerId = userId;
+      }
+    } else if (tType === 'wage') {
+      if (rawSellerId === userId || rawRecipientId === userId || item.workerId === userId) {
+        resolvedSellerId = userId; // Worker receiving wage inflow
+        resolvedBuyerId = rawBuyerId || rawSenderId || rawCompanyId || undefined;
+      } else if (rawBuyerId === userId || rawSenderId === userId || item.employerId === userId) {
+        resolvedBuyerId = userId; // Employer paying wage outflow
+        resolvedSellerId = rawSellerId || rawRecipientId || undefined;
+      }
+    } else if (tType === 'donation') {
+      resolvedBuyerId = rawBuyerId || userId;
     }
-    page++;
-    const queryInput: Record<string, any> = {
-      userId,
-      limit: 100,
+
+    const rawItemCode =
+      typeof item.itemCode === 'string' && item.itemCode.trim()
+        ? item.itemCode.trim()
+        : typeof item.item?.code === 'string'
+        ? item.item.code.trim()
+        : undefined;
+    const resolvedItemStr = extractItemString(
+      rawItemCode || item.item || item.commodity || item.resource || item.resourceType
+    );
+    const resolvedQuantity = Number(item.quantity ?? item.item?.quantity ?? 1);
+
+    const rawTimeMs = extractItemTimestampMs(item);
+    const createdAtNorm = !isNaN(rawTimeMs)
+      ? new Date(rawTimeMs).toISOString()
+      : normalizeTransactionTimestamp(item.createdAt || item.timestamp || item.date || item.updatedAt, new Date().toISOString());
+    const updatedAtNorm = item.updatedAt ? normalizeTransactionTimestamp(item.updatedAt, createdAtNorm) : createdAtNorm;
+
+    return {
+      _id: item._id,
+      transactionType: tType,
+      money: Number(item.money ?? item.amount ?? 0),
+      amount: Number(item.money ?? item.amount ?? 0),
+      userId, // Strictly preserve the queried citizen's userId
+      sellerId: resolvedSellerId,
+      buyerId: resolvedBuyerId,
+      sellerCountryId: rawSellerCountryId || undefined,
+      sellerMuId: rawSellerMuId || undefined,
+      companyId: resolvedCompanyId,
+      senderId: rawSenderId || undefined,
+      recipientId: rawRecipientId || undefined,
+      action: item.action || rawTypeStr,
+      item: resolvedItemStr,
+      itemCode: rawItemCode || (resolvedItemStr ? resolvedItemStr.toLowerCase() : undefined),
+      itemObj: typeof item.item === 'object' ? item.item : undefined,
+      quantity: !isNaN(resolvedQuantity) && resolvedQuantity > 0 ? resolvedQuantity : 1,
+      resourceType: resolvedItemStr,
+      countryId: rawSellerCountryId || undefined,
+      isPersonalReceipt: true,
+      createdAt: createdAtNorm,
+      updatedAt: updatedAtNorm,
     };
-    if (cursor) {
-      queryInput.cursor = cursor;
-    }
+  };
 
-    const encoded = encodeURIComponent(JSON.stringify(queryInput));
-    try {
-      const res = await rateLimitedFetch(
-        `${WARERA_TRPC_BASE}/transaction.getPaginatedTransactions?input=${encoded}`,
-        {
-          headers: {
-            Accept: 'application/json',
-            'X-API-Key': apiKey.trim(),
-          },
-          signal,
-        }
-      );
+  const paginateChannel = async (
+    channelTransactionType?: string | string[]
+  ): Promise<void> => {
+    let cursor: string | undefined = undefined;
+    let hasMore = true;
+    let activeFilter: string | string[] | undefined = channelTransactionType;
+    const seenCursors = new Set<string>();
 
-      if (!res.ok) {
-        throw new Error(`HTTP_${res.status}: Failed to fetch transactions for citizen ${userId}`);
+    while (hasMore) {
+      if (signal?.aborted) {
+        throw new DOMException('Transaction stream aborted', 'AbortError');
+      }
+      if (cursor) {
+        if (seenCursors.has(cursor)) break;
+        seenCursors.add(cursor);
       }
 
-      const json = await res.json();
-      const result = json?.result?.data;
-      const rawItems: any[] = Array.isArray(result) ? result : result?.items || [];
-
-      if (rawItems.length === 0) {
-        break;
-      }
-
-      const extractIdStr = (val: any): string => {
-        if (!val) return '';
-        if (typeof val === 'string') return val.trim();
-        if (typeof val === 'object') return val._id || val.id || val.userId || '';
-        return '';
+      totalPagesFetched++;
+      const queryInput: Record<string, any> = {
+        userId,
+        limit: 100,
       };
+      if (activeFilter !== undefined) {
+        queryInput.transactionType = activeFilter;
+      }
+      if (cursor) {
+        queryInput.cursor = cursor;
+      }
 
-      const items: WareraTransaction[] = rawItems
-        .filter((item) => {
-          const rawTypeStr = (item.transactionType || item.type || item.action || '').toLowerCase();
-          const moneyVal = Number(item.money ?? item.amount ?? 0);
-          // Filter out zero-BTC non-monetary operations (e.g. dismantling items or crafting without BTC fee)
-          if (moneyVal === 0 && (rawTypeStr.includes('dismantle') || rawTypeStr.includes('craft') || rawTypeStr.includes('upgrade'))) {
-            return false;
+      const encoded = encodeURIComponent(JSON.stringify(queryInput));
+      try {
+        let res = await rateLimitedFetch(
+          `${WARERA_TRPC_BASE}/transaction.getPaginatedTransactions?input=${encoded}`,
+          {
+            headers: {
+              Accept: 'application/json',
+              'X-API-Key': apiKey.trim(),
+            },
+            signal,
           }
-          return true;
-        })
-        .map((item) => {
-          const rawTypeStr = (item.transactionType || item.type || item.action || '').toLowerCase();
-          const tType = normalizeTransactionType(rawTypeStr);
+        );
 
-          const rawSellerId = extractIdStr(item.sellerId || item.seller);
-          const rawBuyerId = extractIdStr(item.buyerId || item.buyer);
-          const rawSellerCountryId = extractIdStr(item.sellerCountryId || item.countryId || item.targetCountryId);
-          const rawSellerMuId = extractIdStr(item.sellerMuId || item.muId);
-          const rawCompanyId = extractIdStr(item.companyId || item.employerId || item.employer || item.employer?._id);
-          const rawAuthorId = extractIdStr(item.authorId || item.author || item.creatorId || item.creator);
-          const rawSenderId = extractIdStr(item.senderId || item.sender || item.fromId || item.from);
-          const rawRecipientId = extractIdStr(item.recipientId || item.recipient || item.toId || item.to || item.workerId || item.employeeId);
-
-          // In official WarEra TransactionListItem:
-          // - sellerId === userId for inflows (wages earned, trading sales, itemMarket sales, articleTip received)
-          // - buyerId === userId for outflows (trading purchases, itemMarket purchases, wages paid by employer, donations, fees)
-          let resolvedSellerId: string | undefined = rawSellerId || undefined;
-          let resolvedBuyerId: string | undefined = rawBuyerId || undefined;
-          const resolvedCompanyId: string | undefined = rawCompanyId || undefined;
-
-          if (tType === 'market' || tType === 'itemMarket' || tType === 'trading') {
-            if (rawBuyerId === userId) {
-              resolvedBuyerId = userId;
-            } else if (rawSellerId === userId) {
-              resolvedSellerId = userId;
-            } else if (item.action === 'buy' || rawTypeStr.includes('buy') || rawTypeStr.includes('purchase')) {
-              resolvedBuyerId = userId;
-            } else if (item.action === 'sell' || rawTypeStr.includes('sell')) {
-              resolvedSellerId = userId;
+        // Resilient fallback if array transactionType filter is ever rejected on a specific gateway node
+        if (!res.ok && Array.isArray(activeFilter) && !cursor) {
+          activeFilter = undefined;
+          const fallbackInput: Record<string, any> = { userId, limit: 100 };
+          const fallbackEncoded = encodeURIComponent(JSON.stringify(fallbackInput));
+          res = await rateLimitedFetch(
+            `${WARERA_TRPC_BASE}/transaction.getPaginatedTransactions?input=${fallbackEncoded}`,
+            {
+              headers: {
+                Accept: 'application/json',
+                'X-API-Key': apiKey.trim(),
+              },
+              signal,
             }
-          } else if (tType === 'articleTip') {
-            if (rawSellerId === userId || rawAuthorId === userId || rawRecipientId === userId) {
-              resolvedSellerId = userId;
-            } else if (rawBuyerId === userId || rawSenderId === userId) {
-              resolvedBuyerId = userId;
-            }
-          } else if (tType === 'wage') {
-            if (rawSellerId === userId || rawRecipientId === userId || item.workerId === userId) {
-              resolvedSellerId = userId; // Worker receiving wage inflow
-              resolvedBuyerId = rawBuyerId || rawSenderId || rawCompanyId || undefined;
-            } else if (rawBuyerId === userId || rawSenderId === userId || item.employerId === userId) {
-              resolvedBuyerId = userId; // Employer paying wage outflow
-              resolvedSellerId = rawSellerId || rawRecipientId || undefined;
-            }
-          } else if (tType === 'donation') {
-            resolvedBuyerId = rawBuyerId || userId;
-          }
-
-          const rawItemCode =
-            typeof item.itemCode === 'string' && item.itemCode.trim()
-              ? item.itemCode.trim()
-              : typeof item.item?.code === 'string'
-              ? item.item.code.trim()
-              : undefined;
-          const resolvedItemStr = extractItemString(
-            rawItemCode || item.item || item.commodity || item.resource || item.resourceType
           );
-          const resolvedQuantity = Number(item.quantity ?? item.item?.quantity ?? 1);
-
-          const rawTimeMs = extractItemTimestampMs(item);
-          const createdAtNorm = !isNaN(rawTimeMs)
-            ? new Date(rawTimeMs).toISOString()
-            : normalizeTransactionTimestamp(item.createdAt || item.timestamp || item.date || item.updatedAt, new Date().toISOString());
-          const updatedAtNorm = item.updatedAt ? normalizeTransactionTimestamp(item.updatedAt, createdAtNorm) : createdAtNorm;
-
-          return {
-            _id: item._id,
-            transactionType: tType,
-            money: Number(item.money ?? item.amount ?? 0),
-            amount: Number(item.money ?? item.amount ?? 0),
-            userId, // Strictly preserve the queried citizen's userId
-            sellerId: resolvedSellerId,
-            buyerId: resolvedBuyerId,
-            sellerCountryId: rawSellerCountryId || undefined,
-            sellerMuId: rawSellerMuId || undefined,
-            companyId: resolvedCompanyId,
-            senderId: rawSenderId || undefined,
-            recipientId: rawRecipientId || undefined,
-            action: item.action || rawTypeStr,
-            item: resolvedItemStr,
-            itemCode: rawItemCode || (resolvedItemStr ? resolvedItemStr.toLowerCase() : undefined),
-            itemObj: typeof item.item === 'object' ? item.item : undefined,
-            quantity: !isNaN(resolvedQuantity) && resolvedQuantity > 0 ? resolvedQuantity : 1,
-            resourceType: resolvedItemStr,
-            countryId: rawSellerCountryId || undefined,
-            isPersonalReceipt: true,
-            createdAt: createdAtNorm,
-            updatedAt: updatedAtNorm,
-          };
-        });
-
-      for (const it of items) {
-        if (it._id && !seenIds.has(it._id)) {
-          seenIds.add(it._id);
-          allTransactions.push(it);
         }
-      }
-      onProgress?.(allTransactions.length, page);
 
-      const nextCursor: string | undefined = result?.nextCursor;
-      const oldestRaw = rawItems[rawItems.length - 1];
-      let oldestTime = extractItemTimestampMs(oldestRaw);
-      if (isNaN(oldestTime) && nextCursor && typeof nextCursor === 'string' && nextCursor.includes('|')) {
-        const cursorDateMs = new Date(nextCursor.split('|')[0]).getTime();
-        if (!isNaN(cursorDateMs)) {
-          oldestTime = cursorDateMs;
+        if (!res.ok) {
+          throw new Error(`HTTP_${res.status}: Failed to fetch transactions for citizen ${userId}`);
         }
-      }
 
-      // Stop paging ONLY when the tail of the page is definitively older than the requested date window
-      if (!isNaN(oldestTime) && oldestTime < effectiveCutoff) {
-        hasMore = false;
-        break;
-      }
+        const json = await res.json();
+        const result = json?.result?.data;
+        const rawItems: any[] = Array.isArray(result) ? result : result?.items || [];
 
-      cursor = nextCursor;
-      hasMore = Boolean(cursor && !String(cursor).includes('undefined') && rawItems.length > 0);
+        if (rawItems.length === 0) {
+          break;
+        }
 
-      if (hasMore) {
-        await new Promise((r) => setTimeout(r, 35));
+        const items: WareraTransaction[] = rawItems
+          .filter((item) => !isNonMonetaryInventoryNoise(item))
+          .map(mapRawItemToTransaction);
+
+        for (const it of items) {
+          if (it._id && !seenIds.has(it._id)) {
+            seenIds.add(it._id);
+            allTransactions.push(it);
+          }
+        }
+        onProgress?.(allTransactions.length, totalPagesFetched);
+
+        const nextCursor: string | undefined = result?.nextCursor;
+        const oldestRaw = rawItems[rawItems.length - 1];
+        let oldestTime = extractItemTimestampMs(oldestRaw);
+        if (isNaN(oldestTime) && nextCursor && typeof nextCursor === 'string' && nextCursor.includes('|')) {
+          const cursorDateMs = new Date(nextCursor.split('|')[0]).getTime();
+          if (!isNaN(cursorDateMs)) {
+            oldestTime = cursorDateMs;
+          }
+        }
+
+        // Stop paging ONLY when the tail of the page is definitively older than the requested date window
+        if (!isNaN(oldestTime) && oldestTime < effectiveCutoff) {
+          hasMore = false;
+          break;
+        }
+
+        cursor = nextCursor;
+        hasMore = Boolean(cursor && !String(cursor).includes('undefined') && !seenCursors.has(cursor) && rawItems.length > 0);
+
+        if (hasMore) {
+          await new Promise((r) => setTimeout(r, 35));
+        }
+      } catch (err: any) {
+        if (signal?.aborted || err?.name === 'AbortError') {
+          throw err?.name === 'AbortError'
+            ? err
+            : new DOMException('Transaction stream aborted', 'AbortError');
+        }
+        throw err;
       }
-    } catch (err: any) {
-      if (signal?.aborted || err?.name === 'AbortError') {
-        throw err?.name === 'AbortError'
-          ? err
-          : new DOMException('Transaction stream aborted', 'AbortError');
-      }
-      throw err;
     }
-  }
+  };
+
+  // Channel 1: Dedicated time-bounded donation stream (captures 100% of national & MU donations with zero case-opening interference)
+  await paginateChannel('donation');
+
+  // Channel 2: Dedicated time-bounded cashflow stream (captures 100% of wages, market sales/purchases, article tips, and application fees)
+  await paginateChannel(['wage', 'trading', 'itemMarket', 'articleTip', 'applicationFee']);
 
   allTransactions.sort(compareTransactionsNewestFirst);
   return allTransactions;

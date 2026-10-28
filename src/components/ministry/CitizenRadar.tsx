@@ -15,11 +15,12 @@ import {
   OverDonationWarningArchetype,
   CommodityTrend,
 } from '../../types/ministry';
-import { sanitizePolicyConfig, storage } from '../../services/storage';
+import { sanitizePolicyConfig, storage, AUDIT_PROFILE_SCHEMA_VERSION } from '../../services/storage';
 import {
   generateMinisterialNudge,
   calculateCitizenSuggestedDonation,
   resolveMasterCitizenStanding,
+  getPlaystyleQuotaThresholds,
 } from '../../services/ministryService';
 import { formatDateDDMMYYYY, formatDateTimeDDMMYYYY } from '../../utils/dateUtils';
 import { SyncProgress } from '../../types/warera';
@@ -198,6 +199,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
   const [bufferedUpdatesMap, setBufferedUpdatesMap] = useState<Record<string, CitizenEconomicProfile>>({});
   const [pinnedInViewIds, setPinnedInViewIds] = useState<Set<string>>(() => new Set());
   const prevCountryNameRef = useRef<string>(countryName);
+  const prevConfigJsonRef = useRef<string>(JSON.stringify(config));
   const bufferedMapRef = useRef<Record<string, CitizenEconomicProfile>>({});
 
   useEffect(() => {
@@ -209,17 +211,53 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
     setPinnedInViewIds(new Set());
   }, [search, filterFiscalStanding, filterBuild, filterBuildGrade, onlyInactiveDonors]);
 
-  // Sync displayedProfiles immediately when country changes, during initial census load,
-  // or when background streaming is NOT running and there are no pending buffered updates
+  // Sync displayedProfiles immediately when country changes, when policy config changes,
+  // during initial census load, or when background streaming is NOT running
   useEffect(() => {
     const countryChanged = prevCountryNameRef.current !== countryName;
     if (countryChanged) {
       prevCountryNameRef.current = countryName;
+      prevConfigJsonRef.current = JSON.stringify(config);
       auditStreamService.resetForCountrySwitch();
       bufferedMapRef.current = {};
       setDisplayedProfiles(profiles);
       setBufferedUpdatesMap({});
       setPinnedInViewIds(new Set());
+      return;
+    }
+
+    const currentConfigJson = JSON.stringify(config);
+    const configChanged = prevConfigJsonRef.current !== currentConfigJson;
+    if (configChanged) {
+      prevConfigJsonRef.current = currentConfigJson;
+      const incomingMap = new Map(profiles.map((p) => [p.userId, p]));
+      setDisplayedProfiles((prev) =>
+        prev.length === 0
+          ? profiles
+          : prev.map((oldP) => incomingMap.get(oldP.userId) || oldP)
+      );
+      if (Object.keys(bufferedMapRef.current).length > 0) {
+        setBufferedUpdatesMap((prevBuf) => {
+          const nextBuf: Record<string, CitizenEconomicProfile> = {};
+          for (const [uid, bufProf] of Object.entries(prevBuf)) {
+            const refreshed = incomingMap.get(uid);
+            nextBuf[uid] = refreshed
+              ? {
+                  ...bufProf,
+                  damageValueBtc: refreshed.damageValueBtc,
+                  contributionRatio: refreshed.contributionRatio,
+                  leechTier: refreshed.leechTier,
+                  economicStanding: refreshed.economicStanding,
+                  ministerialVerdict: refreshed.ministerialVerdict,
+                  ministerialVerdictReason: refreshed.ministerialVerdictReason,
+                  tierReasonBadge: refreshed.tierReasonBadge,
+                }
+              : bufProf;
+          }
+          bufferedMapRef.current = nextBuf;
+          return nextBuf;
+        });
+      }
       return;
     }
 
@@ -231,21 +269,40 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
       (!streamState.isRunning && bufferedCount === 0 && !selectedAuditProfile)
     ) {
       setDisplayedProfiles(profiles);
-    } else if (!streamState.isRunning && bufferedCount === 0) {
-      // Preserve locked row order while updating manual tags/notes in place
+    } else {
+      // Preserve locked row order while updating policy-derived fields, tags, and notes in place
       const incomingMap = new Map(profiles.map((p) => [p.userId, p]));
       setDisplayedProfiles((prev) =>
         prev.map((oldP) => {
           const nextP = incomingMap.get(oldP.userId);
           if (!nextP) return oldP;
-          if (nextP.manualTag !== oldP.manualTag || nextP.notes !== oldP.notes) {
-            return { ...oldP, manualTag: nextP.manualTag, notes: nextP.notes };
+          if (
+            nextP.manualTag !== oldP.manualTag ||
+            nextP.notes !== oldP.notes ||
+            nextP.damageValueBtc !== oldP.damageValueBtc ||
+            nextP.contributionRatio !== oldP.contributionRatio ||
+            nextP.leechTier !== oldP.leechTier ||
+            nextP.economicStanding !== oldP.economicStanding ||
+            nextP.ministerialVerdict !== oldP.ministerialVerdict
+          ) {
+            return {
+              ...oldP,
+              manualTag: nextP.manualTag,
+              notes: nextP.notes,
+              damageValueBtc: nextP.damageValueBtc,
+              contributionRatio: nextP.contributionRatio,
+              leechTier: nextP.leechTier,
+              economicStanding: nextP.economicStanding,
+              ministerialVerdict: nextP.ministerialVerdict,
+              ministerialVerdictReason: nextP.ministerialVerdictReason,
+              tierReasonBadge: nextP.tierReasonBadge,
+            };
           }
           return oldP;
         })
       );
     }
-  }, [profiles, countryName, isSyncing, streamState.isRunning, selectedAuditProfile]);
+  }, [profiles, countryName, config, isSyncing, streamState.isRunning, selectedAuditProfile]);
 
   // Refs to keep background lifecycle checks stable without re-triggering on every profile/benchmark state commit
   const profilesRef = useRef(profiles);
@@ -291,7 +348,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
       const wasUnverifiedOrEmpty =
         !existingRow ||
         existingRow.auditBaselineStatus !== 'audited' ||
-        existingRow.auditSchemaVersion !== 2 ||
+        existingRow.auditSchemaVersion !== AUDIT_PROFILE_SCHEMA_VERSION ||
         ((existingRow.receiptCount || 0) === 0 && (existingRow.grossInflowBtc || 0) === 0);
 
       if (wasUnverifiedOrEmpty || (!hasActiveFilterRef.current && !selectedAuditProfileRef.current)) {
@@ -1351,6 +1408,11 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                 const isLow = c.leechTier === 'low-contributor';
                 const isPatriot = c.leechTier === 'sovereign-patriot';
                 const isPinned = c.manualTag && c.manualTag !== 'none';
+                const { moderatePct: targetQuotaPct, patriotPct: targetPatriotPct } = getPlaystyleQuotaThresholds(
+                  c.playstyle,
+                  config
+                );
+                const buildLabel = c.playstyle === 'pure-eco' ? 'Eco' : c.playstyle === 'pure-war' ? 'War' : 'Hybrid';
 
                 return (
                   <tr key={c.userId} className="hover:bg-slate-800/45 transition group">
@@ -1494,14 +1556,25 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                       )}
                     </td>
 
-                    {/* Period Donated */}
+                    {/* Period Donated & Converted War Credit */}
                     <td className="py-3 px-3.5 text-right font-mono">
                       <div className={`font-extrabold text-sm sm:text-base ${
                         (c.periodDonatedBtc ?? c.directDonatedBtc ?? 0) > 0 ? 'text-amber-400' : 'text-slate-400'
                       }`}>
                         {formatBtc(c.periodDonatedBtc ?? c.directDonatedBtc ?? 0)}
                       </div>
-                      <div className="text-xs text-slate-300 font-sans">
+                      {Boolean(config?.includeDamageInLeechCalculation) && typeof c.damageValueBtc === 'number' && c.damageValueBtc > 0 && (
+                        <div
+                          className="inline-flex items-center justify-end gap-1 px-1.5 py-0.5 mt-0.5 rounded bg-rose-500/15 border border-rose-500/30 text-[10px] text-rose-300 font-mono font-bold"
+                          title={tx(
+                            `Converted Battlefield Defense Credit: (${(c.totalCombatDamage || 0).toLocaleString()} DMG ÷ 1,000) × ${config?.damageConversionRateBtcPer1k ?? 0.08} BTC = +${formatBtc(c.damageValueBtc)} BTC (Combined Standing Total: ${formatBtc((c.periodDonatedBtc ?? c.directDonatedBtc ?? 0) + c.damageValueBtc)} BTC)`,
+                            `Crédito de Defensa por Daño en Combate: (${(c.totalCombatDamage || 0).toLocaleString()} DMG ÷ 1,000) × ${config?.damageConversionRateBtcPer1k ?? 0.08} BTC = +${formatBtc(c.damageValueBtc)} BTC (Total Combinado: ${formatBtc((c.periodDonatedBtc ?? c.directDonatedBtc ?? 0) + c.damageValueBtc)} BTC)`
+                          )}
+                        >
+                          <span>{`+${formatBtc(c.damageValueBtc)} BTC ${tx('War Credit', 'Créd. Guerra')}`}</span>
+                        </div>
+                      )}
+                      <div className="text-xs text-slate-300 font-sans mt-0.5">
                         {`${formatBtc(c.totalDonatedBtc)} life`}
                       </div>
                       <div className="text-[10px] text-slate-400 font-sans">
@@ -1511,14 +1584,9 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                           <span className="text-red-400">0 donations</span>
                         )}
                       </div>
-                      {typeof c.damageValueBtc === 'number' && c.damageValueBtc > 0 && (
-                        <div className="text-[10px] text-red-300 font-mono font-bold mt-0.5" title="Converted combat defense credit">
-                          {`+${c.damageValueBtc.toFixed(1)} BTC war`}
-                        </div>
-                      )}
                     </td>
 
-                    {/* Fiscal Assessment & Ratio */}
+                    {/* Fiscal Assessment & Actual vs Policy Target Quota */}
                     <td className="py-3 px-3.5 text-center font-sans">
                       <div className="flex flex-col items-center gap-1">
                         <div className="text-xs sm:text-sm font-bold flex items-center gap-1 whitespace-nowrap">
@@ -1538,16 +1606,35 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                             <span className="text-slate-200">🔵 Moderate</span>
                           )}
                         </div>
-                        <div className="text-xs text-slate-300 font-mono flex items-center gap-1">
+                        <div
+                          className="text-xs text-slate-300 font-mono flex items-center justify-center gap-1 flex-wrap"
+                          title={
+                            c.auditBaselineStatus === 'audited'
+                              ? tx(
+                                  `Effective Contribution: ${c.contributionRatio.toFixed(1)}% of Gross Inflow vs. ${targetQuotaPct}% Standard Quota (${targetPatriotPct}% Model Patriot Quota) set in Policies & Quotas for ${buildLabel} build`,
+                                  `Contribución Efectiva: ${c.contributionRatio.toFixed(1)}% del Ingreso Bruto vs. ${targetQuotaPct}% Cuota Estándar (${targetPatriotPct}% Cuota Patriota Modelo) en Políticas y Cuotas para build ${buildLabel}`
+                                )
+                              : tx(
+                                  `Policy Quota Target for ${buildLabel} build: ${targetQuotaPct}% Standard / ${targetPatriotPct}% Model Patriot`,
+                                  `Cuota Objetivo para build ${buildLabel}: ${targetQuotaPct}% Estándar / ${targetPatriotPct}% Patriota Modelo`
+                                )
+                          }
+                        >
                           {c.auditBaselineStatus === 'audited' ? (
                             <>
-                              <span className="text-white font-bold">{c.contributionRatio}%</span>
+                              <span className={c.contributionRatio >= targetQuotaPct ? 'text-emerald-300 font-bold' : 'text-white font-bold'}>
+                                {`${c.contributionRatio.toFixed(1)}%`}
+                              </span>
+                              <span className="text-slate-500">/</span>
+                              <span className="text-amber-300 font-semibold">
+                                {`${targetQuotaPct}% ${tx('Quota', 'Cuota')}`}
+                              </span>
                               <span>·</span>
-                              <span className="text-emerald-400 font-medium">Audited</span>
+                              <span className="text-emerald-400 font-medium">{tx('Audited', 'Auditado')}</span>
                             </>
                           ) : (
                             <span className="text-slate-400 font-sans text-xs">
-                              Unverified
+                              {`${targetQuotaPct}% ${tx('Quota', 'Cuota')} · ${tx('Unverified', 'Sin verificar')}`}
                             </span>
                           )}
                         </div>
@@ -1821,11 +1908,16 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                   />
                 </div>
 
-                {/* Standard General Quotas */}
+                {/* Hybrid & General Default Quotas */}
                 <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-2.5">
-                  <div className="font-bold text-white flex items-center gap-1.5">
-                    <Scale className="w-3.5 h-3.5 text-amber-400" />
-                    <span>{tx('General Default Income Quotas (%)', 'Cuotas Generales de Ingreso por Defecto (%)')}</span>
+                  <div className="font-bold text-white flex items-center justify-between gap-1.5 flex-wrap">
+                    <span className="flex items-center gap-1.5">
+                      <Scale className="w-3.5 h-3.5 text-amber-400" />
+                      <span>{tx('⚖️ Hybrid & General Income Quotas (%)', '⚖️ Cuotas Modo Hybrid y General (%)')}</span>
+                    </span>
+                    <span className="text-[10px] text-slate-400">
+                      {tx('Balanced Eco + War builds', 'Builds equilibradas Eco + War')}
+                    </span>
                   </div>
                   <div className="grid grid-cols-3 gap-2">
                     <div>
@@ -1837,7 +1929,14 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                         step="any"
                         min="0"
                         value={policyDraft.patriotIncomeRatePct ?? 15}
-                        onChange={(e) => setPolicyDraft((prev) => ({ ...prev, patriotIncomeRatePct: parseFloat(e.target.value) || 0 }))}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value) || 0;
+                          setPolicyDraft((prev) => ({
+                            ...prev,
+                            patriotIncomeRatePct: val,
+                            hybridPatriotRatePct: val,
+                          }));
+                        }}
                         className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
                       />
                     </div>
@@ -1849,8 +1948,15 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                         type="number"
                         step="any"
                         min="0"
-                        value={policyDraft.moderateIncomeRatePct ?? 10}
-                        onChange={(e) => setPolicyDraft((prev) => ({ ...prev, moderateIncomeRatePct: parseFloat(e.target.value) || 0 }))}
+                        value={policyDraft.moderateIncomeRatePct ?? 7}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value) || 0;
+                          setPolicyDraft((prev) => ({
+                            ...prev,
+                            moderateIncomeRatePct: val,
+                            hybridModerateRatePct: val,
+                          }));
+                        }}
                         className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
                       />
                     </div>
@@ -1862,8 +1968,15 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                         type="number"
                         step="any"
                         min="0"
-                        value={policyDraft.lowContributorIncomeRatePct ?? 5}
-                        onChange={(e) => setPolicyDraft((prev) => ({ ...prev, lowContributorIncomeRatePct: parseFloat(e.target.value) || 0 }))}
+                        value={policyDraft.lowContributorIncomeRatePct ?? 2.5}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value) || 0;
+                          setPolicyDraft((prev) => ({
+                            ...prev,
+                            lowContributorIncomeRatePct: val,
+                            hybridLowRatePct: val,
+                          }));
+                        }}
                         className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white font-mono focus:border-amber-400"
                       />
                     </div>
@@ -2191,10 +2304,10 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                           )}
                         </div>
                         <div className="text-slate-400">
-                          🛡️ <strong>{tx('Playstyle Gating:', 'Filtro por Estilo de Juego:')}</strong>{' '}
+                          ⚔️ <strong>{tx('Universal Defense Credit:', 'Crédito de Defensa Universal:')}</strong>{' '}
                           {tx(
-                            'Applied to active frontline warriors (Pure-War & Hybrid). Pure-Eco industrialists receive 0 BTC credit to prevent tax evasion through incidental warfare.',
-                            'Se aplica a guerreros activos de primera línea (Pure-War y Hybrid). Los industriales Pure-Eco reciben 0 crédito en BTC para prevenir la evasión fiscal mediante combates incidentales.'
+                            'Applied to all citizens with recorded battlefield damage across Eco, Hybrid, and War builds without artificial caps. Combines with direct BTC donations toward playstyle quotas.',
+                            'Se aplica a todos los ciudadanos con daño registrado en campo de batalla (builds Eco, Hybrid y War) sin límites artificiales. Se suma a las donaciones directas en BTC para cumplir las cuotas.'
                           )}
                         </div>
                       </div>
@@ -2363,7 +2476,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
 
       {/* Modal: Adaptive Diplomatic Telegram Generator (Nudge, Merit Commendation, & Over-Donation Warning) */}
       {activeNudgeProfile && nudgeRecommendation && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150">
+        <div className="fixed inset-0 z-[70] bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150">
           <div className="bg-slate-900 border border-slate-700/80 rounded-3xl max-w-4xl w-full p-6 sm:p-7 shadow-2xl relative max-h-[92vh] flex flex-col">
             <div className="flex items-center justify-between pb-4 border-b border-slate-800 shrink-0">
               <div className="flex items-center gap-3.5">
@@ -2400,7 +2513,9 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     </span>
                   </div>
                   <p className="text-sm text-slate-400 mt-0.5">
-                    Tailored in-game telegram for <strong className="text-amber-300">{activeNudgeProfile.username}</strong> (Level {activeNudgeProfile.level} • {activeNudgeProfile.playstyle.replace('-', ' ')})
+                    <span>Tailored in-game telegram for</span>{' '}
+                    <strong className="text-amber-300">{activeNudgeProfile.username}</strong>{' '}
+                    <span>{`(Level ${activeNudgeProfile.level} • ${activeNudgeProfile.playstyle.replace('-', ' ')})`}</span>
                   </p>
                 </div>
               </div>
@@ -2436,7 +2551,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                           : 'bg-amber-500/20 border-amber-400/50 text-amber-200'
                       }`}
                     >
-                      ★ Recommended Action: {nudgeRecommendation.recommendedDiplomaticModeLabel}
+                      {`★ Recommended Action: ${nudgeRecommendation.recommendedDiplomaticModeLabel}`}
                     </span>
                     <span className="text-xs font-mono text-slate-300 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-slate-800">
                       {nudgeRecommendation.recommendedDiplomaticBadge}
@@ -2454,7 +2569,8 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                       }}
                       className="text-xs text-amber-300 hover:text-amber-200 font-semibold flex items-center gap-1 self-start sm:self-auto shrink-0"
                     >
-                      <RotateCcw className="w-3.5 h-3.5" /> Reset to Auto-Recommended Mode
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Reset to Auto-Recommended Mode</span>
                     </button>
                   )}
                 </div>
@@ -2508,7 +2624,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                         <div className="text-xs text-slate-300 mt-0.5">{tab.sub}</div>
                         {isRec && (
                           <div className="mt-1.5 inline-block self-start px-2 py-0.5 rounded bg-slate-950/90 border border-slate-700 text-[11px] font-mono font-bold text-amber-300">
-                            ★ Recommended for {activeNudgeProfile.username}
+                            {`★ Recommended for ${activeNudgeProfile.username}`}
                           </div>
                         )}
                       </button>
@@ -2528,7 +2644,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     <span className={nudgeRecommendation.liquidRatioToCountryMedian >= 1.8 ? 'text-amber-300 font-bold' : 'text-slate-400'}>
                       {nudgeRecommendation.liquidRatioToCountryMedian}x
                     </span>{' '}
-                    country median
+                    <span>country median</span>
                   </div>
                 </div>
 
@@ -2541,7 +2657,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     <span className={nudgeRecommendation.resourceRatioToCountryMedian >= 3.5 ? 'text-amber-300 font-bold' : 'text-slate-400'}>
                       {nudgeRecommendation.resourceRatioToCountryMedian}x
                     </span>{' '}
-                    median (Buffer: {formatBtc(nudgeRecommendation.protectedGrowthReserveBtc)} BTC)
+                    <span>{`median (Buffer: ${formatBtc(nudgeRecommendation.protectedGrowthReserveBtc)} BTC)`}</span>
                   </div>
                 </div>
 
@@ -2551,7 +2667,8 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     {formatBtc(nudgeRecommendation.grossIncomeBtc)} BTC
                   </div>
                   <div className="text-xs text-slate-400 mt-0.5">
-                    <span className="text-slate-300">{nudgeRecommendation.incomeRatioToCountryMedian}x</span> country median
+                    <span className="text-slate-300">{nudgeRecommendation.incomeRatioToCountryMedian}x</span>{' '}
+                    <span>country median</span>
                   </div>
                 </div>
 
@@ -2561,7 +2678,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     {formatBtc(activeNudgeProfile.periodDonatedBtc ?? activeNudgeProfile.directDonatedBtc ?? 0)} BTC
                   </div>
                   <div className="text-xs text-slate-400 mt-0.5">
-                    Lifetime: {formatBtc(activeNudgeProfile.totalDonatedBtc)} BTC
+                    {`Lifetime: ${formatBtc(activeNudgeProfile.totalDonatedBtc)} BTC`}
                   </div>
                 </div>
               </div>
@@ -2611,7 +2728,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                       <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
                         <div className="font-black text-amber-300 flex items-center gap-2">
                           <HelpCircle className="w-4 h-4 text-amber-400 shrink-0" />
-                          <span>Why the 3 Donation Archetypes Differ &amp; Recommendation for {activeNudgeProfile.username}</span>
+                          <span>{`Why the 3 Donation Archetypes Differ & Recommendation for ${activeNudgeProfile.username}`}</span>
                         </div>
                         <button
                           type="button"
@@ -2624,7 +2741,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
 
                       <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-sm text-amber-100 leading-relaxed">
                         <strong className="text-amber-300 uppercase font-mono">
-                          ★ Recommended for {activeNudgeProfile.username}: {nudgeRecommendation.recommendedArchetypeLabel}
+                          {`★ Recommended for ${activeNudgeProfile.username}: ${nudgeRecommendation.recommendedArchetypeLabel}`}
                         </strong>
                         <p className="mt-1 text-slate-200">{nudgeRecommendation.recommendedArchetypeReason}</p>
                       </div>
@@ -2813,7 +2930,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                           </div>
                           {isRecommended && (
                             <div className="mt-1.5 inline-block px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-mono font-bold">
-                              ★ Recommended for {activeNudgeProfile.username}
+                              {`★ Recommended for ${activeNudgeProfile.username}`}
                             </div>
                           )}
                         </button>
@@ -2885,7 +3002,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                                 : 'bg-slate-900 hover:bg-slate-800 border-slate-700/80 text-slate-300'
                             }`}
                           >
-                            {preset.label}: {formatBtc(preset.amount)} BTC
+                            {`${preset.label}: ${formatBtc(preset.amount)} BTC`}
                           </button>
                         );
                       })}
@@ -2933,7 +3050,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                           </p>
                           {opt.isRecommended && (
                             <div className="inline-block px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-200 text-[11px] font-mono font-bold">
-                              ★ Recommended Merit for {activeNudgeProfile.username}
+                              {`★ Recommended Merit for ${activeNudgeProfile.username}`}
                             </div>
                           )}
                         </button>
@@ -2953,7 +3070,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                         <span>Over-Donation Burnout &amp; Economic Self-Harm Protection</span>
                       </div>
                       <p className="text-sm text-slate-300 mt-1 leading-relaxed">
-                        {activeNudgeProfile.username} has donated <strong className="text-amber-300">{nudgeRecommendation.donatedShareOfWeeklyIncomePct}%</strong> of their 7D earning power. Sustainable Patriot Ceiling: <strong className="text-emerald-300">{formatBtc(nudgeRecommendation.sustainableWeeklyCapBtc)} BTC/wk</strong>.
+                        {`${activeNudgeProfile.username} has donated ${nudgeRecommendation.donatedShareOfWeeklyIncomePct}% of their 7D earning power. Sustainable Patriot Ceiling: ${formatBtc(nudgeRecommendation.sustainableWeeklyCapBtc)} BTC/wk.`}
                       </p>
                     </div>
                   </div>
@@ -2984,7 +3101,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                           </p>
                           {opt.isRecommended && (
                             <div className="inline-block px-2 py-0.5 rounded bg-cyan-500/20 border border-cyan-500/40 text-cyan-200 text-[11px] font-mono font-bold">
-                              ★ Recommended Advisory for {activeNudgeProfile.username}
+                              {`★ Recommended Advisory for ${activeNudgeProfile.username}`}
                             </div>
                           )}
                         </button>
@@ -3006,16 +3123,19 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                         <div>
                           <span className="font-bold text-amber-300 text-sm flex items-center gap-2">
-                            <Tag className="w-4 h-4 text-amber-400" /> {msg.title}
+                            <Tag className="w-4 h-4 text-amber-400" />
+                            <span>{msg.title}</span>
                           </span>
                           <div className="text-xs font-mono mt-1 flex items-center gap-2 text-slate-400">
                             <span className={charsExcludingName <= 492 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>
-                              ✓ {charsExcludingName} / 492 chars (excl. name)
+                              {`✓ ${charsExcludingName} / 492 chars (excl. name)`}
                             </span>
                             {activeDiplomaticMode === 'nudge' && (
                               <>
                                 <span>•</span>
-                                <span>Suggested: <strong className="text-amber-300">{formatBtc(effectiveNudgeBtc)} BTC</strong></span>
+                                <span>
+                                  <span>Suggested:</span> <strong className="text-amber-300">{formatBtc(effectiveNudgeBtc)} BTC</strong>
+                                </span>
                               </>
                             )}
                           </div>
@@ -3028,11 +3148,13 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                         >
                           {copiedIndex === idx ? (
                             <>
-                              <Check className="w-4 h-4 text-emerald-400" /> Copied!
+                              <Check className="w-4 h-4 text-emerald-400" />
+                              <span>Copied!</span>
                             </>
                           ) : (
                             <>
-                              <Copy className="w-4 h-4 text-slate-300" /> Copy Telegram
+                              <Copy className="w-4 h-4 text-slate-300" />
+                              <span>Copy Telegram</span>
                             </>
                           )}
                         </button>
@@ -3064,7 +3186,12 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
       {selectedAuditProfile && (
         <ErrorBoundary fallbackTitle="Financial Audit Error" onReset={() => setSelectedAuditProfile(null)}>
           <CitizenAuditModal
-            profile={bufferedUpdatesMap[selectedAuditProfile.userId] || selectedAuditProfile}
+            profile={
+              bufferedUpdatesMap[selectedAuditProfile.userId] ||
+              displayedProfiles.find((p) => p.userId === selectedAuditProfile.userId) ||
+              profiles.find((p) => p.userId === selectedAuditProfile.userId) ||
+              selectedAuditProfile
+            }
             config={config}
             countryName={countryName}
             apiKey={apiKey}
@@ -3073,6 +3200,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
             onClose={() => setSelectedAuditProfile(null)}
             onUpdateProfile={handleManualModalUpdate}
             onUpdateConfig={onUpdateConfig}
+            onOpenNudge={(prof) => setActiveNudgeProfile(prof)}
           />
         </ErrorBoundary>
       )}
@@ -3081,7 +3209,12 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
       {selectedExplainerProfile && (
         <ErrorBoundary fallbackTitle="Calculation Explainer Error" onReset={() => setSelectedExplainerProfile(null)}>
           <CitizenCalculationExplainerModal
-            profile={bufferedUpdatesMap[selectedExplainerProfile.userId] || selectedExplainerProfile}
+            profile={
+              bufferedUpdatesMap[selectedExplainerProfile.userId] ||
+              displayedProfiles.find((p) => p.userId === selectedExplainerProfile.userId) ||
+              profiles.find((p) => p.userId === selectedExplainerProfile.userId) ||
+              selectedExplainerProfile
+            }
             config={config}
             countryName={countryName}
             countryBenchmark={countryBenchmark}
@@ -3094,7 +3227,12 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
       {selectedIncomeBreakdownProfile && (
         <ErrorBoundary fallbackTitle="Gross Income Audit Error" onReset={() => setSelectedIncomeBreakdownProfile(null)}>
           <GrossIncomeBreakdownModal
-            profile={bufferedUpdatesMap[selectedIncomeBreakdownProfile.userId] || selectedIncomeBreakdownProfile}
+            profile={
+              bufferedUpdatesMap[selectedIncomeBreakdownProfile.userId] ||
+              displayedProfiles.find((p) => p.userId === selectedIncomeBreakdownProfile.userId) ||
+              profiles.find((p) => p.userId === selectedIncomeBreakdownProfile.userId) ||
+              selectedIncomeBreakdownProfile
+            }
             countryName={countryName}
             config={config}
             apiKey={apiKey}

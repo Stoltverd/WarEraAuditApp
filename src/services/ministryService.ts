@@ -1,5 +1,5 @@
 import { WareraUserLite, WareraCountry, WareraTransaction } from '../types/warera';
-import { extractItemTimestampMs, compareTransactionsNewestFirst } from './apiService';
+import { extractItemTimestampMs, compareTransactionsNewestFirst, isNonMonetaryInventoryNoise } from './apiService';
 import { AUDIT_PROFILE_SCHEMA_VERSION } from './storage';
 import {
   CANONICAL_24_COMMODITIES,
@@ -105,6 +105,7 @@ export function calculatePlayerCashflowSummary(
   let donationTransfersCount = 0;
   let muDonationsBtc = 0;
   let muDonationsCount = 0;
+  let windowReceiptCount = 0;
 
   let primaryTradedResource: 'oil' | 'iron' | 'food' | 'munitions' | 'general' = 'general';
   const resourceCounts: Record<string, number> = {};
@@ -137,19 +138,19 @@ export function calculatePlayerCashflowSummary(
     const seenIds = new Set<string>();
 
     for (const t of periodTransactions) {
+      if (!t || isNonMonetaryInventoryNoise(t)) continue;
       if (t._id) {
         if (seenIds.has(t._id)) continue;
         seenIds.add(t._id);
       }
 
       // Enforce observation window (7D vs 30D)
-      if (t.createdAt) {
-        const txTime = new Date(t.createdAt).getTime();
-        if (!isNaN(txTime) && txTime < cutoffTime) {
-          continue;
-        }
+      const txTime = extractItemTimestampMs(t);
+      if (!isNaN(txTime) && txTime < cutoffTime) {
+        continue;
       }
 
+      windowReceiptCount++;
       const amt = Number(t.money || t.amount || 0);
       const isActor = t.userId === userId;
       const isSeller = t.sellerId === userId;
@@ -418,6 +419,7 @@ export function calculatePlayerCashflowSummary(
       ministerialVerdict,
       ministerialVerdictReason,
       periodDays,
+      windowReceiptCount,
       dataSource,
       primaryTradedResource,
       constructionPurchasesBtc: Math.round(constructionPurchasesBtc * 100) / 100,
@@ -468,10 +470,12 @@ export function buildAuditedCitizenProfile(
     },
   };
 
+  const cleanPersonalTxs = (personalTxs || []).filter((t) => !isNonMonetaryInventoryNoise(t));
+
   const recalculated = calculatePlayerCashflowSummary(
     profile.userId,
     reconstructedUser,
-    personalTxs,
+    cleanPersonalTxs,
     windowDays,
     countryBenchmark
   );
@@ -480,25 +484,25 @@ export function buildAuditedCitizenProfile(
   const verifiedNetCashflow = recalculated.summary.netCashflowBtc;
   // ⚠️ CRITICAL ARCHITECTURAL INVARIANT:
   // 1. `periodDonated` strictly represents verified Country Treasury Donations (`sellerCountryId === countryId`).
-  //    Never allow Military Unit donations or stale 30D totals to overwrite `recalculated.summary.donationsGivenBtc`
-  //    when personal receipts have been streamed.
+  //    When `windowDays` matches the profile's active analysisPeriodDays, cross-verify against `profile.directDonatedBtc`
+  //    (from the country-level donation stream) so a verified national donation total is NEVER overwritten with 0.0.
   // 2. `newGross` MUST strictly equal `verifiedGrossInflow` (wages + market sales + tips received).
-  //    NEVER artificially inflate Gross Cash Inflow with `Math.max(verifiedGrossInflow, periodDonated)`,
-  //    which previously caused citizens with 0 inflow and 230 BTC donations to display +230 BTC Gross Inflow and -230 BTC Net Cashflow!
+  const baselineCountryPeriodDonated =
+    windowDays === (config.analysisPeriodDays || 7)
+      ? Number(profile.directDonatedBtc ?? profile.periodDonatedBtc ?? 0)
+      : 0;
   const periodDonated =
-    personalTxs.length > 0
-      ? recalculated.summary.donationsGivenBtc
+    cleanPersonalTxs.length > 0
+      ? Math.max(recalculated.summary.donationsGivenBtc, baselineCountryPeriodDonated)
       : Number(profile.periodDonatedBtc ?? profile.directDonatedBtc ?? 0);
+  if (periodDonated > recalculated.summary.donationsGivenBtc) {
+    recalculated.summary.donationsGivenBtc = periodDonated;
+  }
   const newGross = verifiedGrossInflow;
   const verifiedRatio = newGross > 0 ? Math.round((periodDonated / newGross) * 1000) / 10 : 0;
 
-  const currentWealthBasis =
-    config.includeResourceWealth && (profile.resourceWealthBtc || 0) > 0
-      ? profile.wealthBtc + (profile.resourceWealthBtc || 0)
-      : profile.wealthBtc;
-
   const tierEval = evaluateLeechTier(
-    currentWealthBasis,
+    profile.wealthBtc,
     periodDonated,
     { ...config, analysisPeriodDays: windowDays },
     newGross,
@@ -514,77 +518,13 @@ export function buildAuditedCitizenProfile(
     profile.liquidBtc
   );
 
-  // Harmonized Country-Relative Ministerial Audit Verdict (identical to auditCitizensIncomeGrowth)
-  const formatBtc = (val: number) =>
-    val.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-  const liquidCash = profile.liquidBtc ?? 0;
-  const resourceStock = profile.resourceWealthBtc ?? 0;
-  const hasBench = Boolean(countryBenchmark && countryBenchmark.totalActiveCitizens > 0);
-  const isUpperQuartileWealth = currentWealthBasis >= (hasBench ? countryBenchmark!.wealthP75 : 5000);
-  const isUpperQuartileLiquid = liquidCash >= (hasBench ? Math.max(25, countryBenchmark!.liquidP75) : 500);
-  const isUpperQuartileResource = resourceStock >= (hasBench ? Math.max(25, countryBenchmark!.resourceP75 || 0) : 500);
-  const countryCombatThreshold = hasBench
-    ? Math.max(50000, (countryBenchmark!.fighterDamageMedianTopTier || 250000) * 0.4)
-    : 250000;
-  const wealthDonationRatio = currentWealthBasis > 0 ? (periodDonated / currentWealthBasis) * 100 : 0;
-
-  let ministerialVerdict: import('../types/ministry').MinisterialVerdict =
-    recalculated.summary.ministerialVerdict || profile.ministerialVerdict || 'moderate-contributor';
-  let ministerialVerdictReason =
-    recalculated.summary.ministerialVerdictReason ||
-    profile.ministerialVerdictReason ||
-    tierEval.reason ||
-    'Citizen contributes at an acceptable national rate.';
-
-  if (profile.level < 15) {
-    ministerialVerdict = 'exempted-recruit';
-    ministerialVerdictReason = 'New recruit (Level < 15); exempt from ministerial contribution pressure.';
-  } else if (tierEval.tier === 'critical-leech') {
-    ministerialVerdict = 'slacker-evader';
-    ministerialVerdictReason =
-      tierEval.reason ||
-      `Identified Slacker / Evader: Upper wealth/stock bracket of ${profile.countryName || 'nation'} (${formatBtc(currentWealthBasis)} BTC net worth) with token period donations (${periodDonated.toLocaleString()} BTC, ${wealthDonationRatio.toFixed(2)}% of wealth).`;
-  } else if (tierEval.tier === 'historical-pillar') {
-    ministerialVerdict = 'patriotic-fulfiller';
-    ministerialVerdictReason =
-      tierEval.reason ||
-      `Historical Pillar of ${profile.countryName || 'nation'}: Outstanding lifetime contributions protected by sovereign charter.`;
-  } else if (tierEval.tier === 'combat-veteran') {
-    ministerialVerdict = 'patriotic-fulfiller';
-    ministerialVerdictReason =
-      tierEval.reason ||
-      `Combat Hero: Frontline warrior defending the nation with heavy combat damage.`;
-  } else if (tierEval.tier === 'sovereign-patriot') {
-    ministerialVerdict = 'patriotic-fulfiller';
-    ministerialVerdictReason = `Model Patriot: Contributed ${periodDonated.toLocaleString()} BTC in period (${tierEval.ratio}% ratio), meeting or exceeding national target.`;
-  } else if (
-    (isUpperQuartileWealth || isUpperQuartileLiquid || isUpperQuartileResource) &&
-    (periodDonated === 0 || wealthDonationRatio < 0.2) &&
-    (tierEval.damageValueBtc || 0) === 0
-  ) {
-    ministerialVerdict = 'slacker-evader';
-    ministerialVerdictReason =
-      tierEval.reason ||
-      `Identified Slacker: Upper wealth/stockpile bracket of ${profile.countryName || 'nation'} (${formatBtc(currentWealthBasis)} BTC) with token contributions (${periodDonated.toLocaleString()} BTC, ${wealthDonationRatio.toFixed(2)}% of wealth).`;
-  } else if (
-    currentWealthBasis < (hasBench ? countryBenchmark!.wealthMedian : 1500) &&
-    liquidCash < (hasBench ? countryBenchmark!.liquidMedian : 200) &&
-    resourceStock < (hasBench ? countryBenchmark!.resourceMedian || 150 : 150)
-  ) {
-    ministerialVerdict = 'subsistence-worker';
-    ministerialVerdictReason = `Subsistence Worker: Working citizen with wealth and liquidity below national median (${formatBtc(currentWealthBasis)} BTC). Exempted from taxation.`;
-  } else if (
-    isUpperQuartileWealth &&
-    liquidCash < (hasBench ? countryBenchmark!.liquidMedian : 100) &&
-    resourceStock < (hasBench ? countryBenchmark!.resourceP75 || 250 : 250) &&
-    (profile.totalCombatDamage || 0) >= countryCombatThreshold
-  ) {
-    ministerialVerdict = 'illiquid-asset-rich';
-    ministerialVerdictReason = `Illiquid Combatant: High asset equity (${formatBtc(currentWealthBasis)} BTC) locked in gear and factories, active on the front lines.`;
-  } else {
-    ministerialVerdict = 'moderate-contributor';
-    ministerialVerdictReason = `Active Citizen: Contributes at standard national rate (${tierEval.ratio}% ratio).`;
-  }
+  const { ministerialVerdict, ministerialVerdictReason } = evaluateMinisterialAuditVerdict(
+    profile,
+    periodDonated,
+    tierEval,
+    { ...config, analysisPeriodDays: windowDays },
+    countryBenchmark
+  );
 
   recalculated.summary.ministerialVerdict = ministerialVerdict;
   recalculated.summary.ministerialVerdictReason = ministerialVerdictReason;
@@ -596,6 +536,10 @@ export function buildAuditedCitizenProfile(
     profile.isNationalHeavyHitter
   );
 
+  const windowedCount = recalculated.summary.windowReceiptCount ?? cleanPersonalTxs.length;
+  const effectiveDonatedTotal = periodDonated + (tierEval.damageValueBtc || 0);
+  const effectiveVerifiedRatio = newGross > 0 ? Math.round((effectiveDonatedTotal / newGross) * 1000) / 10 : verifiedRatio;
+
   return {
     ...profile,
     playerCashflow: recalculated.summary,
@@ -605,7 +549,7 @@ export function buildAuditedCitizenProfile(
     periodDonatedBtc: periodDonated,
     directDonatedBtc: periodDonated,
     muDonationsBtc: recalculated.summary.muDonationsBtc,
-    contributionRatio: tierEval.ratio > 0 ? tierEval.ratio : verifiedRatio,
+    contributionRatio: tierEval.ratio > 0 ? tierEval.ratio : effectiveVerifiedRatio,
     leechTier: tierEval.tier,
     economicStanding: newStanding,
     damageValueBtc: tierEval.damageValueBtc,
@@ -617,8 +561,8 @@ export function buildAuditedCitizenProfile(
     auditBaselineStatus: 'audited',
     auditSchemaVersion: AUDIT_PROFILE_SCHEMA_VERSION,
     auditedAt: new Date().toISOString(),
-    receiptCount: personalTxs.length,
-    auditMethodologyNote: `Verified via ${personalTxs.length} live in-game personal receipts (${windowDays}D window).`,
+    receiptCount: windowedCount,
+    auditMethodologyNote: `Verified via ${windowedCount} live in-game personal receipts (${windowDays}D window).`,
   };
 }
 
@@ -962,9 +906,41 @@ export function detectCitizenRespecAlerts(
  * Default: >= 15% of income is Model Patriot, 5-10% is Low Contributor, < 5% is Leech.
  */
 /**
+ * Canonical lookup for Playstyle Quota Thresholds (Patriot, Moderate/Standard, and Low Contributor).
+ * Ensures the Overview Table, Audit Modal, and Policy Engine always display and enforce identical targets.
+ */
+export function getPlaystyleQuotaThresholds(
+  playstyle: PlaystyleMode = 'hybrid',
+  config?: MinistryConfig
+): { patriotPct: number; moderatePct: number; lowPct: number } {
+  if (playstyle === 'pure-war') {
+    return {
+      patriotPct: config?.warPatriotRatePct ?? DEFAULT_MINISTRY_CONFIG.warPatriotRatePct,
+      moderatePct: config?.warModerateRatePct ?? DEFAULT_MINISTRY_CONFIG.warModerateRatePct,
+      lowPct: config?.warLowRatePct ?? DEFAULT_MINISTRY_CONFIG.warLowRatePct,
+    };
+  }
+  if (playstyle === 'pure-eco') {
+    return {
+      patriotPct: config?.ecoPatriotRatePct ?? DEFAULT_MINISTRY_CONFIG.ecoPatriotRatePct,
+      moderatePct: config?.ecoModerateRatePct ?? DEFAULT_MINISTRY_CONFIG.ecoModerateRatePct,
+      lowPct: config?.ecoLowRatePct ?? DEFAULT_MINISTRY_CONFIG.ecoLowRatePct,
+    };
+  }
+  // Hybrid / General Default Quotas
+  return {
+    patriotPct: config?.patriotIncomeRatePct ?? config?.hybridPatriotRatePct ?? DEFAULT_MINISTRY_CONFIG.patriotIncomeRatePct,
+    moderatePct: config?.moderateIncomeRatePct ?? config?.hybridModerateRatePct ?? DEFAULT_MINISTRY_CONFIG.moderateIncomeRatePct,
+    lowPct: config?.lowContributorIncomeRatePct ?? config?.hybridLowRatePct ?? DEFAULT_MINISTRY_CONFIG.lowContributorIncomeRatePct,
+  };
+}
+
+/**
  * Evaluate citizen contribution tier against customizable mode-specific thresholds.
  * - Supports distinct rates for War Mode (frontline fighters spending on munitions),
  *   Eco Mode (passive wealth/production companies), and Hybrid Mode.
+ * - Credits all citizens with recorded battlefield damage using the exact conversion formula
+ *   when includeDamageInLeechCalculation is enabled, without hidden caps or build exclusions.
  * - Protects historical big contributors (e.g. lifetime donations >= grace threshold)
  *   from false leech classification during wartime mobilization.
  */
@@ -984,28 +960,7 @@ export function evaluateLeechTier(
   countryBenchmark?: CountryEconomicBenchmark,
   liquidBtc?: number
 ): { ratio: number; tier: LeechTier; reason?: string; damageValueBtc?: number } {
-  // Determine mode-specific percentage thresholds
-  let patriotPct: number;
-  let moderatePct: number;
-  let lowPct: number;
-
-  if (playstyle === 'pure-war') {
-    patriotPct = config?.warPatriotRatePct ?? 6;
-    moderatePct = config?.warModerateRatePct ?? 2.5;
-    lowPct = config?.warLowRatePct ?? 1;
-  } else if (playstyle === 'pure-eco') {
-    patriotPct = config?.ecoPatriotRatePct ?? 15;
-    moderatePct = config?.ecoModerateRatePct ?? 7;
-    lowPct = config?.ecoLowRatePct ?? 2.5;
-  } else if (playstyle === 'hybrid') {
-    patriotPct = config?.hybridPatriotRatePct ?? 12;
-    moderatePct = config?.hybridModerateRatePct ?? 6;
-    lowPct = config?.hybridLowRatePct ?? 2.5;
-  } else {
-    patriotPct = config?.patriotIncomeRatePct ?? DEFAULT_MINISTRY_CONFIG.patriotIncomeRatePct;
-    moderatePct = config?.moderateIncomeRatePct ?? DEFAULT_MINISTRY_CONFIG.moderateIncomeRatePct;
-    lowPct = config?.lowContributorIncomeRatePct ?? DEFAULT_MINISTRY_CONFIG.lowContributorIncomeRatePct;
-  }
+  const { patriotPct, moderatePct, lowPct } = getPlaystyleQuotaThresholds(playstyle, config);
 
   // Base wealth considering resource stockpile toggle if enabled
   const effectiveWealth = (config?.includeResourceWealth && resourceWealthBtc > 0)
@@ -1018,6 +973,7 @@ export function evaluateLeechTier(
   let leechWealthFloor: number;
   if (hasBenchmark) {
     if (percentileCutoff >= 90) leechWealthFloor = countryBenchmark!.wealthP90;
+    else if (percentileCutoff >= 80) leechWealthFloor = Math.round((countryBenchmark!.wealthP75 + countryBenchmark!.wealthP90) / 2);
     else if (percentileCutoff >= 75) leechWealthFloor = countryBenchmark!.wealthP75;
     else leechWealthFloor = countryBenchmark!.wealthMedian;
   } else {
@@ -1045,27 +1001,14 @@ export function evaluateLeechTier(
   // Dual-Index Component 2: Flow Index (verified gross income relative to playstyle quota & country median income)
   const effectiveIncome = typeof grossIncomeBtc === 'number' && grossIncomeBtc > 0 ? grossIncomeBtc : 0;
 
-  // Combat Damage Conversion with Strict Playstyle & Country-Relative Benchmark Gating:
+  // Universal Combat Damage Conversion: exact formula (combatDamage / 1000) * rate across all builds without artificial caps
   let damageValueBtc = 0;
-  if (config?.includeDamageInLeechCalculation && combatDamage > 0 && playstyle !== 'pure-eco') {
+  if (config?.includeDamageInLeechCalculation && combatDamage > 0) {
     const rate = config.damageConversionRateBtcPer1k ?? 0.08;
-    const rawCredit = (combatDamage / 1000) * rate;
-    const baseQuotaRef = effectiveIncome > 0
-      ? effectiveIncome * (moderatePct / 100)
-      : Math.max(5, countryMedianIncome * (moderatePct / 100));
-
-    if (playstyle === 'pure-war') {
-      if (isNationalHeavyHitter) {
-        damageValueBtc = rawCredit;
-      } else {
-        damageValueBtc = Math.min(rawCredit, Math.max(baseQuotaRef * 0.5, baseQuotaRef * 1.5));
-      }
-    } else if (playstyle === 'hybrid') {
-      damageValueBtc = Math.min(rawCredit, Math.max(baseQuotaRef * 0.25, baseQuotaRef * 0.5));
-    }
+    damageValueBtc = Math.round(((combatDamage / 1000) * rate) * 100) / 100;
   }
 
-  const effectiveCredit = donatedBtc + damageValueBtc;
+  const effectiveCredit = Math.round((donatedBtc + damageValueBtc) * 100) / 100;
   const ratio = effectiveIncome > 0
     ? parseFloat(((effectiveCredit / effectiveIncome) * 100).toFixed(1))
     : (effectiveWealth > 0 ? parseFloat(((effectiveCredit / effectiveWealth) * 100).toFixed(2)) : 0);
@@ -1101,54 +1044,58 @@ export function evaluateLeechTier(
   let tier: LeechTier;
   let reason: string | undefined = undefined;
   const wealthDonationRatioPct = effectiveWealth > 0 ? (effectiveCredit / effectiveWealth) * 100 : 0;
-  // Meets country-relative patriot benchmark if flow ratio >= patriotPct OR if period donation >= 1.5x country median donation (for low-flow donors)
+  // Meets country-relative patriot benchmark if flow ratio >= patriotPct OR if period contribution >= 1.5x country median donation (for low-flow donors)
   const meetsCountryRelativePatriot =
     (effectiveIncome > 0 && ratio >= patriotPct) ||
     (effectiveCredit > 0 && effectiveCredit >= Math.max(countryMedianDonation * 1.5, countryMedianIncome * (patriotPct / 100)));
+
+  const creditBreakdownText = damageValueBtc > 0
+    ? `${donatedBtc.toLocaleString()} BTC donated + ${damageValueBtc.toLocaleString()} BTC war credit (${effectiveCredit.toLocaleString()} BTC total)`
+    : `${donatedBtc.toLocaleString()} BTC donated`;
 
   if (effectiveIncome > 0) {
     if (isHighWealth && wealthDonationRatioPct < 0.2 && ratio < moderatePct) {
       tier = 'critical-leech';
       if (isLiquidHoarder) {
-        reason = `Dual-Index Alert (Idle Liquid Hoarder): Holds ${citizenLiquid.toLocaleString()} BTC liquid cash (${(citizenLiquid / Math.max(1, countryMedianLiquid)).toFixed(1)}x country median) with only ${ratio}% flow contribution.`;
+        reason = `Dual-Index Alert (Idle Liquid Hoarder): Holds ${citizenLiquid.toLocaleString()} BTC liquid cash (${(citizenLiquid / Math.max(1, countryMedianLiquid)).toFixed(1)}x country median) with only ${ratio}% flow contribution (target: ${moderatePct}%).`;
       } else if (isResourceStockpiler) {
-        reason = `Dual-Index Alert (Resource Stockpiler): Holds ${resourceWealthBtc.toLocaleString()} BTC in commodities (${(resourceWealthBtc / Math.max(1, countryMedianResource)).toFixed(1)}x country median) with only ${ratio}% flow contribution.`;
+        reason = `Dual-Index Alert (Resource Stockpiler): Holds ${resourceWealthBtc.toLocaleString()} BTC in commodities (${(resourceWealthBtc / Math.max(1, countryMedianResource)).toFixed(1)}x country median) with only ${ratio}% flow contribution (target: ${moderatePct}%).`;
       } else {
-        reason = `Dual-Index Alert (Upper-Quartile Evader): Top wealth bracket (${effectiveWealth.toLocaleString()} BTC vs country P75 ${leechWealthFloor.toLocaleString()} BTC) donating ${wealthDonationRatioPct.toFixed(2)}% of wealth.`;
+        reason = `Dual-Index Alert (Upper-Quartile Evader): Top wealth bracket (${effectiveWealth.toLocaleString()} BTC vs country cutoff ${leechWealthFloor.toLocaleString()} BTC) contributing ${wealthDonationRatioPct.toFixed(2)}% of wealth (${ratio}% vs ${moderatePct}% quota).`;
       }
     } else if (meetsCountryRelativePatriot) {
       tier = (damageValueBtc > 0 && donatedBtc === 0 && playstyle === 'pure-war') ? 'combat-veteran' : 'sovereign-patriot';
-      reason = `Dual-Index Sovereign Patriot: Donated ${donatedBtc.toLocaleString()} BTC (${ratio}% of period cashflow), exceeding national ${playstyle} benchmark (${patriotPct}%).`;
+      reason = `Dual-Index Sovereign Patriot: ${creditBreakdownText} (${ratio}% of period cashflow), meeting or exceeding national ${playstyle} Patriot quota (${patriotPct}%).`;
     } else if (ratio >= moderatePct || (isBelowCountryMedianStock && effectiveCredit > 0)) {
       tier = 'moderate';
-      reason = `Standard Contributor: Donated ${donatedBtc.toLocaleString()} BTC (${ratio}% of period cashflow) relative to country median income (${countryMedianIncome.toLocaleString()} BTC).`;
+      reason = `Standard Contributor: ${creditBreakdownText} (${ratio}% of period cashflow vs ${moderatePct}% quota target).`;
     } else if (ratio >= lowPct || isBelowCountryMedianStock) {
       tier = 'low-contributor';
       reason = isBelowCountryMedianStock
         ? `Subsistence / Developing Citizen: Below country median wealth (${countryMedianWealth.toLocaleString()} BTC) and liquid cash; protected from Critical Leech classification.`
-        : `Low Weekly Contributor: Donated ${ratio}% of period cashflow (target: ${moderatePct}%–${patriotPct}%).`;
+        : `Low Weekly Contributor: ${creditBreakdownText} (${ratio}% of period cashflow vs ${moderatePct}% quota target).`;
     } else {
       tier = isHighWealth ? 'critical-leech' : 'low-contributor';
       reason = isHighWealth
-        ? `Critical Leech: High capacity relative to country peers (${effectiveWealth.toLocaleString()} BTC) with ${ratio}% period contribution.`
-        : `Low Weekly Contributor: Below target cashflow quota (${ratio}% vs ${moderatePct}% target), but below country P75 wealth cutoff.`;
+        ? `Critical Leech: High capacity relative to country peers (${effectiveWealth.toLocaleString()} BTC) with ${ratio}% period contribution (target: ${moderatePct}%).`
+        : `Low Weekly Contributor: Below target cashflow quota (${ratio}% vs ${moderatePct}% target), but below country wealth cutoff.`;
     }
   } else {
     // Zero recorded income / pending personal stream: evaluate via Stock Index relative to country medians
     if (meetsCountryRelativePatriot) {
-      tier = 'sovereign-patriot';
-      reason = `Sovereign Patriot: Donated ${donatedBtc.toLocaleString()} BTC in period, exceeding country median contribution benchmarks.`;
+      tier = (damageValueBtc > 0 && donatedBtc === 0 && playstyle === 'pure-war') ? 'combat-veteran' : 'sovereign-patriot';
+      reason = `Sovereign Patriot: ${creditBreakdownText} in period, exceeding country median contribution benchmarks.`;
     } else if (isHighWealth) {
       if (wealthDonationRatioPct >= 0.2 || effectiveCredit >= countryMedianDonation) {
         tier = 'moderate';
-        reason = `Active Upper-Bracket Contributor: Donated ${donatedBtc.toLocaleString()} BTC in period.`;
+        reason = `Active Upper-Bracket Contributor: ${creditBreakdownText} in period.`;
       } else {
         tier = 'critical-leech';
         reason = isLiquidHoarder
-          ? `Idle Liquid Hoarder: Holds ${citizenLiquid.toLocaleString()} BTC unused liquid cash (${(citizenLiquid / Math.max(1, countryMedianLiquid)).toFixed(1)}x country median) with ${donatedBtc.toLocaleString()} BTC donated.`
+          ? `Idle Liquid Hoarder: Holds ${citizenLiquid.toLocaleString()} BTC unused liquid cash (${(citizenLiquid / Math.max(1, countryMedianLiquid)).toFixed(1)}x country median) with ${creditBreakdownText}.`
           : isResourceStockpiler
-          ? `Resource Stockpiler: Holds ${resourceWealthBtc.toLocaleString()} BTC in commodity stockpiles (${(resourceWealthBtc / Math.max(1, countryMedianResource)).toFixed(1)}x country median) with ${donatedBtc.toLocaleString()} BTC donated.`
-          : `Upper-Bracket Non-Donor: Net worth (${effectiveWealth.toLocaleString()} BTC) exceeds country P75 (${leechWealthFloor.toLocaleString()} BTC) with token period donations.`;
+          ? `Resource Stockpiler: Holds ${resourceWealthBtc.toLocaleString()} BTC in commodity stockpiles (${(resourceWealthBtc / Math.max(1, countryMedianResource)).toFixed(1)}x country median) with ${creditBreakdownText}.`
+          : `Upper-Bracket Non-Donor: Net worth (${effectiveWealth.toLocaleString()} BTC) exceeds country cutoff (${leechWealthFloor.toLocaleString()} BTC) with token period contributions.`;
       }
     } else {
       tier = effectiveCredit > 0 ? 'moderate' : 'low-contributor';
@@ -1159,6 +1106,116 @@ export function evaluateLeechTier(
   }
 
   return { ratio, tier, reason, damageValueBtc };
+}
+
+/**
+ * Canonical Country-Relative Ministerial Audit Verdict Evaluator.
+ * Used identically across live receipt audits, batch policy re-evaluations, and reactive UI memos.
+ */
+export function evaluateMinisterialAuditVerdict(
+  profile: Pick<
+    CitizenEconomicProfile,
+    'level' | 'wealthBtc' | 'liquidBtc' | 'resourceWealthBtc' | 'totalCombatDamage' | 'countryName' | 'ministerialVerdict' | 'ministerialVerdictReason'
+  >,
+  periodDonated: number,
+  tierEval: { ratio: number; tier: LeechTier; reason?: string; damageValueBtc?: number },
+  config?: MinistryConfig,
+  countryBenchmark?: CountryEconomicBenchmark
+): {
+  ministerialVerdict: import('../types/ministry').MinisterialVerdict;
+  ministerialVerdictReason: string;
+} {
+  const formatBtc = (val: number) =>
+    val.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const resourceStock = profile.resourceWealthBtc ?? 0;
+  const currentWealthBasis =
+    config?.includeResourceWealth && resourceStock > 0
+      ? profile.wealthBtc + resourceStock
+      : profile.wealthBtc;
+  const liquidCash = profile.liquidBtc ?? 0;
+  const hasBench = Boolean(countryBenchmark && countryBenchmark.totalActiveCitizens > 0);
+  const percentileCutoff = config?.leechWealthPercentileCutoff ?? 75;
+  const wealthCutoff = hasBench
+    ? percentileCutoff >= 90
+      ? countryBenchmark!.wealthP90
+      : percentileCutoff >= 80
+      ? Math.round((countryBenchmark!.wealthP75 + countryBenchmark!.wealthP90) / 2)
+      : percentileCutoff >= 75
+      ? countryBenchmark!.wealthP75
+      : countryBenchmark!.wealthMedian
+    : (config?.highWealthThreshold ?? 5000);
+  const isUpperQuartileWealth = currentWealthBasis >= wealthCutoff;
+  const isUpperQuartileLiquid = liquidCash >= (hasBench ? Math.max(25, countryBenchmark!.liquidP75) : 500);
+  const isUpperQuartileResource = resourceStock >= (hasBench ? Math.max(25, countryBenchmark!.resourceP75 || 0) : 500);
+  const countryCombatThreshold = hasBench
+    ? Math.max(50000, (countryBenchmark!.fighterDamageMedianTopTier || 250000) * 0.4)
+    : 250000;
+  const effectiveDonated = periodDonated + (tierEval.damageValueBtc || 0);
+  const wealthDonationRatio = currentWealthBasis > 0 ? (effectiveDonated / currentWealthBasis) * 100 : 0;
+
+  let ministerialVerdict: import('../types/ministry').MinisterialVerdict =
+    profile.ministerialVerdict || 'moderate-contributor';
+  let ministerialVerdictReason =
+    tierEval.reason ||
+    profile.ministerialVerdictReason ||
+    'Citizen contributes at an acceptable national rate.';
+
+  if (profile.level < 15) {
+    ministerialVerdict = 'exempted-recruit';
+    ministerialVerdictReason = 'New recruit (Level < 15); exempt from ministerial contribution pressure.';
+  } else if (tierEval.tier === 'critical-leech') {
+    ministerialVerdict = 'slacker-evader';
+    ministerialVerdictReason =
+      tierEval.reason ||
+      `Identified Slacker / Evader: Upper wealth/stock bracket of ${profile.countryName || 'nation'} (${formatBtc(currentWealthBasis)} BTC net worth) with token period contributions (${effectiveDonated.toLocaleString()} BTC, ${wealthDonationRatio.toFixed(2)}% of wealth).`;
+  } else if (tierEval.tier === 'historical-pillar') {
+    ministerialVerdict = 'patriotic-fulfiller';
+    ministerialVerdictReason =
+      tierEval.reason ||
+      `Historical Pillar of ${profile.countryName || 'nation'}: Outstanding lifetime contributions protected by sovereign charter.`;
+  } else if (tierEval.tier === 'combat-veteran') {
+    ministerialVerdict = 'patriotic-fulfiller';
+    ministerialVerdictReason =
+      tierEval.reason ||
+      `Combat Hero: Frontline warrior defending the nation with heavy combat damage.`;
+  } else if (tierEval.tier === 'sovereign-patriot') {
+    ministerialVerdict = 'patriotic-fulfiller';
+    ministerialVerdictReason =
+      tierEval.reason ||
+      `Model Patriot: Contributed ${effectiveDonated.toLocaleString()} BTC in period (${tierEval.ratio}% ratio), meeting or exceeding national target.`;
+  } else if (
+    tierEval.tier === 'low-contributor' &&
+    (isUpperQuartileWealth || isUpperQuartileLiquid || isUpperQuartileResource) &&
+    (effectiveDonated === 0 || wealthDonationRatio < 0.2) &&
+    (tierEval.damageValueBtc || 0) === 0
+  ) {
+    ministerialVerdict = 'slacker-evader';
+    ministerialVerdictReason =
+      tierEval.reason ||
+      `Identified Slacker: Upper wealth/stockpile bracket of ${profile.countryName || 'nation'} (${formatBtc(currentWealthBasis)} BTC) with token contributions (${effectiveDonated.toLocaleString()} BTC, ${wealthDonationRatio.toFixed(2)}% of wealth).`;
+  } else if (
+    currentWealthBasis < (hasBench ? countryBenchmark!.wealthMedian : 1500) &&
+    liquidCash < (hasBench ? countryBenchmark!.liquidMedian : 200) &&
+    resourceStock < (hasBench ? countryBenchmark!.resourceMedian || 150 : 150)
+  ) {
+    ministerialVerdict = 'subsistence-worker';
+    ministerialVerdictReason = `Subsistence Worker: Working citizen with wealth and liquidity below national median (${formatBtc(currentWealthBasis)} BTC). Exempted from taxation.`;
+  } else if (
+    isUpperQuartileWealth &&
+    liquidCash < (hasBench ? countryBenchmark!.liquidMedian : 100) &&
+    resourceStock < (hasBench ? countryBenchmark!.resourceP75 || 250 : 250) &&
+    (profile.totalCombatDamage || 0) >= countryCombatThreshold &&
+    tierEval.tier !== 'moderate'
+  ) {
+    ministerialVerdict = 'illiquid-asset-rich';
+    ministerialVerdictReason = `Illiquid Combatant: High asset equity (${formatBtc(currentWealthBasis)} BTC) locked in gear and factories, active on the front lines.`;
+  } else {
+    ministerialVerdict = 'moderate-contributor';
+    ministerialVerdictReason =
+      tierEval.reason || `Active Citizen: Contributes at standard national rate (${tierEval.ratio}% ratio).`;
+  }
+
+  return { ministerialVerdict, ministerialVerdictReason };
 }
 
 /**
@@ -1174,8 +1231,11 @@ export function resolveMasterCitizenStanding(
   if (isHistoricalPillar || tier === 'historical-pillar') {
     return 'historical-pillar';
   }
+  if (isCombatHero || tier === 'combat-veteran') {
+    return 'combat-veteran';
+  }
   // Industrial & battlefield solvency buffer: illiquid producers and active veterans are protected
-  if (verdict === 'illiquid-asset-rich' || isCombatHero || tier === 'combat-veteran') {
+  if (verdict === 'illiquid-asset-rich') {
     return 'illiquid-fighter';
   }
   if (verdict === 'subsistence-worker') {
@@ -1183,6 +1243,9 @@ export function resolveMasterCitizenStanding(
   }
   if (verdict === 'slacker-evader' || tier === 'critical-leech') {
     return 'evader-leech';
+  }
+  if (tier === 'low-contributor') {
+    return 'low-contributor';
   }
   if (verdict === 'patriotic-fulfiller' || tier === 'sovereign-patriot') {
     return 'sovereign-patriot';
@@ -1260,8 +1323,10 @@ export async function auditCitizensIncomeGrowth(
 
     const userTxList = [...personalTxs, ...nationalDonations];
 
-    // STRICT IMMUTABILITY: If profile was already verified via the live API stream under the current schema version
-    // (and isn't an empty 0-receipt record when IndexedDB actually holds cached personal receipts), preserve it intact
+    // If profile was already verified via the live API stream under the current schema version
+    // (and isn't an empty 0-receipt record when IndexedDB actually holds cached personal receipts),
+    // preserve its verified cashflow receipts while dynamically re-evaluating all policy-dependent
+    // tiers, combat damage credits, and ministerial verdicts against the active MinistryConfig!
     if (
       p.auditBaselineStatus === 'audited' &&
       p.auditSchemaVersion === AUDIT_PROFILE_SCHEMA_VERSION &&
@@ -1269,10 +1334,58 @@ export async function auditCitizensIncomeGrowth(
       ((p.receiptCount || 0) > 0 || personalTxs.length === 0) &&
       (p.grossIncomeBtc !== undefined || p.playerCashflow || typeof p.receiptCount === 'number')
     ) {
+      const preservedGrossInflow = p.grossInflowBtc ?? p.grossIncomeBtc ?? 0;
+      const preservedNetCashflow = p.netCashflowBtc ?? p.playerCashflow?.netCashflowBtc ?? 0;
+      const preservedPeriodDonated = p.periodDonatedBtc ?? p.directDonatedBtc ?? 0;
+
+      const reEval = evaluateLeechTier(
+        p.wealthBtc,
+        preservedPeriodDonated,
+        config,
+        preservedGrossInflow,
+        p.playstyle,
+        p.totalDonatedBtc,
+        p.resourceWealthBtc || 0,
+        p.totalCombatDamage || 0,
+        p.isHistoricalTopDonor || false,
+        p.historicalRank,
+        p.isNationalHeavyHitter || false,
+        p.heavyHitterRank,
+        countryBenchmark,
+        p.liquidBtc
+      );
+
+      const { ministerialVerdict: reVerdict, ministerialVerdictReason: reVerdictReason } =
+        evaluateMinisterialAuditVerdict(p, preservedPeriodDonated, reEval, config, countryBenchmark);
+
+      const reStanding = resolveMasterCitizenStanding(
+        reEval.tier,
+        reVerdict,
+        p.isHistoricalTopDonor,
+        p.isNationalHeavyHitter
+      );
+
       auditedProfiles.push({
         ...p,
-        grossInflowBtc: p.grossInflowBtc ?? p.grossIncomeBtc ?? 0,
-        netCashflowBtc: p.netCashflowBtc ?? p.playerCashflow?.netCashflowBtc ?? 0,
+        grossIncomeBtc: preservedGrossInflow,
+        grossInflowBtc: preservedGrossInflow,
+        netCashflowBtc: preservedNetCashflow,
+        periodDonatedBtc: preservedPeriodDonated,
+        directDonatedBtc: preservedPeriodDonated,
+        damageValueBtc: reEval.damageValueBtc ?? 0,
+        contributionRatio: reEval.ratio,
+        leechTier: reEval.tier,
+        tierReasonBadge: reEval.reason || p.tierReasonBadge,
+        ministerialVerdict: reVerdict,
+        ministerialVerdictReason: reVerdictReason,
+        economicStanding: reStanding,
+        playerCashflow: p.playerCashflow
+          ? {
+              ...p.playerCashflow,
+              ministerialVerdict: reVerdict,
+              ministerialVerdictReason: reVerdictReason,
+            }
+          : undefined,
         auditedAt: p.auditedAt,
         receiptCount: p.receiptCount ?? personalTxs.length,
         auditDeltaAlert: p.auditDeltaAlert,
@@ -1315,7 +1428,7 @@ export async function auditCitizensIncomeGrowth(
         Boolean(p.auditedAt) &&
         p.auditSchemaVersion === AUDIT_PROFILE_SCHEMA_VERSION);
     const periodDonated = hasLivePersonalReceipts
-      ? cashflow.summary.donationsGivenBtc
+      ? Math.max(cashflow.summary.donationsGivenBtc, dynamicPeriodDonations)
       : dynamicPeriodDonations > 0
       ? dynamicPeriodDonations
       : Number(p.periodDonatedBtc ?? p.directDonatedBtc ?? 0);
@@ -1333,7 +1446,8 @@ export async function auditCitizensIncomeGrowth(
       grossIncome = grossInflow;
       auditStatus = 'audited';
       auditedAtTimestamp = p.auditedAt || new Date().toISOString();
-      auditMethodologyNote = `Verified via ${personalTxs.length} live in-game personal receipts (${periodDays}D window).`;
+      const windowedCount = cashflow.summary.windowReceiptCount ?? personalTxs.length;
+      auditMethodologyNote = `Verified via ${windowedCount} live in-game personal receipts (${periodDays}D window).`;
     } else {
       // PURGE ALL ESTIMATES: No guesswork formulas
       grossIncome = 0;
@@ -1345,8 +1459,8 @@ export async function auditCitizensIncomeGrowth(
     }
 
     // Evaluate tier against customizable mode-specific thresholds & historical credit
-    const { ratio, tier, damageValueBtc, reason } = evaluateLeechTier(
-      currentWealthBasis,
+    const tierEval = evaluateLeechTier(
+      p.wealthBtc,
       periodDonated,
       config,
       grossIncome,
@@ -1361,65 +1475,34 @@ export async function auditCitizensIncomeGrowth(
       countryBenchmark,
       p.liquidBtc
     );
+    const { ratio, tier, damageValueBtc, reason } = tierEval;
 
     // Harmonized Country-Relative Ministerial Audit Verdict
     let ministerialVerdict: import('../types/ministry').MinisterialVerdict = p.ministerialVerdict || 'moderate-contributor';
     let ministerialVerdictReason = p.ministerialVerdictReason || reason || 'Citizen contributes at an acceptable national rate.';
 
     if (hasLivePersonalReceipts) {
-      const formatBtc = (val: number) => val.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-      const liquidCash = p.liquidBtc ?? 0;
-      const resourceStock = p.resourceWealthBtc ?? 0;
-      const hasBench = Boolean(countryBenchmark && countryBenchmark.totalActiveCitizens > 0);
-      const isUpperQuartileWealth = currentWealthBasis >= (hasBench ? countryBenchmark!.wealthP75 : 5000);
-      const isUpperQuartileLiquid = liquidCash >= (hasBench ? Math.max(25, countryBenchmark!.liquidP75) : 500);
-      const isUpperQuartileResource = resourceStock >= (hasBench ? Math.max(25, countryBenchmark!.resourceP75 || 0) : 500);
-      const countryCombatThreshold = hasBench
-        ? Math.max(50000, (countryBenchmark!.fighterDamageMedianTopTier || 250000) * 0.4)
-        : 250000;
-      const wealthDonationRatio = currentWealthBasis > 0 ? (periodDonated / currentWealthBasis) * 100 : 0;
-
-      if (p.level < 15) {
-        ministerialVerdict = 'exempted-recruit';
-        ministerialVerdictReason = 'New recruit (Level < 15); exempt from ministerial contribution pressure.';
-      } else if (tier === 'critical-leech') {
-        ministerialVerdict = 'slacker-evader';
-        ministerialVerdictReason = reason || `Identified Slacker / Evader: Upper wealth/stock bracket of ${p.countryName || 'nation'} (${formatBtc(currentWealthBasis)} BTC net worth) with token period donations (${periodDonated.toLocaleString()} BTC, ${wealthDonationRatio.toFixed(2)}% of wealth).`;
-      } else if (tier === 'historical-pillar') {
-        ministerialVerdict = 'patriotic-fulfiller';
-        ministerialVerdictReason = reason || `Historical Pillar of ${p.countryName || 'nation'}: Outstanding lifetime contributions protected by sovereign charter.`;
-      } else if (tier === 'combat-veteran') {
-        ministerialVerdict = 'patriotic-fulfiller';
-        ministerialVerdictReason = reason || `Combat Hero: Frontline warrior defending the nation with heavy combat damage.`;
-      } else if (tier === 'sovereign-patriot') {
-        ministerialVerdict = 'patriotic-fulfiller';
-        ministerialVerdictReason = `Model Patriot: Contributed ${periodDonated.toLocaleString()} BTC in period (${ratio}% ratio), meeting or exceeding national target.`;
-      } else if ((isUpperQuartileWealth || isUpperQuartileLiquid || isUpperQuartileResource) && (periodDonated === 0 || wealthDonationRatio < 0.2) && (damageValueBtc || 0) === 0) {
-        ministerialVerdict = 'slacker-evader';
-        ministerialVerdictReason = reason || `Identified Slacker: Upper wealth/stockpile bracket of ${p.countryName || 'nation'} (${formatBtc(currentWealthBasis)} BTC) with token contributions (${periodDonated.toLocaleString()} BTC, ${wealthDonationRatio.toFixed(2)}% of wealth).`;
-      } else if (
-        currentWealthBasis < (hasBench ? countryBenchmark!.wealthMedian : 1500) &&
-        liquidCash < (hasBench ? countryBenchmark!.liquidMedian : 200) &&
-        resourceStock < (hasBench ? (countryBenchmark!.resourceMedian || 150) : 150)
-      ) {
-        ministerialVerdict = 'subsistence-worker';
-        ministerialVerdictReason = `Subsistence Worker: Working citizen with wealth and liquidity below national median (${formatBtc(currentWealthBasis)} BTC). Exempted from taxation.`;
-      } else if (
-        isUpperQuartileWealth &&
-        liquidCash < (hasBench ? countryBenchmark!.liquidMedian : 100) &&
-        resourceStock < (hasBench ? (countryBenchmark!.resourceP75 || 250) : 250) &&
-        (p.totalCombatDamage || 0) >= countryCombatThreshold
-      ) {
-        ministerialVerdict = 'illiquid-asset-rich';
-        ministerialVerdictReason = `Illiquid Combatant: High asset equity (${formatBtc(currentWealthBasis)} BTC) locked in gear and factories, active on the front lines.`;
-      } else {
-        ministerialVerdict = 'moderate-contributor';
-        ministerialVerdictReason = `Active Citizen: Contributes at standard national rate (${ratio}% ratio).`;
-      }
+      const verdictRes = evaluateMinisterialAuditVerdict(
+        p,
+        periodDonated,
+        tierEval,
+        config,
+        countryBenchmark
+      );
+      ministerialVerdict = verdictRes.ministerialVerdict;
+      ministerialVerdictReason = verdictRes.ministerialVerdictReason;
 
       cashflow.summary.ministerialVerdict = ministerialVerdict;
       cashflow.summary.ministerialVerdictReason = ministerialVerdictReason;
     }
+
+    const effectiveTier = hasLivePersonalReceipts ? tier : p.leechTier;
+    const newStanding = resolveMasterCitizenStanding(
+      effectiveTier,
+      ministerialVerdict,
+      p.isHistoricalTopDonor,
+      p.isNationalHeavyHitter
+    );
 
     auditedProfiles.push({
       ...p,
@@ -1431,13 +1514,14 @@ export async function auditCitizensIncomeGrowth(
       directDonatedBtc: periodDonated,
       muDonationsBtc: hasLivePersonalReceipts ? cashflow.summary.muDonationsBtc : undefined,
       contributionRatio: hasLivePersonalReceipts ? ratio : 0,
-      leechTier: hasLivePersonalReceipts ? tier : p.leechTier,
+      leechTier: effectiveTier,
+      economicStanding: newStanding,
       damageValueBtc: damageValueBtc !== undefined ? damageValueBtc : p.damageValueBtc,
       tierReasonBadge: hasLivePersonalReceipts ? (reason || p.tierReasonBadge) : (p.tierReasonBadge || 'Pending personal audit'),
       auditBaselineStatus: auditStatus,
       auditSchemaVersion: hasLivePersonalReceipts ? AUDIT_PROFILE_SCHEMA_VERSION : undefined,
       auditedAt: auditedAtTimestamp,
-      receiptCount: hasLivePersonalReceipts ? personalTxs.length : undefined,
+      receiptCount: hasLivePersonalReceipts ? (cashflow.summary.windowReceiptCount ?? personalTxs.length) : undefined,
       auditMethodologyNote,
       ministerialVerdict,
       ministerialVerdictReason,

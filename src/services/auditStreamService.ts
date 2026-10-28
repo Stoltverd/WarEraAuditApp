@@ -444,6 +444,28 @@ class AutoAuditStreamService {
     // Universal 4-thread concurrency across all countries, paced safely by rateLimitedFetch token bucket
     const CONCURRENCY = Math.min(4, Math.max(1, unverified.length));
 
+    // Pre-load verified country donation transactions so every citizen's personal stream is cross-verified
+    // and unioned by _id with the national donation ledger (preventing 0 BTC donation overwrites)
+    const countryDonationsByUser = new Map<string, import('../types/warera').WareraTransaction[]>();
+    if (incomingCountryId) {
+      try {
+        const countryTxs = await storage.getTransactionsByCountry(incomingCountryId);
+        for (const tx of countryTxs) {
+          const donorId = tx.userId || tx.buyerId;
+          if (!donorId) continue;
+          const list = countryDonationsByUser.get(donorId) || [];
+          list.push({
+            ...tx,
+            userId: donorId,
+            buyerId: tx.buyerId || donorId,
+            sellerCountryId: tx.sellerCountryId || tx.countryId || incomingCountryId,
+            isPersonalReceipt: true,
+          });
+          countryDonationsByUser.set(donorId, list);
+        }
+      } catch {}
+    }
+
     const worker = async (workerIndex: number) => {
       while (queueIndex < unverified.length && !isStaleRun()) {
         while (this.isPaused && !isStaleRun()) {
@@ -474,6 +496,7 @@ class AutoAuditStreamService {
         // Load previously cached personal receipts from the dedicated 'personal_receipts' store
         // to merge after streaming the full time window, NEVER to short-circuit Page 1!
         const storedTxs = await storage.getUserPersonalTransactions(citizen.userId);
+        const citizenCountryDonations = countryDonationsByUser.get(citizen.userId) || [];
         if (isStaleRun()) break;
 
         const knownTxIds = new Set<string>();
@@ -485,9 +508,12 @@ class AutoAuditStreamService {
         // while their displayed profile has 0 receipts, immediately hydrate and emit their cached audit profile
         // before streaming fresh delta pages so they never appear empty even while paging!
         if (storedTxs.length > 0 && (citizen.receiptCount || 0) === 0) {
+          const initialMergedMap = new Map<string, import('../types/warera').WareraTransaction>();
+          for (const t of citizenCountryDonations) if (t._id) initialMergedMap.set(t._id, t);
+          for (const t of storedTxs) if (t._id) initialMergedMap.set(t._id, t);
           const preHydrated = buildAuditedCitizenProfile(
             citizen,
-            storedTxs,
+            Array.from(initialMergedMap.values()),
             config,
             countryBenchmark,
             windowDays
@@ -543,6 +569,7 @@ class AutoAuditStreamService {
             if (isStaleRun()) break;
 
             const mergedMap = new Map<string, import('../types/warera').WareraTransaction>();
+            for (const t of citizenCountryDonations) if (t._id) mergedMap.set(t._id, t);
             for (const t of storedTxs) if (t._id) mergedMap.set(t._id, t);
             for (const t of txs) if (t._id) mergedMap.set(t._id, t);
             const allUserTxs = Array.from(mergedMap.values());
