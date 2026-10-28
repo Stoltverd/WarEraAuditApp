@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   CitizenEconomicProfile,
   LeechTier,
@@ -9,14 +9,24 @@ import {
   MinistryConfig,
   DEFAULT_MINISTRY_CONFIG,
   CountryEconomicBenchmark,
+  NudgeArchetype,
+  DiplomaticActionMode,
+  CommendationArchetype,
+  OverDonationWarningArchetype,
+  CommodityTrend,
 } from '../../types/ministry';
-import { sanitizePolicyConfig } from '../../services/storage';
-import { generateMinisterialNudge, resolveMasterCitizenStanding } from '../../services/ministryService';
+import { sanitizePolicyConfig, storage } from '../../services/storage';
+import {
+  generateMinisterialNudge,
+  calculateCitizenSuggestedDonation,
+  resolveMasterCitizenStanding,
+} from '../../services/ministryService';
 import { formatDateDDMMYYYY, formatDateTimeDDMMYYYY } from '../../utils/dateUtils';
 import { SyncProgress } from '../../types/warera';
 import { CitizenAuditModal } from './CitizenAuditModal';
 import { CitizenCalculationExplainerModal } from './CitizenCalculationExplainerModal';
 import { GrossIncomeBreakdownModal } from './GrossIncomeBreakdownModal';
+import { AuditProgressDock } from './AuditProgressDock';
 import { ErrorBoundary } from '../common/ErrorBoundary';
 import {
   Search,
@@ -55,7 +65,11 @@ import {
   Pause,
   Square,
 } from 'lucide-react';
-import { auditStreamService, AutoAuditStreamState } from '../../services/auditStreamService';
+import {
+  auditStreamService,
+  AutoAuditStreamState,
+  AUDIT_STALE_TTL_MS,
+} from '../../services/auditStreamService';
 
 interface CitizenRadarProps {
   profiles: CitizenEconomicProfile[];
@@ -74,7 +88,9 @@ interface CitizenRadarProps {
   onOpenBackup?: () => void;
   apiKey?: string;
   countryBenchmark?: CountryEconomicBenchmark;
+  commodities?: CommodityTrend[];
   onUpdateProfile?: (updated: CitizenEconomicProfile) => void;
+  onUpdateProfilesBatch?: (updatedList: CitizenEconomicProfile[]) => void;
 }
 
 export const CitizenRadar: React.FC<CitizenRadarProps> = ({
@@ -86,6 +102,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
   isSyncing = false,
   syncProgress = null,
   countryBenchmark,
+  commodities = [],
   onUpdateConfig,
   onUpdateTag,
   onPutOnWatch,
@@ -95,10 +112,12 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
   onOpenBackup,
   apiKey,
   onUpdateProfile,
+  onUpdateProfilesBatch,
 }) => {
   const [search, setSearch] = useState('');
   const [filterFiscalStanding, setFilterFiscalStanding] = useState<string>('all');
   const [filterBuild, setFilterBuild] = useState<string>('all');
+  const [filterBuildGrade, setFilterBuildGrade] = useState<string>('all');
   const [onlyInactiveDonors, setOnlyInactiveDonors] = useState<boolean>(false);
   const [isPolicyModalOpen, setIsPolicyModalOpen] = useState<boolean>(false);
   const [showPolicyHelp, setShowPolicyHelp] = useState<boolean>(false);
@@ -126,10 +145,29 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
   const isPolicyValid = isGeneralValid && isWarValid && isEcoValid;
 
   const [activeNudgeProfile, setActiveNudgeProfile] = useState<CitizenEconomicProfile | null>(null);
+  const [diplomaticModeOverride, setDiplomaticModeOverride] = useState<DiplomaticActionMode | undefined>(undefined);
+  const [nudgeArchetypeOverride, setNudgeArchetypeOverride] = useState<NudgeArchetype | undefined>(undefined);
+  const [commendationArchetypeOverride, setCommendationArchetypeOverride] = useState<CommendationArchetype | undefined>(undefined);
+  const [overDonationArchetypeOverride, setOverDonationArchetypeOverride] = useState<OverDonationWarningArchetype | undefined>(undefined);
+  const [customNudgeBtc, setCustomNudgeBtc] = useState<number | undefined>(undefined);
+  const [showNudgeArchetypeHelp, setShowNudgeArchetypeHelp] = useState<boolean>(false);
+  const [showNudgeCalculationHelp, setShowNudgeCalculationHelp] = useState<boolean>(false);
   const [selectedExplainerProfile, setSelectedExplainerProfile] = useState<CitizenEconomicProfile | null>(null);
   const [selectedIncomeBreakdownProfile, setSelectedIncomeBreakdownProfile] = useState<CitizenEconomicProfile | null>(null);
   const [selectedAuditProfile, setSelectedAuditProfile] = useState<CitizenEconomicProfile | null>(null);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+
+  // Reset nudge overrides when target citizen changes
+  useEffect(() => {
+    setDiplomaticModeOverride(undefined);
+    setNudgeArchetypeOverride(undefined);
+    setCommendationArchetypeOverride(undefined);
+    setOverDonationArchetypeOverride(undefined);
+    setCustomNudgeBtc(undefined);
+    setShowNudgeArchetypeHelp(false);
+    setShowNudgeCalculationHelp(false);
+    setCopiedIndex(null);
+  }, [activeNudgeProfile?.userId]);
 
   // Watchlist modal state
   const [watchTargetProfile, setWatchTargetProfile] = useState<CitizenEconomicProfile | null>(null);
@@ -149,39 +187,291 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
     return unsub;
   }, []);
 
-  const auditedCount = useMemo(() => {
-    return profiles.filter((p) => p.auditBaselineStatus === 'audited').length;
-  }, [profiles]);
-  const pendingAuditCount = profiles.length - auditedCount;
+  // ============================================================================
+  // BUFFERED BACKGROUND UPDATES & ROW POSITION LOCKING
+  // Prevents citizens from jumping positions or disappearing from active filters
+  // while background receipt verification is running or while inspecting a modal.
+  // ============================================================================
+  const [displayedProfiles, setDisplayedProfiles] = useState<CitizenEconomicProfile[]>(profiles);
+  const [bufferedUpdatesMap, setBufferedUpdatesMap] = useState<Record<string, CitizenEconomicProfile>>({});
+  const [pinnedInViewIds, setPinnedInViewIds] = useState<Set<string>>(() => new Set());
+  const prevCountryNameRef = useRef<string>(countryName);
+  const bufferedMapRef = useRef<Record<string, CitizenEconomicProfile>>({});
 
-  // Seamless background stream trigger: initiates non-blocking verification for unverified citizens
   useEffect(() => {
-    if (apiKey && apiKey.trim() && profiles.length > 0 && !streamState.isRunning) {
-      const hasUnverified = profiles.some((p) => p.auditBaselineStatus !== 'audited');
-      if (hasUnverified) {
-        auditStreamService.startStream(
-          profiles,
-          apiKey,
-          config,
-          countryBenchmark,
-          (updated) => {
-            onUpdateProfile?.(updated);
+    bufferedMapRef.current = bufferedUpdatesMap;
+  }, [bufferedUpdatesMap]);
+
+  // Clear pinned row overrides when the user explicitly changes any filter or search
+  useEffect(() => {
+    setPinnedInViewIds(new Set());
+  }, [search, filterFiscalStanding, filterBuild, filterBuildGrade, onlyInactiveDonors]);
+
+  // Sync displayedProfiles immediately when country changes, during initial census load,
+  // or when background streaming is NOT running and there are no pending buffered updates
+  useEffect(() => {
+    const countryChanged = prevCountryNameRef.current !== countryName;
+    if (countryChanged) {
+      prevCountryNameRef.current = countryName;
+      setDisplayedProfiles(profiles);
+      setBufferedUpdatesMap({});
+      setPinnedInViewIds(new Set());
+      return;
+    }
+
+    const bufferedCount = Object.keys(bufferedMapRef.current).length;
+    if (
+      isSyncing ||
+      displayedProfiles.length === 0 ||
+      Math.abs(profiles.length - displayedProfiles.length) > 0 ||
+      (!streamState.isRunning && bufferedCount === 0 && !selectedAuditProfile)
+    ) {
+      setDisplayedProfiles(profiles);
+    } else if (!streamState.isRunning && bufferedCount === 0) {
+      // Preserve locked row order while updating manual tags/notes in place
+      const incomingMap = new Map(profiles.map((p) => [p.userId, p]));
+      setDisplayedProfiles((prev) =>
+        prev.map((oldP) => {
+          const nextP = incomingMap.get(oldP.userId);
+          if (!nextP) return oldP;
+          if (nextP.manualTag !== oldP.manualTag || nextP.notes !== oldP.notes) {
+            return { ...oldP, manualTag: nextP.manualTag, notes: nextP.notes };
           }
-        );
+          return oldP;
+        })
+      );
+    }
+  }, [profiles, countryName, isSyncing, streamState.isRunning, selectedAuditProfile]);
+
+  // Handler for background stream updates: stages in buffer so rows never jump mid-browsing
+  const handleBackgroundStreamUpdate = useCallback((updated: CitizenEconomicProfile) => {
+    bufferedMapRef.current = {
+      ...bufferedMapRef.current,
+      [updated.userId]: updated,
+    };
+    setBufferedUpdatesMap((prev) => ({
+      ...prev,
+      [updated.userId]: updated,
+    }));
+  }, []);
+
+  // Handler for manual user-triggered updates inside CitizenAuditModal:
+  // Updates the citizen in-place and pins their row in the current filtered view so they never vanish
+  const handleManualModalUpdate = useCallback(
+    (updated: CitizenEconomicProfile) => {
+      if (bufferedMapRef.current[updated.userId]) {
+        const nextRef = { ...bufferedMapRef.current };
+        delete nextRef[updated.userId];
+        bufferedMapRef.current = nextRef;
+      }
+      setDisplayedProfiles((prev) =>
+        prev.map((p) => (p.userId === updated.userId ? updated : p))
+      );
+      setBufferedUpdatesMap((prev) => {
+        if (!prev[updated.userId]) return prev;
+        const next = { ...prev };
+        delete next[updated.userId];
+        return next;
+      });
+      setPinnedInViewIds((prev) => {
+        const next = new Set(prev);
+        next.add(updated.userId);
+        return next;
+      });
+      setSelectedAuditProfile((prev) =>
+        prev && prev.userId === updated.userId ? updated : prev
+      );
+      onUpdateProfile?.(updated);
+    },
+    [onUpdateProfile]
+  );
+
+  // Flush buffered background updates into the table and parent state atomically
+  const handleApplyBufferedUpdates = useCallback(() => {
+    const stagedList = Object.values(bufferedMapRef.current) as CitizenEconomicProfile[];
+    if (stagedList.length === 0) {
+      setDisplayedProfiles(profiles);
+      setPinnedInViewIds(new Set());
+      return;
+    }
+    const stagedById = new Map<string, CitizenEconomicProfile>(
+      stagedList.map((p) => [p.userId, p])
+    );
+    bufferedMapRef.current = {};
+    setDisplayedProfiles((prev) => {
+      const base = prev.length > 0 ? prev : profiles;
+      return base.map((p) => stagedById.get(p.userId) || p);
+    });
+    setBufferedUpdatesMap({});
+    setPinnedInViewIds(new Set());
+    if (onUpdateProfilesBatch) {
+      onUpdateProfilesBatch(stagedList);
+    } else {
+      for (const upd of stagedList) {
+        onUpdateProfile?.(upd);
       }
     }
-  }, [profiles.length, apiKey, config.analysisPeriodDays]);
+  }, [profiles, onUpdateProfile, onUpdateProfilesBatch]);
+
+  const bufferedCount = Object.keys(bufferedUpdatesMap).length;
+
+  const { auditedCount, staleCount, actionableStaleCount } = useMemo(() => {
+    let audited = 0;
+    let stale = 0;
+    let actionableStale = 0;
+    const isPassRecentlyCompleted =
+      Boolean(streamState.lastCompletedAt) &&
+      Date.now() - (streamState.lastCompletedAt || 0) < AUDIT_STALE_TTL_MS;
+    const deferredSet = isPassRecentlyCompleted
+      ? new Set(streamState.failedCitizenIds || [])
+      : new Set<string>();
+
+    for (const p of displayedProfiles) {
+      const effective = bufferedUpdatesMap[p.userId] || p;
+      if (effective.auditBaselineStatus === 'audited') {
+        audited++;
+      }
+      if (auditStreamService.isCitizenAuditStale(effective, AUDIT_STALE_TTL_MS)) {
+        stale++;
+        if (!deferredSet.has(p.userId)) {
+          actionableStale++;
+        }
+      }
+    }
+    return { auditedCount: audited, staleCount: stale, actionableStaleCount: actionableStale };
+  }, [displayedProfiles, bufferedUpdatesMap, streamState.lastCompletedAt, streamState.failedCitizenIds]);
+  const pendingAuditCount = Math.max(0, displayedProfiles.length - auditedCount);
+
+  // Refs to keep background lifecycle checks stable without re-triggering on every profile/benchmark state commit
+  const profilesRef = useRef(profiles);
+  profilesRef.current = profiles;
+  const configRef = useRef(config);
+  configRef.current = config;
+  const benchmarkRef = useRef(countryBenchmark);
+  benchmarkRef.current = countryBenchmark;
+
+  // Seamless background stream trigger: initiates non-blocking verification for unverified or >30m stale citizens
+  useEffect(() => {
+    if (
+      !isSyncing &&
+      apiKey &&
+      apiKey.trim() &&
+      profiles.length > 0 &&
+      actionableStaleCount > 0 &&
+      !streamState.isRunning &&
+      !streamState.isPaused
+    ) {
+      const mergedProfiles = profilesRef.current.map(
+        (p) => bufferedMapRef.current[p.userId] || p
+      );
+      auditStreamService.startStream(
+        mergedProfiles,
+        apiKey,
+        configRef.current,
+        benchmarkRef.current,
+        handleBackgroundStreamUpdate,
+        false
+      );
+    }
+  }, [
+    profiles.length,
+    actionableStaleCount,
+    isSyncing,
+    apiKey,
+    config.analysisPeriodDays,
+    streamState.isRunning,
+    streamState.isPaused,
+    handleBackgroundStreamUpdate,
+  ]);
+
+  // ============================================================================
+  // 30-MINUTE AUTOMATIC RE-AUDIT LIFECYCLE
+  // 1) Re-audits automatically every 30 minutes while the app is open and in use.
+  // 2) If 30+ minutes have passed since the app was last used (or since last country
+  //    audit), triggers a full re-audit immediately upon opening or returning to the tab.
+  // ============================================================================
+  const activeCountryId = profiles[0]?.countryId || countryName;
+
+  useEffect(() => {
+    if (!apiKey || !apiKey.trim() || profilesRef.current.length === 0 || isSyncing) return;
+
+    const checkAndTriggerThirtyMinAudit = (fromUserReturn: boolean) => {
+      const state = auditStreamService.getState();
+      if (state.isRunning || state.isPaused) return;
+      const currentProfiles = profilesRef.current;
+      if (currentProfiles.length === 0) return;
+
+      const now = Date.now();
+      const wasAwayThirtyMins = fromUserReturn
+        ? auditStreamService.checkAndRecordAppActivity(now)
+        : false;
+      const lastCountryAudit = auditStreamService.getLastCountryAuditTime(activeCountryId);
+      const isCountryAuditStale =
+        lastCountryAudit > 0 && now - lastCountryAudit >= AUDIT_STALE_TTL_MS;
+
+      if (wasAwayThirtyMins || isCountryAuditStale) {
+        const mergedProfiles = currentProfiles.map(
+          (p) => bufferedMapRef.current[p.userId] || p
+        );
+        auditStreamService.startStream(
+          mergedProfiles,
+          apiKey,
+          configRef.current,
+          benchmarkRef.current,
+          handleBackgroundStreamUpdate,
+          true
+        );
+      }
+    };
+
+    // Check immediately when component mounts / country loads
+    checkAndTriggerThirtyMinAudit(true);
+
+    // Periodic check every 60 seconds while app is open to trigger 30-minute active re-audit
+    const intervalId = window.setInterval(() => {
+      auditStreamService.checkAndRecordAppActivity(Date.now());
+      checkAndTriggerThirtyMinAudit(false);
+    }, 60 * 1000);
+
+    // Detect user returning to tab/window after >=30 minutes away (never on keydown or button clicks)
+    let lastInteractionCheck = 0;
+    const handleUserReturnToTab = () => {
+      const now = Date.now();
+      if (now - lastInteractionCheck < 15000) return;
+      lastInteractionCheck = now;
+      if (document.visibilityState === 'hidden') return;
+      checkAndTriggerThirtyMinAudit(true);
+    };
+
+    window.addEventListener('focus', handleUserReturnToTab);
+    document.addEventListener('visibilitychange', handleUserReturnToTab);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleUserReturnToTab);
+      document.removeEventListener('visibilitychange', handleUserReturnToTab);
+    };
+  }, [
+    activeCountryId,
+    apiKey,
+    isSyncing,
+    config.analysisPeriodDays,
+    handleBackgroundStreamUpdate,
+  ]);
 
   const inactiveDonorCount = useMemo(() => {
-    return profiles.filter((p) => p.isInactiveDonor).length;
-  }, [profiles]);
+    return displayedProfiles.filter((p) => p.isInactiveDonor).length;
+  }, [displayedProfiles]);
   const zeroContributionCount = useMemo(() => {
-    return profiles.filter((p) => (p.totalDonatedBtc || 0) === 0).length;
-  }, [profiles]);
+    return displayedProfiles.filter((p) => (p.totalDonatedBtc || 0) === 0).length;
+  }, [displayedProfiles]);
 
-  // Filtered and sorted profiles (memoized to prevent redundant sorting and layout recalculations)
+  // Filtered and sorted profiles (uses locked displayedProfiles so rows never jump during background sync)
   const filtered = useMemo(() => {
-    const list = profiles.filter((p) => {
+    const list = displayedProfiles.filter((p) => {
+      // If citizen was just manually audited in the modal, keep them pinned in view so they don't vanish!
+      if (pinnedInViewIds.has(p.userId)) return true;
+
       if (onlyInactiveDonors && !p.isInactiveDonor) return false;
 
       if (search.trim()) {
@@ -191,15 +481,20 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
         }
       }
 
-      // Simplified Fiscal Standing filter
+      // Simplified Fiscal Standing filter (strictly requires verified audit unless Historical Pillar or Zero Donations)
+      const isVerifiedCitizen = p.auditBaselineStatus === 'audited';
       if (filterFiscalStanding === 'critical') {
-        if (p.leechTier !== 'critical-leech' && p.leechTier !== 'low-contributor') return false;
+        if (!isVerifiedCitizen || (p.leechTier !== 'critical-leech' && p.leechTier !== 'low-contributor')) return false;
       } else if (filterFiscalStanding === 'zero-donations') {
         if ((p.totalDonatedBtc || 0) > 0) return false;
       } else if (filterFiscalStanding === 'moderate') {
-        if (p.leechTier !== 'moderate') return false;
+        if (!isVerifiedCitizen || p.leechTier !== 'moderate') return false;
       } else if (filterFiscalStanding === 'patriot') {
-        if (p.leechTier !== 'sovereign-patriot' && p.leechTier !== 'historical-pillar') return false;
+        if (p.leechTier === 'historical-pillar') {
+          // Historical top donors are verified via all-time country treasury ranking
+        } else if (!isVerifiedCitizen || p.leechTier !== 'sovereign-patriot') {
+          return false;
+        }
       }
 
       // Simplified Build & Commitment filter
@@ -213,13 +508,17 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
       if (filterBuild === 'hybrid' && !isHybrid) return false;
       if (filterBuild === 'pinned' && !isPinned) return false;
 
+      if (filterBuildGrade !== 'all') {
+        if (p.buildEvaluation?.grade !== filterBuildGrade) return false;
+      }
+
       return true;
     });
 
     return [...list].sort((a, b) => b.wealthBtc - a.wealthBtc);
-  }, [profiles, onlyInactiveDonors, search, filterFiscalStanding, filterBuild]);
+  }, [displayedProfiles, pinnedInViewIds, onlyInactiveDonors, search, filterFiscalStanding, filterBuild, filterBuildGrade]);
 
-  // Single-pass computation for fast KPI metrics
+  // Single-pass computation for fast KPI metrics (only counts verified audited citizens as leeches)
   const { criticalLeechCount, inactiveCount, ecoCount, warCount, hybridCount } = useMemo(() => {
     let criticalLeechCount = 0;
     let inactiveCount = 0;
@@ -228,7 +527,12 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
     let hybridCount = 0;
 
     for (const p of filtered) {
-      if (p.leechTier === 'critical-leech' || p.leechTier === 'low-contributor') criticalLeechCount++;
+      if (
+        p.auditBaselineStatus === 'audited' &&
+        (p.leechTier === 'critical-leech' || p.leechTier === 'low-contributor')
+      ) {
+        criticalLeechCount++;
+      }
       if (p.isInactiveDonor) inactiveCount++;
       if (p.playstyle === 'pure-eco' || p.manualTag === 'perma-eco') ecoCount++;
       else if (p.playstyle === 'pure-war' || p.manualTag === 'perma-war') warCount++;
@@ -238,7 +542,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
     return { criticalLeechCount, inactiveCount, ecoCount, warCount, hybridCount };
   }, [filtered]);
 
-  // Memoized verdict category counts
+  // Memoized verdict category counts (strictly verified citizens only)
   const verdictCounts = useMemo(() => {
     const counts: Record<string, number> = {
       'slacker-evader': 0,
@@ -246,14 +550,15 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
       'illiquid-asset-rich': 0,
       'patriotic-fulfiller': 0,
     };
-    for (const p of profiles) {
+    for (const p of displayedProfiles) {
+      if (p.auditBaselineStatus !== 'audited') continue;
       const v = p.ministerialVerdict || p.playerCashflow?.ministerialVerdict;
       if (v && counts[v] !== undefined) {
         counts[v]++;
       }
     }
     return counts;
-  }, [profiles]);
+  }, [displayedProfiles]);
 
   const formatBtc = (val: number) => {
     return val.toLocaleString(undefined, {
@@ -288,9 +593,56 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
     setWatchNoteDraft('');
   };
 
-  const messages: MinisterialMessage[] = activeNudgeProfile
-    ? generateMinisterialNudge(activeNudgeProfile, countryName, 'MoE', config.analysisPeriodDays || 7)
-    : [];
+  const nudgeRecommendation = useMemo(() => {
+    if (!activeNudgeProfile) return null;
+    return calculateCitizenSuggestedDonation(
+      activeNudgeProfile,
+      countryBenchmark,
+      config,
+      nudgeArchetypeOverride,
+      commodities
+    );
+  }, [activeNudgeProfile, countryBenchmark, config, nudgeArchetypeOverride, commodities]);
+
+  const activeDiplomaticMode: DiplomaticActionMode =
+    diplomaticModeOverride || nudgeRecommendation?.recommendedDiplomaticMode || 'nudge';
+  const activeCommendationArchetype: CommendationArchetype =
+    commendationArchetypeOverride || nudgeRecommendation?.recommendedCommendationArchetype || 'sovereign-treasury-patriot';
+  const activeOverDonationArchetype: OverDonationWarningArchetype =
+    overDonationArchetypeOverride || nudgeRecommendation?.recommendedOverDonationArchetype || 'capex-growth-strain';
+
+  const effectiveNudgeBtc = customNudgeBtc ?? nudgeRecommendation?.suggestedAmountBtc ?? 50;
+
+  const messages: MinisterialMessage[] = useMemo(() => {
+    if (!activeNudgeProfile) return [];
+    return generateMinisterialNudge(
+      activeNudgeProfile,
+      countryName,
+      'MoE',
+      config.analysisPeriodDays || 7,
+      {
+        customSuggestedBtc: effectiveNudgeBtc,
+        archetypeOverride: nudgeArchetypeOverride,
+        diplomaticMode: activeDiplomaticMode,
+        commendationArchetype: activeCommendationArchetype,
+        overDonationArchetype: activeOverDonationArchetype,
+        countryBenchmark,
+        config,
+        commodities,
+      }
+    );
+  }, [
+    activeNudgeProfile,
+    countryName,
+    config,
+    effectiveNudgeBtc,
+    nudgeArchetypeOverride,
+    activeDiplomaticMode,
+    activeCommendationArchetype,
+    activeOverDonationArchetype,
+    countryBenchmark,
+    commodities,
+  ]);
 
   return (
     <div className="space-y-6">
@@ -600,6 +952,21 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
             <option value="hybrid">⚖️ Hybrid Builds</option>
             <option value="pinned">🔒 Pinned Builds Only</option>
           </select>
+
+          {/* v0.27 BuhDeuce Build Evaluation Filter */}
+          <select
+            value={filterBuildGrade}
+            onChange={(e) => setFilterBuildGrade(e.target.value)}
+            className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 font-medium focus:outline-none focus:border-amber-500 transition cursor-pointer"
+            title="Filter by War Era v0.27 BuhDeuce Build Evaluation Grade"
+          >
+            <option value="all">All v0.27 Build Grades</option>
+            <option value="optimal-meta">🌟 Lvl 26+ Eco Meta (Lead + Mgmt)</option>
+            <option value="optimal-early-selfwork">⚡ Lvl 1–25 Self-Work (Prod + Energy)</option>
+            <option value="viable-selfwork">🛠️ Lvl 26+ Viable Self-Work (Prod + Energy)</option>
+            <option value="war-ready">⚔️ War-Ready / War in Eco</option>
+            <option value="suboptimal-sp">⚠️ SP Optimization Needed</option>
+          </select>
         </div>
       </div>
 
@@ -630,52 +997,117 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
 
       {/* Citizen Economic Radar Table */}
       <div className="relative overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/80 shadow-xl scrollbar-thin scrollbar-thumb-slate-700">
-        {/* Automated Background Ledger Stream Banner */}
+        {/* Automated Background Ledger Stream & Buffered Row-Lock Banner (Sticky while scrolling) */}
         {streamState.isRunning ? (
-          <div className="bg-gradient-to-r from-cyan-950/90 via-slate-900 to-cyan-950/90 border-b border-cyan-800/60 px-4 py-2.5 flex items-center justify-between text-xs text-cyan-300 font-mono gap-3">
-            <div className="flex items-center gap-2.5 truncate">
-              <Zap className="w-4 h-4 text-cyan-400 shrink-0 animate-pulse" />
-              <span className="font-bold text-cyan-200">
-                Auto-Streaming Personal Receipts:
-              </span>
-              <span className="text-white font-bold">
-                {streamState.auditedCount} / {streamState.totalTargetCount} verified ({streamState.pct}%)
-              </span>
-              {streamState.currentCitizenName && (
-                <span className="text-slate-400 text-[11px] truncate hidden md:inline">
-                  • Currently: {streamState.currentCitizenName}
+          <div className="sticky top-0 z-20 bg-gradient-to-r from-cyan-950/95 via-slate-900/95 to-indigo-950/95 backdrop-blur-md border-b border-cyan-700/60 px-4 py-3 space-y-2 text-xs text-cyan-200 font-mono shadow-md">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <Loader2 className="w-4 h-4 text-cyan-400 shrink-0 animate-spin" />
+                <span className="font-black text-white uppercase tracking-wide">
+                  4-Worker Delta Receipt Verification:
                 </span>
-              )}
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              {streamState.isPaused ? (
+                <span className="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 font-bold">
+                  {streamState.auditedCount} / {streamState.totalTargetCount} Citizens ({streamState.pct}%)
+                </span>
+                {streamState.activeWorkers && streamState.activeWorkers.length > 0 && (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {streamState.activeWorkers.map((w) => (
+                      <span
+                        key={w.workerIndex}
+                        className="px-2 py-0.5 rounded bg-slate-950/90 border border-cyan-500/30 text-[10px] text-cyan-200 flex items-center gap-1"
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                        <strong className="text-white">{w.username}</strong>
+                        {w.retryAttempt && w.retryAttempt > 1 ? (
+                          <span className="text-amber-300">(R#{w.retryAttempt})</span>
+                        ) : (
+                          <span className="text-emerald-300">({w.receiptCount})</span>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-bold">
+                  🔒 Row Positions Locked While Browsing ({bufferedCount} Staged)
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                {streamState.failedCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => auditStreamService.retryFailed()}
+                    className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                    title="Retry citizens whose receipt stream timed out or hit rate limits"
+                  >
+                    <RotateCcw className="w-3 h-3" /> Retry {streamState.failedCount} Deferred
+                  </button>
+                )}
+                {bufferedCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleApplyBufferedUpdates}
+                    className="px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-lg text-[10px] font-black flex items-center gap-1.5 transition shadow-sm"
+                    title="Commit buffered background audits to the table now"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Apply {bufferedCount} Verified Updates</span>
+                  </button>
+                )}
+                {streamState.isPaused ? (
+                  <button
+                    type="button"
+                    onClick={() => auditStreamService.resume()}
+                    className="px-2.5 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                    title="Resume background ledger stream"
+                  >
+                    <Play className="w-3 h-3" /> Resume
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => auditStreamService.pause()}
+                    className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                    title="Pause background ledger stream"
+                  >
+                    <Pause className="w-3 h-3" /> Pause
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={() => auditStreamService.resume()}
-                  className="px-2.5 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
-                  title="Resume background ledger stream"
+                  onClick={() => auditStreamService.stop()}
+                  className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                  title="Stop background streaming"
                 >
-                  <Play className="w-3 h-3" /> Resume
+                  <Square className="w-3 h-3" /> Stop
                 </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => auditStreamService.pause()}
-                  className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
-                  title="Pause background ledger stream"
-                >
-                  <Pause className="w-3 h-3" /> Pause
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => auditStreamService.stop()}
-                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
-                title="Stop background streaming"
-              >
-                <Square className="w-3 h-3" /> Stop
-              </button>
+              </div>
             </div>
+
+            {/* Graphical Progress Bar */}
+            <div className="w-full h-2 bg-slate-950 rounded-full overflow-hidden border border-cyan-900/60">
+              <div
+                className="h-full bg-gradient-to-r from-cyan-500 via-sky-400 to-emerald-400 transition-all duration-300"
+                style={{ width: `${Math.max(4, streamState.pct)}%` }}
+              />
+            </div>
+          </div>
+        ) : bufferedCount > 0 ? (
+          <div className="sticky top-0 z-20 bg-gradient-to-r from-emerald-950/95 via-slate-900/95 to-amber-950/95 backdrop-blur-md border-b border-emerald-500/50 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs text-emerald-200 font-mono shadow-md">
+            <div className="flex items-center gap-2 flex-wrap">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>
+                <strong>{bufferedCount} Verified Citizen Audits Ready</strong> — Table row order was kept locked so rows wouldn&apos;t jump while you were browsing.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleApplyBufferedUpdates}
+              className="px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl text-[11px] font-black flex items-center gap-1.5 transition shadow-md"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Apply {bufferedCount} Verified Updates to Table</span>
+            </button>
           </div>
         ) : streamState.isPaused ? (
           <div className="bg-amber-950/80 border-b border-amber-800/60 px-4 py-2 flex items-center justify-between text-xs text-amber-300 font-mono">
@@ -691,35 +1123,111 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
               <Play className="w-3 h-3" /> Resume Stream
             </button>
           </div>
-        ) : pendingAuditCount === 0 && profiles.length > 0 ? (
+        ) : pendingAuditCount === 0 && displayedProfiles.length > 0 ? (
           <div className="bg-emerald-950/60 border-b border-emerald-800/40 px-4 py-2 flex items-center justify-between text-xs text-emerald-300 font-mono">
             <span className="flex items-center gap-2">
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-              <span>100% Truth-Based: All {profiles.length} active citizens verified via live personal receipts</span>
+              <span>100% Truth-Based: All {displayedProfiles.length} active citizens verified via live personal receipts</span>
+              {pinnedInViewIds.size > 0 && (
+                <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px]">
+                  🔒 {pinnedInViewIds.size} updated row(s) pinned in current filter view
+                </span>
+              )}
             </span>
-            <button
-              type="button"
-              onClick={() => auditStreamService.startStream(profiles, apiKey, config, countryBenchmark, (up) => onUpdateProfile?.(up), true)}
-              className="px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
-              title="Force re-audit of all citizen personal receipts"
-            >
-              <RefreshCw className="w-3 h-3" /> Re-Audit All
-            </button>
-          </div>
-        ) : (
-          Boolean(apiKey && apiKey.trim() && pendingAuditCount > 0) && (
-            <div className="bg-slate-900 border-b border-slate-800 px-4 py-2 flex items-center justify-between text-xs text-slate-300 font-mono">
-              <span className="flex items-center gap-2 text-slate-400">
-                <Clock className="w-3.5 h-3.5 text-cyan-400" />
-                <span>{pendingAuditCount} citizens pending personal receipt audit ({auditedCount}/{profiles.length} verified)</span>
-              </span>
+            <div className="flex items-center gap-2">
+              {pinnedInViewIds.size > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setPinnedInViewIds(new Set())}
+                  className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-[10px] font-bold transition"
+                >
+                  Re-Filter View
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => auditStreamService.startStream(profiles, apiKey, config, countryBenchmark, (up) => onUpdateProfile?.(up))}
-                className="px-3 py-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-[10px] font-bold flex items-center gap-1.5 transition shadow-sm"
+                onClick={() =>
+                  auditStreamService.startStream(
+                    displayedProfiles,
+                    apiKey,
+                    config,
+                    countryBenchmark,
+                    handleBackgroundStreamUpdate,
+                    true
+                  )
+                }
+                className="px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                title="Force re-audit of all citizen personal receipts"
               >
-                <Zap className="w-3 h-3" /> Start Stream Now
+                <RefreshCw className="w-3 h-3" /> Re-Audit All
               </button>
+            </div>
+          </div>
+        ) : (
+          displayedProfiles.length > 0 && (
+            <div className="bg-amber-950/50 border-b border-amber-500/30 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-200 font-mono">
+              <span className="flex items-center gap-2">
+                <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                <span>
+                  <strong>{pendingAuditCount}</strong> of <strong>{displayedProfiles.length}</strong> citizens have unverified personal receipts ({auditedCount}/{displayedProfiles.length} verified). Unverified rows display no fabricated estimates.
+                  {streamState.failedCount > 0 && (
+                    <span className="ml-2 text-amber-300 font-bold">
+                      ({streamState.failedCount} timed out after 3 retries)
+                    </span>
+                  )}
+                </span>
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                {apiKey && apiKey.trim() ? (
+                  <>
+                    {streamState.failedCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => auditStreamService.retryFailed()}
+                        className="px-3 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg text-[10px] font-black flex items-center gap-1.5 transition shadow-sm"
+                      >
+                        <RotateCcw className="w-3 h-3" /> Retry {streamState.failedCount} Failed Citizens
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        auditStreamService.startStream(
+                          displayedProfiles,
+                          apiKey,
+                          config,
+                          countryBenchmark,
+                          handleBackgroundStreamUpdate,
+                          false
+                        )
+                      }
+                      className="px-3 py-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-[10px] font-bold flex items-center gap-1.5 transition shadow-sm"
+                    >
+                      <Zap className="w-3 h-3" /> Sync {pendingAuditCount} Pending Citizens Now
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        auditStreamService.startStream(
+                          displayedProfiles,
+                          apiKey,
+                          config,
+                          countryBenchmark,
+                          handleBackgroundStreamUpdate,
+                          true
+                        )
+                      }
+                      className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-[10px] font-bold flex items-center gap-1 transition"
+                    >
+                      <RefreshCw className="w-3 h-3" /> Re-Audit All
+                    </button>
+                  </>
+                ) : (
+                  <span className="text-[10px] text-amber-300 font-sans">
+                    Configure War Era API Key in header to stream live personal receipts
+                  </span>
+                )}
+              </div>
             </div>
           )
         )}
@@ -814,8 +1322,8 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                             {c.wealthBtc >= c.pastWealthBtc ? '+' : ''}{formatBtc(c.wealthBtc - c.pastWealthBtc)} ({config?.analysisPeriodDays ?? 7}d)
                           </span>
                         ) : (
-                          <span className="text-[10px] text-slate-500 font-sans group-hover/nw:text-amber-400 block">
-                            assets in game
+                          <span className="text-[10px] text-slate-500 font-sans group-hover/nw:text-amber-400 block" title="Initial snapshot baseline established today">
+                            Baseline: Today
                           </span>
                         )}
                       </button>
@@ -824,44 +1332,60 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     {/* 7D Gross Inflow & Net Cashflow */}
                     <td className="py-3 px-4 text-right font-mono">
                       {c.auditBaselineStatus === 'audited' ? (
-                        <button
-                          type="button"
-                          onClick={() => setSelectedAuditProfile(c)}
-                          className="group/inc text-right hover:bg-cyan-950/40 p-1.5 rounded-lg transition inline-block max-w-full"
-                          title="Click to inspect verified receipts: wages, trades, market orders, and net flow"
-                        >
-                          {/* Gross Inflow */}
-                          <div className="flex items-center justify-end gap-1.5 font-bold text-cyan-300 text-xs">
-                            <span className="text-[10px] uppercase font-mono text-cyan-500 font-semibold tracking-wider">Inflow</span>
-                            <span>+{formatBtc(c.grossInflowBtc ?? c.grossIncomeBtc ?? 0)}</span>
-                            <Calculator className="w-3 h-3 text-cyan-400 opacity-60 group-hover/inc:opacity-100" />
-                          </div>
-                          {/* Net Cashflow */}
-                          <div className="flex items-center justify-end gap-1.5 text-xs font-mono font-bold mt-0.5">
-                            <span className="text-[10px] uppercase font-mono text-slate-500 font-semibold tracking-wider">Net</span>
-                            <span className={(c.netCashflowBtc ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                              {(c.netCashflowBtc ?? 0) >= 0 ? '+' : ''}{formatBtc(c.netCashflowBtc ?? 0)}
-                            </span>
-                          </div>
-                          {/* Last checked timestamp & receipt count */}
-                          <div className="text-[9px] text-emerald-400/90 font-mono mt-0.5 flex flex-col items-end">
-                            <span>✓ {c.receiptCount ? `${c.receiptCount} receipts` : `Verified ${config?.analysisPeriodDays ?? 7}d`}</span>
-                            {c.auditedAt && (
-                              <span className="text-slate-400 font-sans text-[9px]">
-                                Last checked: {formatDateTimeDDMMYYYY(c.auditedAt)}
+                        <div className="inline-flex flex-col items-end max-w-full">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedAuditProfile(c)}
+                            className="group/inc text-right hover:bg-cyan-950/40 p-1.5 rounded-lg transition inline-block max-w-full"
+                            title="Click to inspect verified receipts: wages, trades, market orders, and net flow"
+                          >
+                            {/* Gross Inflow */}
+                            <div className="flex items-center justify-end gap-1.5 font-bold text-cyan-300 text-xs">
+                              <span className="text-[10px] uppercase font-mono text-cyan-500 font-semibold tracking-wider">Inflow</span>
+                              <span>+{formatBtc(c.grossInflowBtc ?? c.grossIncomeBtc ?? 0)}</span>
+                              <Calculator className="w-3 h-3 text-cyan-400 opacity-60 group-hover/inc:opacity-100" />
+                            </div>
+                            {/* Net Cashflow */}
+                            <div className="flex items-center justify-end gap-1.5 text-xs font-mono font-bold mt-0.5">
+                              <span className="text-[10px] uppercase font-mono text-slate-500 font-semibold tracking-wider">Net</span>
+                              <span className={(c.netCashflowBtc ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                                {(c.netCashflowBtc ?? 0) >= 0 ? '+' : ''}{formatBtc(c.netCashflowBtc ?? 0)}
                               </span>
-                            )}
-                          </div>
-                          {/* Audit Delta Explanation Badge */}
+                            </div>
+                            {/* Exact Audited Timestamp & Verified Receipt Count */}
+                            <div className="text-[10px] text-emerald-400 font-mono mt-1 flex flex-col items-end gap-0.5">
+                              <span className="font-semibold text-emerald-300 flex items-center gap-1">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                                {typeof c.receiptCount === 'number' ? `${c.receiptCount} receipts verified` : `Verified (${config?.analysisPeriodDays ?? 7}D)`}
+                              </span>
+                              <span className="text-slate-400 font-sans text-[10px]">
+                                Last audited at: {c.auditedAt ? formatDateTimeDDMMYYYY(c.auditedAt) : 'Recently synced'}
+                              </span>
+                            </div>
+                          </button>
+                          {/* Dismissible Audit Delta Alert Badge */}
                           {c.auditDeltaAlert && (
                             <div
-                              className="mt-1 px-1.5 py-0.5 rounded bg-cyan-950/80 border border-cyan-500/40 text-[9px] text-cyan-300 font-sans text-right"
-                              title={`Updated from earlier audit: +${c.auditDeltaAlert.newReceiptsCount} new receipts found (${c.auditDeltaAlert.differenceBtc >= 0 ? '+' : ''}${formatBtc(c.auditDeltaAlert.differenceBtc)} BTC change)`}
+                              className="mt-1 px-2 py-0.5 rounded bg-cyan-950/90 border border-cyan-500/50 text-[10px] text-cyan-200 font-sans text-right flex items-center gap-1.5 shadow-sm"
+                              title={`Audited change: +${c.auditDeltaAlert.newReceiptsCount} new receipts found (${c.auditDeltaAlert.differenceBtc >= 0 ? '+' : ''}${formatBtc(c.auditDeltaAlert.differenceBtc)} BTC change). Click × to dismiss.`}
                             >
-                              <span>Updated: +{c.auditDeltaAlert.newReceiptsCount} receipts ({c.auditDeltaAlert.differenceBtc >= 0 ? '+' : ''}{formatBtc(c.auditDeltaAlert.differenceBtc)} BTC)</span>
+                              <span>+{c.auditDeltaAlert.newReceiptsCount} receipts ({c.auditDeltaAlert.differenceBtc >= 0 ? '+' : ''}${formatBtc(c.auditDeltaAlert.differenceBtc)} BTC)</span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const dismissed = { ...c, auditDeltaAlert: undefined };
+                                  onUpdateProfile?.(dismissed);
+                                  storage.saveAuditedProfile(dismissed);
+                                }}
+                                className="text-cyan-400 hover:text-white ml-0.5 font-bold px-1 rounded hover:bg-cyan-800/50"
+                                title="Dismiss notification"
+                              >
+                                ×
+                              </button>
                             </div>
                           )}
-                        </button>
+                        </div>
                       ) : (
                         <button
                           type="button"
@@ -961,8 +1485,36 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                           )}
                         </div>
                         <div className="text-[10px] text-slate-500 font-mono">
-                          {c.ecoSkillPoints}E · {c.warSkillPoints}W {!isPinned && '(7d cooldown)'}
+                          Lvl {c.level} · {c.ecoSkillPoints}E · {c.warSkillPoints}W
                         </div>
+
+                        {/* v0.27 Build Evaluation Badge */}
+                        {c.buildEvaluation && (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedAuditProfile(c)}
+                            title={c.buildEvaluation.summary}
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border transition ${
+                              c.buildEvaluation.grade === 'optimal-meta'
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25'
+                                : c.buildEvaluation.grade === 'optimal-early-selfwork'
+                                ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30 hover:bg-cyan-500/25'
+                                : c.buildEvaluation.grade === 'viable-selfwork'
+                                ? 'bg-blue-500/15 text-blue-300 border-blue-500/30 hover:bg-blue-500/25'
+                                : c.buildEvaluation.grade === 'war-ready'
+                                ? 'bg-rose-500/15 text-rose-300 border-rose-500/30 hover:bg-rose-500/25'
+                                : 'bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-amber-500/25'
+                            }`}
+                          >
+                            {c.buildEvaluation.shortLabel}
+                          </button>
+                        )}
+
+                        {c.skillBreakdown && (
+                          <div className="text-[9px] text-slate-400 font-mono" title="Companies / Leadership / Management / Energy / Production">
+                            C:{c.skillBreakdown.companies} L:{c.skillBreakdown.leadership} M:{c.skillBreakdown.management} E:{c.skillBreakdown.energy} P:{c.skillBreakdown.production}
+                          </div>
+                        )}
 
                         {/* Inline Respec Pin Selector */}
                         <select
@@ -1588,13 +2140,13 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
         </div>
       )}
 
-      {/* Modal: Diplomatic Nudge Telegram Generator (ZERO AI, 100% Deterministic) */}
-      {activeNudgeProfile && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
-          <div className="bg-slate-900 border border-slate-700/80 rounded-3xl max-w-2xl w-full p-6 shadow-2xl relative max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
-              <div className="flex items-center gap-3">
-                <div className="w-11 h-11 rounded-2xl bg-slate-800 border border-amber-500/30 overflow-hidden flex items-center justify-center font-black text-amber-300 text-sm shrink-0 shadow-inner">
+      {/* Modal: Adaptive Diplomatic Telegram Generator (Nudge, Merit Commendation, & Over-Donation Warning) */}
+      {activeNudgeProfile && nudgeRecommendation && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-slate-700/80 rounded-3xl max-w-4xl w-full p-6 sm:p-7 shadow-2xl relative max-h-[92vh] flex flex-col">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-800 shrink-0">
+              <div className="flex items-center gap-3.5">
+                <div className="w-12 h-12 rounded-2xl bg-slate-800 border border-amber-500/30 overflow-hidden flex items-center justify-center font-black text-amber-300 text-base shrink-0 shadow-inner">
                   {activeNudgeProfile.avatarUrl ? (
                     <img src={activeNudgeProfile.avatarUrl} alt={activeNudgeProfile.username} className="w-full h-full object-cover" />
                   ) : (
@@ -1602,11 +2154,32 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                   )}
                 </div>
                 <div>
-                  <h3 className="text-base font-black text-white">
-                    Diplomatic Treasury Notice
-                  </h3>
-                  <p className="text-xs text-slate-400">
-                    Pre-formatted in-game telegram for <strong className="text-amber-300">{activeNudgeProfile.username}</strong> (Level {activeNudgeProfile.level})
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <h3 className="text-lg sm:text-xl font-black text-white">
+                      {activeDiplomaticMode === 'commendation'
+                        ? 'Patriot & Hero Diplomatic Commendation'
+                        : activeDiplomaticMode === 'over-donation-warning'
+                        ? 'Over-Donation Burnout & Solvency Advisory'
+                        : 'Dynamic Diplomatic Treasury Nudge'}
+                    </h3>
+                    <span
+                      className={`px-2.5 py-0.5 rounded-md border text-xs font-mono font-bold ${
+                        activeDiplomaticMode === 'commendation'
+                          ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                          : activeDiplomaticMode === 'over-donation-warning'
+                          ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-300'
+                          : 'bg-amber-500/15 border-amber-500/30 text-amber-300'
+                      }`}
+                    >
+                      {activeDiplomaticMode === 'commendation'
+                        ? (nudgeRecommendation.commendationOptions ?? nudgeRecommendation.commendationArchetypeOptions ?? []).find((o) => o.id === activeCommendationArchetype)?.title || 'Patriot Commendation'
+                        : activeDiplomaticMode === 'over-donation-warning'
+                        ? (nudgeRecommendation.overDonationOptions ?? nudgeRecommendation.overDonationArchetypeOptions ?? []).find((o) => o.id === activeOverDonationArchetype)?.title || 'Over-Donation Advisory'
+                        : nudgeRecommendation.archetypeLabel}
+                    </span>
+                  </div>
+                  <p className="text-sm text-slate-400 mt-0.5">
+                    Tailored in-game telegram for <strong className="text-amber-300">{activeNudgeProfile.username}</strong> (Level {activeNudgeProfile.level} • {activeNudgeProfile.playstyle.replace('-', ' ')})
                   </p>
                 </div>
               </div>
@@ -1620,74 +2193,644 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
               </button>
             </div>
 
-            <div className="my-4 p-3.5 bg-slate-950/80 border border-slate-800 rounded-xl text-xs text-slate-300 flex items-center justify-between font-mono">
-              <div>
-                <span className="text-slate-500">Net Worth:</span>{' '}
-                <strong className="text-white">{formatBtc(activeNudgeProfile.wealthBtc)} BTC</strong>
-              </div>
-              <div>
-                <span className="text-slate-500">Donations:</span>{' '}
-                <strong className="text-amber-400">{formatBtc(activeNudgeProfile.totalDonatedBtc)} BTC</strong>
-              </div>
-              <div>
-                <span className="text-slate-500">Style:</span>{' '}
-                <strong className="text-emerald-300 capitalize">{activeNudgeProfile.playstyle.replace('-', ' ')}</strong>
-              </div>
-            </div>
+            <div className="flex-1 overflow-y-auto space-y-5 pr-1 my-4">
+              {/* 0. Ministerial Evaluation & Adaptive Diplomatic Mode Switcher */}
+              <div
+                className={`p-4 rounded-2xl border space-y-3 ${
+                  nudgeRecommendation.recommendedDiplomaticMode === 'commendation'
+                    ? 'bg-emerald-950/35 border-emerald-500/40'
+                    : nudgeRecommendation.recommendedDiplomaticMode === 'over-donation-warning'
+                    ? 'bg-cyan-950/35 border-cyan-500/40'
+                    : 'bg-amber-950/30 border-amber-500/35'
+                }`}
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span
+                      className={`px-2.5 py-1 rounded-lg text-xs font-mono font-black uppercase tracking-wide border ${
+                        nudgeRecommendation.recommendedDiplomaticMode === 'commendation'
+                          ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-200'
+                          : nudgeRecommendation.recommendedDiplomaticMode === 'over-donation-warning'
+                          ? 'bg-cyan-500/20 border-cyan-400/50 text-cyan-200'
+                          : 'bg-amber-500/20 border-amber-400/50 text-amber-200'
+                      }`}
+                    >
+                      ★ Recommended Action: {nudgeRecommendation.recommendedDiplomaticModeLabel}
+                    </span>
+                    <span className="text-xs font-mono text-slate-300 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-slate-800">
+                      {nudgeRecommendation.recommendedDiplomaticBadge}
+                    </span>
+                  </div>
+                  {(diplomaticModeOverride || nudgeArchetypeOverride || commendationArchetypeOverride || overDonationArchetypeOverride) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDiplomaticModeOverride(undefined);
+                        setNudgeArchetypeOverride(undefined);
+                        setCommendationArchetypeOverride(undefined);
+                        setOverDonationArchetypeOverride(undefined);
+                        setCustomNudgeBtc(undefined);
+                      }}
+                      className="text-xs text-amber-300 hover:text-amber-200 font-semibold flex items-center gap-1 self-start sm:self-auto shrink-0"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" /> Reset to Auto-Recommended Mode
+                    </button>
+                  )}
+                </div>
 
-            {/* Template Options */}
-            <div className="flex-1 overflow-y-auto space-y-4 pr-1">
-              {messages.map((msg, idx) => {
-                const charsExcludingName = msg.body.replace(activeNudgeProfile.username, '').length;
-                return (
-                  <div
-                    key={idx}
-                    className="p-4 bg-slate-800/60 border border-slate-700/60 rounded-2xl space-y-2.5 text-xs text-slate-200"
-                  >
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                      <div>
-                        <span className="font-bold text-amber-300 text-xs flex items-center gap-1.5">
-                          <Tag className="w-3.5 h-3.5 text-amber-400" /> {msg.title}
-                        </span>
-                        <div className="text-[10px] font-mono mt-0.5 flex items-center gap-2 text-slate-400">
-                          <span className={charsExcludingName <= 492 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>
-                            ✓ {charsExcludingName} / 492 chars (excl. name)
-                          </span>
-                          <span>•</span>
-                          <span>{msg.body.length} / 512 max</span>
+                <p className="text-sm text-slate-200 leading-relaxed">
+                  {nudgeRecommendation.recommendedDiplomaticReason}
+                </p>
+
+                {/* 3-Way Diplomatic Mode Selector */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+                  {([
+                    {
+                      mode: 'nudge' as DiplomaticActionMode,
+                      title: 'Treasury Nudge',
+                      sub: 'Request fair BTC contribution',
+                      activeClass: 'bg-amber-500/20 border-amber-400 text-white shadow-sm',
+                      badgeColor: 'text-amber-300',
+                    },
+                    {
+                      mode: 'commendation' as DiplomaticActionMode,
+                      title: 'Patriot Commendation',
+                      sub: 'Congratulate donors, heroes & pillars',
+                      activeClass: 'bg-emerald-500/20 border-emerald-400 text-white shadow-sm',
+                      badgeColor: 'text-emerald-300',
+                    },
+                    {
+                      mode: 'over-donation-warning' as DiplomaticActionMode,
+                      title: 'Over-Donation Warning',
+                      sub: 'Protect citizen growth & ammo',
+                      activeClass: 'bg-cyan-500/20 border-cyan-400 text-white shadow-sm',
+                      badgeColor: 'text-cyan-300',
+                    },
+                  ]).map((tab) => {
+                    const isSelected = activeDiplomaticMode === tab.mode;
+                    const isRec = nudgeRecommendation.recommendedDiplomaticMode === tab.mode;
+                    return (
+                      <button
+                        key={tab.mode}
+                        type="button"
+                        onClick={() => setDiplomaticModeOverride(tab.mode)}
+                        className={`p-3 rounded-xl border text-left transition flex flex-col justify-between ${
+                          isSelected
+                            ? tab.activeClass
+                            : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:bg-slate-800/80 hover:text-slate-200'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-sm font-black">{tab.title}</span>
+                          {isSelected && <Check className={`w-4 h-4 shrink-0 ${tab.badgeColor}`} />}
+                        </div>
+                        <div className="text-xs text-slate-300 mt-0.5">{tab.sub}</div>
+                        {isRec && (
+                          <div className="mt-1.5 inline-block self-start px-2 py-0.5 rounded bg-slate-950/90 border border-slate-700 text-[11px] font-mono font-bold text-amber-300">
+                            ★ Recommended for {activeNudgeProfile.username}
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 1. Country-Relative Telemetry Comparison Strip */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3.5 bg-slate-950/90 border border-slate-800 rounded-2xl text-xs font-mono">
+                <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800/80">
+                  <div className="text-xs text-slate-400 uppercase font-sans font-bold">Idle Liquid Cash</div>
+                  <div className="text-base font-black text-emerald-400 mt-0.5">
+                    {formatBtc(nudgeRecommendation.liquidBtc)} BTC
+                  </div>
+                  <div className="text-xs text-slate-400 mt-0.5">
+                    <span className={nudgeRecommendation.liquidRatioToCountryMedian >= 1.8 ? 'text-amber-300 font-bold' : 'text-slate-400'}>
+                      {nudgeRecommendation.liquidRatioToCountryMedian}x
+                    </span>{' '}
+                    country median
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800/80">
+                  <div className="text-xs text-slate-400 uppercase font-sans font-bold">Resource Stockpile</div>
+                  <div className="text-base font-black text-cyan-300 mt-0.5">
+                    {formatBtc(nudgeRecommendation.resourceWealthBtc)} BTC
+                  </div>
+                  <div className="text-xs text-slate-400 mt-0.5">
+                    <span className={nudgeRecommendation.resourceRatioToCountryMedian >= 3.5 ? 'text-amber-300 font-bold' : 'text-slate-400'}>
+                      {nudgeRecommendation.resourceRatioToCountryMedian}x
+                    </span>{' '}
+                    median (Buffer: {formatBtc(nudgeRecommendation.protectedGrowthReserveBtc)} BTC)
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800/80">
+                  <div className="text-xs text-slate-400 uppercase font-sans font-bold">Weekly Cashflow</div>
+                  <div className="text-base font-black text-white mt-0.5">
+                    {formatBtc(nudgeRecommendation.grossIncomeBtc)} BTC
+                  </div>
+                  <div className="text-xs text-slate-400 mt-0.5">
+                    <span className="text-slate-300">{nudgeRecommendation.incomeRatioToCountryMedian}x</span> country median
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800/80">
+                  <div className="text-xs text-slate-400 uppercase font-sans font-bold">Period Donated</div>
+                  <div className="text-base font-black text-amber-400 mt-0.5">
+                    {formatBtc(activeNudgeProfile.periodDonatedBtc ?? activeNudgeProfile.directDonatedBtc ?? 0)} BTC
+                  </div>
+                  <div className="text-xs text-slate-400 mt-0.5">
+                    Lifetime: {formatBtc(activeNudgeProfile.totalDonatedBtc)} BTC
+                  </div>
+                </div>
+              </div>
+
+              {/* 2A. NUDGE MODE: Archetype Selector, 3.5x Growth Buffer Audit & Custom BTC Slider */}
+              {activeDiplomaticMode === 'nudge' && (
+                <div className="p-4 sm:p-5 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <div className="text-sm font-bold text-white flex items-center gap-2 flex-wrap">
+                        <SlidersHorizontal className="w-4 h-4 text-amber-400" />
+                        <span>Nudge Profile &amp; Growth-Protected Suggested Donation</span>
+                        <button
+                          type="button"
+                          onClick={() => setShowNudgeArchetypeHelp((prev) => !prev)}
+                          className={`px-2 py-1 rounded-lg border transition flex items-center gap-1 text-xs font-mono ${
+                            showNudgeArchetypeHelp
+                              ? 'bg-amber-500/20 border-amber-400 text-amber-200'
+                              : 'bg-slate-900 border-slate-700 text-amber-300 hover:text-white'
+                          }`}
+                        >
+                          <HelpCircle className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Which Archetype Should I Choose?</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowNudgeCalculationHelp((prev) => !prev)}
+                          className={`px-2 py-1 rounded-lg border transition flex items-center gap-1 text-xs font-mono ${
+                            showNudgeCalculationHelp
+                              ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                              : 'bg-slate-900 border-slate-700 text-cyan-300 hover:text-white'
+                          }`}
+                        >
+                          <HelpCircle className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>7D Projection &amp; 3.5x Growth Shield Audit</span>
+                        </button>
+                      </div>
+                      <p className="text-sm text-slate-300 mt-1 leading-relaxed">
+                        {nudgeRecommendation.rationaleSummary}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Clickable [?] Popover 1: Why Archetypes Differ & Citizen-Specific Recommendation */}
+                  {showNudgeArchetypeHelp && (
+                    <div className="p-4 rounded-2xl bg-slate-900/95 border border-amber-500/40 space-y-3 text-sm animate-fade-in">
+                      <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+                        <div className="font-black text-amber-300 flex items-center gap-2">
+                          <HelpCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                          <span>Why the 3 Donation Archetypes Differ &amp; Recommendation for {activeNudgeProfile.username}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowNudgeArchetypeHelp(false)}
+                          className="text-slate-400 hover:text-white"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-sm text-amber-100 leading-relaxed">
+                        <strong className="text-amber-300 uppercase font-mono">
+                          ★ Recommended for {activeNudgeProfile.username}: {nudgeRecommendation.recommendedArchetypeLabel}
+                        </strong>
+                        <p className="mt-1 text-slate-200">{nudgeRecommendation.recommendedArchetypeReason}</p>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 font-mono text-xs">
+                        {(nudgeRecommendation.archetypeComparison ?? []).map((item) => (
+                          <div
+                            key={item.id}
+                            className={`p-3 rounded-xl border space-y-1.5 ${
+                              item.isRecommended
+                                ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-100'
+                                : 'bg-slate-950/80 border-slate-800 text-slate-300'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="font-bold text-white font-sans text-sm">{item.title}</span>
+                              {item.isRecommended && (
+                                <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
+                                  RECOMMENDED
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-base font-black text-amber-300">
+                              {formatBtc(item.suggestedBtc)} BTC
+                            </div>
+                            <div className="text-xs text-cyan-300 break-words">{item.formulaBasis}</div>
+                            <p className="text-xs text-slate-300 font-sans leading-relaxed pt-0.5">
+                              {item.explanation}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Clickable [?] Popover 2: Sophisticated 7D Recipe Projection & 3.5x Growth Shield Audit */}
+                  {showNudgeCalculationHelp && (
+                    <div className="p-4 rounded-2xl bg-slate-900/95 border border-cyan-500/40 space-y-3.5 text-sm animate-fade-in">
+                      <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+                        <div className="font-black text-cyan-300 flex items-center gap-2">
+                          <Calculator className="w-4 h-4 text-cyan-400 shrink-0" />
+                          <span>7-Day Recipe Production + 3.5x Speculation &amp; Economic Growth Shield Audit</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowNudgeCalculationHelp(false)}
+                          className="text-slate-400 hover:text-white"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      <div
+                        className={`p-3.5 rounded-xl border text-sm leading-relaxed ${
+                          nudgeRecommendation.capexAuditVerdict === 'verified-construction-capex' ||
+                          nudgeRecommendation.capexAuditVerdict === 'healthy-growth-speculation'
+                            ? 'bg-cyan-950/50 border-cyan-500/40 text-cyan-100'
+                            : nudgeRecommendation.capexAuditVerdict === 'iron-steel-speculation'
+                            ? 'bg-amber-950/50 border-amber-500/40 text-amber-100'
+                            : 'bg-emerald-950/50 border-emerald-500/40 text-emerald-100'
+                        }`}
+                      >
+                        <div className="font-black text-sm mb-1">
+                          {nudgeRecommendation.capexAuditBadge}
+                        </div>
+                        <p className="text-slate-200">{nudgeRecommendation.capexAuditExplanation}</p>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 font-mono text-xs">
+                        <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                          <div className="text-xs text-slate-400 font-sans">7D Company Net Output</div>
+                          <div className="font-black text-emerald-300 text-sm mt-0.5">
+                            +{formatBtc(nudgeRecommendation.projected7dCompanyNetProfitBtc)} BTC
+                          </div>
+                          <div className="text-[11px] text-slate-400 mt-0.5">
+                            Gross: {formatBtc(nudgeRecommendation.projected7dCompanyGrossOutputBtc)} | Inputs: -{formatBtc(nudgeRecommendation.projected7dCompanyRawInputBtc)}
+                          </div>
+                        </div>
+                        <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                          <div className="text-xs text-slate-400 font-sans">7D Trade (75% Tax Base)</div>
+                          <div className="font-black text-cyan-300 text-sm mt-0.5">
+                            +{formatBtc(nudgeRecommendation.taxable7dNetTradingBtc + nudgeRecommendation.verified7dWagesEarnedBtc)} BTC
+                          </div>
+                          <div className="text-[11px] text-slate-400 mt-0.5">
+                            25% Reinvest Shield: {formatBtc(nudgeRecommendation.tradingReinvestmentAllowanceBtc)} BTC
+                          </div>
+                        </div>
+                        <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                          <div className="text-xs text-slate-400 font-sans">Protected Growth Reserve</div>
+                          <div className="font-black text-amber-300 text-sm mt-0.5">
+                            {formatBtc(nudgeRecommendation.protectedGrowthReserveBtc)} BTC
+                          </div>
+                          <div className="text-[11px] text-slate-400 mt-0.5">
+                            3.5x Median / 1.5x Input + CapEx Buffer
+                          </div>
+                        </div>
+                        <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                          <div className="text-xs text-slate-400 font-sans">Taxable Excess Hoard</div>
+                          <div className="font-black text-purple-300 text-sm mt-0.5">
+                            {formatBtc(nudgeRecommendation.excessStockpileAboveBufferBtc)} BTC
+                          </div>
+                          <div className="text-[11px] text-slate-400 mt-0.5">
+                            Stock above {formatBtc(nudgeRecommendation.protectedGrowthReserveBtc)} BTC shield
+                          </div>
                         </div>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => handleCopyMessage(msg.body, idx)}
-                        className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition active:scale-95 self-start sm:self-auto"
-                      >
-                        {copiedIndex === idx ? (
-                          <>
-                            <Check className="w-3.5 h-3.5 text-emerald-400" /> Copied!
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="w-3.5 h-3.5 text-slate-300" /> Copy Telegram
-                          </>
-                        )}
-                      </button>
+                      {nudgeRecommendation.companyProjectionItems.length > 0 && (
+                        <div className="space-y-1.5">
+                          <div className="text-xs font-bold uppercase text-slate-400">
+                            Item-Specific Recipe Production Valuation (Strict Live Market Prices):
+                          </div>
+                          <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                            {nudgeRecommendation.companyProjectionItems.map((ci, idx) => (
+                              <div
+                                key={idx}
+                                className="px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 flex flex-wrap items-center justify-between gap-2 font-mono text-xs"
+                              >
+                                <div>
+                                  <span className="text-white font-bold">{ci.companyName}</span>{' '}
+                                  <span className="text-amber-300">[{ci.recipeSummary}]</span>
+                                </div>
+                                <div className="text-slate-300">
+                                  {ci.weeklyUnits.toFixed(1)} u/wk @ {ci.livePriceBtc.toFixed(3)} BTC ={' '}
+                                  <span className="text-emerald-300 font-bold">+{ci.weeklyGrossBtc.toFixed(1)} BTC</span>
+                                  {ci.weeklyRawInputsBtc > 0 && (
+                                    <span className="text-amber-300"> (−{ci.weeklyRawInputsBtc.toFixed(1)} inputs)</span>
+                                  )}{' '}
+                                  → <strong className="text-white">+{ci.weeklyNetProfitBtc.toFixed(1)} BTC Net/wk</strong>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* 3 Nudge Archetype Buttons */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                    {([
+                      {
+                        id: 'weekly-cashflow' as NudgeArchetype,
+                        title: 'Weekly Cashflow Step-Up',
+                        sub: 'Higher weekly BTC from 7D output',
+                      },
+                      {
+                        id: 'liquid-hoarder' as NudgeArchetype,
+                        title: 'Idle Liquid BTC Hoarder',
+                        sub: 'One-time lump sum from idle cash',
+                      },
+                      {
+                        id: 'resource-stockpiler' as NudgeArchetype,
+                        title: 'Resource Stockpiler',
+                        sub: 'Sell 10%–15% excess above 3.5x shield',
+                      },
+                    ]).map((opt) => {
+                      const isSelected = nudgeRecommendation.archetype === opt.id;
+                      const isRecommended = nudgeRecommendation.recommendedArchetype === opt.id;
+                      const compItem = (nudgeRecommendation.archetypeComparison ?? []).find((c) => c.id === opt.id);
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => {
+                            setNudgeArchetypeOverride(opt.id);
+                            setCustomNudgeBtc(undefined);
+                          }}
+                          className={`p-3 rounded-xl border text-left transition relative ${
+                            isSelected
+                              ? 'bg-amber-500/15 border-amber-500/50 text-white shadow-sm'
+                              : 'bg-slate-900/70 border-slate-800 text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'
+                          }`}
+                        >
+                          <div className="text-sm font-bold flex items-center justify-between gap-1">
+                            <span className="truncate">{opt.title}</span>
+                            {isSelected && <Check className="w-4 h-4 text-amber-400 shrink-0" />}
+                          </div>
+                          <div className="flex items-center justify-between gap-1 mt-1">
+                            <span className="text-xs text-slate-400">{opt.sub}</span>
+                            {compItem && (
+                              <span className="text-xs font-mono font-bold text-amber-300 shrink-0">
+                                {formatBtc(compItem.suggestedBtc)} BTC
+                              </span>
+                            )}
+                          </div>
+                          {isRecommended && (
+                            <div className="mt-1.5 inline-block px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-mono font-bold">
+                              ★ Recommended for {activeNudgeProfile.username}
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Custom Suggested BTC Slider + Direct Input */}
+                  <div className="pt-3 border-t border-slate-800/80 space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <label className="text-sm font-bold text-slate-200 flex items-center gap-2 flex-wrap">
+                        <span>Suggested Donation Amount (BTC):</span>
+                        <span
+                          className={`px-2.5 py-0.5 rounded text-xs font-mono ${
+                            nudgeRecommendation.capexAuditVerdict === 'verified-construction-capex' ||
+                            nudgeRecommendation.capexAuditVerdict === 'healthy-growth-speculation'
+                              ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/30'
+                              : nudgeRecommendation.capexAuditVerdict === 'iron-steel-speculation'
+                              ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                              : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                          }`}
+                        >
+                          {nudgeRecommendation.capexAuditBadge}
+                        </span>
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={effectiveNudgeBtc}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value);
+                            setCustomNudgeBtc(isNaN(val) ? 1 : Math.max(1, val));
+                          }}
+                          className="w-32 bg-slate-900 border border-amber-500/40 rounded-lg px-3 py-1.5 text-right font-mono font-black text-base text-amber-300 focus:outline-none focus:border-amber-400"
+                        />
+                        <span className="text-sm font-mono font-bold text-amber-400">BTC</span>
+                      </div>
                     </div>
 
-                    <pre className="p-3 bg-slate-950 rounded-xl font-sans text-xs text-slate-300 whitespace-pre-wrap leading-relaxed border border-slate-800/80">
-                      {msg.body}
-                    </pre>
+                    <input
+                      type="range"
+                      min={nudgeRecommendation.minSuggestedBtc}
+                      max={nudgeRecommendation.maxSuggestedBtc}
+                      step={nudgeRecommendation.stepBtc}
+                      value={Math.min(
+                        nudgeRecommendation.maxSuggestedBtc,
+                        Math.max(nudgeRecommendation.minSuggestedBtc, effectiveNudgeBtc)
+                      )}
+                      onChange={(e) => setCustomNudgeBtc(Number(e.target.value))}
+                      className="w-full accent-amber-400 cursor-pointer h-2 bg-slate-800 rounded-lg"
+                    />
+
+                    {/* Quick Preset Buttons */}
+                    <div className="flex items-center gap-2 flex-wrap pt-0.5">
+                      <span className="text-xs text-slate-400 font-semibold mr-1">Quick Presets:</span>
+                      {(nudgeRecommendation.presetsBtc ?? []).map((preset, pIdx) => {
+                        const isActivePreset = Math.abs(effectiveNudgeBtc - preset.amount) < 0.5;
+                        return (
+                          <button
+                            key={pIdx}
+                            type="button"
+                            onClick={() => setCustomNudgeBtc(preset.amount)}
+                            title={preset.description}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold border transition ${
+                              isActivePreset
+                                ? 'bg-amber-500/25 border-amber-400 text-amber-200'
+                                : 'bg-slate-900 hover:bg-slate-800 border-slate-700/80 text-slate-300'
+                            }`}
+                          >
+                            {preset.label}: {formatBtc(preset.amount)} BTC
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
-                );
-              })}
+                </div>
+              )}
+
+              {/* 2B. COMMENDATION MODE: Custom Merit-Based Patriot & Hero Archetypes */}
+              {activeDiplomaticMode === 'commendation' && (
+                <div className="p-4 sm:p-5 rounded-2xl bg-slate-950/70 border border-emerald-500/30 space-y-3.5">
+                  <div>
+                    <div className="text-sm font-bold text-emerald-300 flex items-center gap-2">
+                      <Award className="w-4 h-4 text-emerald-400" />
+                      <span>Custom Merit-Based Patriot Commendation Archetype</span>
+                    </div>
+                    <p className="text-sm text-slate-300 mt-1 leading-relaxed">
+                      Select the commendation honor that best matches {activeNudgeProfile.username}&apos;s service record (Historic Pillars that keep giving, Sovereign Treasury Patriots, Battlefield Heroes, or Dual-Crown Vanguards):
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {(nudgeRecommendation.commendationOptions ?? nudgeRecommendation.commendationArchetypeOptions ?? []).map((opt) => {
+                      const isSelected = activeCommendationArchetype === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setCommendationArchetypeOverride(opt.id)}
+                          className={`p-3.5 rounded-xl border text-left transition space-y-1.5 ${
+                            isSelected
+                              ? 'bg-emerald-500/15 border-emerald-400 text-white shadow-sm'
+                              : 'bg-slate-900/80 border-slate-800 text-slate-300 hover:bg-slate-800/70'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-black text-white">{opt.title}</span>
+                            {isSelected && <Check className="w-4 h-4 text-emerald-400 shrink-0" />}
+                          </div>
+                          <div className="text-xs font-mono font-bold text-emerald-300">
+                            {opt.badge}
+                          </div>
+                          <p className="text-xs text-slate-300 leading-relaxed">
+                            {opt.explanation}
+                          </p>
+                          {opt.isRecommended && (
+                            <div className="inline-block px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-200 text-[11px] font-mono font-bold">
+                              ★ Recommended Merit for {activeNudgeProfile.username}
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* 2C. OVER-DONATION WARNING MODE: Burnout & Self-Harm Protection */}
+              {activeDiplomaticMode === 'over-donation-warning' && (
+                <div className="p-4 sm:p-5 rounded-2xl bg-slate-950/70 border border-cyan-500/30 space-y-3.5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <div className="text-sm font-bold text-cyan-300 flex items-center gap-2">
+                        <Shield className="w-4 h-4 text-cyan-400" />
+                        <span>Over-Donation Burnout &amp; Economic Self-Harm Protection</span>
+                      </div>
+                      <p className="text-sm text-slate-300 mt-1 leading-relaxed">
+                        {activeNudgeProfile.username} has donated <strong className="text-amber-300">{nudgeRecommendation.donatedShareOfWeeklyIncomePct}%</strong> of their 7D earning power. Sustainable Patriot Ceiling: <strong className="text-emerald-300">{formatBtc(nudgeRecommendation.sustainableWeeklyCapBtc)} BTC/wk</strong>.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {(nudgeRecommendation.overDonationOptions ?? nudgeRecommendation.overDonationArchetypeOptions ?? []).map((opt) => {
+                      const isSelected = activeOverDonationArchetype === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setOverDonationArchetypeOverride(opt.id)}
+                          className={`p-3.5 rounded-xl border text-left transition space-y-1.5 ${
+                            isSelected
+                              ? 'bg-cyan-500/15 border-cyan-400 text-white shadow-sm'
+                              : 'bg-slate-900/80 border-slate-800 text-slate-300 hover:bg-slate-800/70'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-black text-white">{opt.title}</span>
+                            {isSelected && <Check className="w-4 h-4 text-cyan-400 shrink-0" />}
+                          </div>
+                          <div className="text-xs font-mono font-bold text-cyan-300">
+                            {opt.badge}
+                          </div>
+                          <p className="text-xs text-slate-300 leading-relaxed">
+                            {opt.explanation}
+                          </p>
+                          {opt.isRecommended && (
+                            <div className="inline-block px-2 py-0.5 rounded bg-cyan-500/20 border border-cyan-500/40 text-cyan-200 text-[11px] font-mono font-bold">
+                              ★ Recommended Advisory for {activeNudgeProfile.username}
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* 3. Generated Bilingual Telegram Templates (Comfortable 14px-16px Typography) */}
+              <div className="space-y-3.5">
+                {messages.map((msg, idx) => {
+                  const charsExcludingName = msg.body.replace(activeNudgeProfile.username, '').length;
+                  return (
+                    <div
+                      key={idx}
+                      className="p-4 sm:p-5 bg-slate-800/60 border border-slate-700/60 rounded-2xl space-y-3 text-sm text-slate-200"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div>
+                          <span className="font-bold text-amber-300 text-sm flex items-center gap-2">
+                            <Tag className="w-4 h-4 text-amber-400" /> {msg.title}
+                          </span>
+                          <div className="text-xs font-mono mt-1 flex items-center gap-2 text-slate-400">
+                            <span className={charsExcludingName <= 492 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>
+                              ✓ {charsExcludingName} / 492 chars (excl. name)
+                            </span>
+                            {activeDiplomaticMode === 'nudge' && (
+                              <>
+                                <span>•</span>
+                                <span>Suggested: <strong className="text-amber-300">{formatBtc(effectiveNudgeBtc)} BTC</strong></span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleCopyMessage(msg.body, idx)}
+                          className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-xs sm:text-sm font-semibold flex items-center gap-1.5 transition active:scale-95 self-start sm:self-auto"
+                        >
+                          {copiedIndex === idx ? (
+                            <>
+                              <Check className="w-4 h-4 text-emerald-400" /> Copied!
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-4 h-4 text-slate-300" /> Copy Telegram
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      <pre className="p-4 bg-slate-950 rounded-xl font-sans text-sm sm:text-base text-slate-100 whitespace-pre-wrap leading-relaxed border border-slate-800/80">
+                        {msg.body}
+                      </pre>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
-            <div className="mt-4 pt-3 border-t border-slate-800 flex justify-end">
+            <div className="mt-2 pt-3.5 border-t border-slate-800 flex justify-end shrink-0">
               <button
                 type="button"
                 onClick={() => setActiveNudgeProfile(null)}
-                className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 transition"
+                className="px-6 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold rounded-xl border border-slate-700 transition"
               >
                 Close
               </button>
@@ -1700,13 +2843,14 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
       {selectedAuditProfile && (
         <ErrorBoundary fallbackTitle="Financial Audit Error" onReset={() => setSelectedAuditProfile(null)}>
           <CitizenAuditModal
-            profile={selectedAuditProfile}
+            profile={bufferedUpdatesMap[selectedAuditProfile.userId] || selectedAuditProfile}
             config={config}
             countryName={countryName}
             apiKey={apiKey}
             countryBenchmark={countryBenchmark}
+            commodities={commodities}
             onClose={() => setSelectedAuditProfile(null)}
-            onUpdateProfile={onUpdateProfile}
+            onUpdateProfile={handleManualModalUpdate}
             onUpdateConfig={onUpdateConfig}
           />
         </ErrorBoundary>
@@ -1716,7 +2860,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
       {selectedExplainerProfile && (
         <ErrorBoundary fallbackTitle="Calculation Explainer Error" onReset={() => setSelectedExplainerProfile(null)}>
           <CitizenCalculationExplainerModal
-            profile={selectedExplainerProfile}
+            profile={bufferedUpdatesMap[selectedExplainerProfile.userId] || selectedExplainerProfile}
             config={config}
             countryName={countryName}
             countryBenchmark={countryBenchmark}
@@ -1729,16 +2873,24 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
       {selectedIncomeBreakdownProfile && (
         <ErrorBoundary fallbackTitle="Gross Income Audit Error" onReset={() => setSelectedIncomeBreakdownProfile(null)}>
           <GrossIncomeBreakdownModal
-            profile={selectedIncomeBreakdownProfile}
+            profile={bufferedUpdatesMap[selectedIncomeBreakdownProfile.userId] || selectedIncomeBreakdownProfile}
             countryName={countryName}
             config={config}
             apiKey={apiKey}
             countryBenchmark={countryBenchmark}
             onClose={() => setSelectedIncomeBreakdownProfile(null)}
-            onUpdateProfile={onUpdateProfile}
+            onUpdateProfile={handleManualModalUpdate}
           />
         </ErrorBoundary>
       )}
+
+      {/* Floating Bottom-Right Audit Progress & "Apply X Verified Updates" Dock (follows user while scrolling) */}
+      <AuditProgressDock
+        countryName={countryName}
+        state={streamState}
+        bufferedCount={bufferedCount}
+        onApplyBufferedUpdates={handleApplyBufferedUpdates}
+      />
     </div>
   );
 };

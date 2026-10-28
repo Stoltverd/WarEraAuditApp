@@ -71,6 +71,56 @@ export interface PlayerTransactionSummary {
   periodDays: number;
   dataSource: 'live-ledger' | 'estimated-capacity';
   primaryTradedResource?: 'oil' | 'iron' | 'food' | 'munitions' | 'general';
+  // 8. Construction CapEx vs. Iron/Steel Speculation Tracking
+  constructionPurchasesBtc?: number;
+  constructionSalesBtc?: number;
+  ironSteelPurchasesBtc?: number;
+  ironSteelSalesBtc?: number;
+  concreteLimestonePurchasesBtc?: number;
+  concreteLimestoneSalesBtc?: number;
+  commodityByItemPurchasesBtc?: Record<string, number>;
+  commodityByItemSalesBtc?: Record<string, number>;
+}
+
+export type BuildGradeId =
+  | 'optimal-meta'
+  | 'optimal-early-selfwork'
+  | 'viable-selfwork'
+  | 'war-ready'
+  | 'war-eco-builder'
+  | 'suboptimal-sp';
+
+export interface CitizenSkillBreakdown {
+  companies: number;
+  leadership: number;
+  management: number; // +2% employee production per point in v0.27
+  energy: number; // Base 100 + 10 per level; used for self-work, hiring, and training
+  production: number;
+  lootChance: number; // Luck
+  legacyEntrepreneurship: number; // Refunded in v0.27
+  attack: number;
+  criticalDamages: number;
+  criticalChance: number;
+  armor: number;
+  precision: number;
+  dodge: number;
+  health: number;
+  stamina: number;
+}
+
+export interface CitizenBuildEvaluation {
+  grade: BuildGradeId;
+  badgeLabel: string;
+  shortLabel: string;
+  archetypeLabel: string;
+  score: number; // 0-100 build alignment score
+  isLevelEarlySelfWork: boolean; // True when Lvl 1-25 using self-work production
+  isHighLevelViableSelfWork: boolean; // True when Lvl 26+ maxing Production + Energy without Leadership
+  managementBoostPct: number; // management level * 2%
+  energyPoolMax: number; // 100 + energy level * 10
+  summary: string;
+  recommendations: string[];
+  warnings: string[];
 }
 
 export interface CitizenEconomicProfile {
@@ -109,6 +159,8 @@ export interface CitizenEconomicProfile {
   economicStanding?: CitizenEconomicStanding;
   warSkillPoints: number;
   ecoSkillPoints: number;
+  skillBreakdown?: CitizenSkillBreakdown;
+  buildEvaluation?: CitizenBuildEvaluation;
   playstyle: PlaystyleMode;
   manualTag: PlayerTag;
   notes?: string;
@@ -137,6 +189,7 @@ export interface CitizenEconomicProfile {
   maxCompaniesCap?: number; // Company slots permitted by current build / skills
   automationLevelEst?: number; // 1-7 PP/hr
   storageLevelEst?: number; // 1-7
+  breakRoomLevelEst?: number; // 1-3 employee slots per company
   estimatedCompanyCapacityBtc?: number;
   companiesList?: WareraCompany[];
   worksCount?: number; // Total career work shifts from in-game stats
@@ -152,9 +205,151 @@ export interface CountryEconomicBenchmark {
   wealthP90: number;
   liquidMedian: number;
   liquidP75: number;
+  resourceMedian?: number;
+  resourceP75?: number;
+  incomeMedian?: number;
+  incomeP75?: number;
+  donationMedian?: number;
+  donationP75?: number;
   topDonorsThreshold: number;
   fighterDamageMedianTopTier: number;
   heavyHitterCohortSize: number;
+}
+
+export type NudgeArchetype = 'weekly-cashflow' | 'liquid-hoarder' | 'resource-stockpiler';
+
+export interface CompanyRecipeProjectionItem {
+  companyName: string;
+  itemCode: string;
+  commodityName: string;
+  recipeSummary: string;
+  dailyPP: number;
+  weeklyUnits: number;
+  livePriceBtc: number;
+  weeklyGrossBtc: number;
+  weeklyRawInputsBtc: number;
+  weeklyWagesBtc: number;
+  weeklyNetProfitBtc: number;
+}
+
+export interface ArchetypeComparisonItem {
+  id: NudgeArchetype;
+  title: string;
+  formulaBasis: string;
+  suggestedBtc: number;
+  isRecommended: boolean;
+  explanation: string;
+}
+
+export type CapexAuditVerdict =
+  | 'verified-construction-capex'
+  | 'healthy-growth-speculation'
+  | 'iron-steel-speculation'
+  | 'solvent-no-capex';
+
+export type DiplomaticActionMode =
+  | 'nudge'
+  | 'commendation'
+  | 'over-donation-warning';
+
+export type CommendationArchetype =
+  | 'active-historical-pillar'
+  | 'sovereign-treasury-patriot'
+  | 'battlefield-frontline-hero'
+  | 'dual-crown-vanguard';
+
+export type OverDonationWarningArchetype =
+  | 'capex-growth-strain'
+  | 'combat-ammo-strain';
+
+export interface CommendationArchetypeOption {
+  id: CommendationArchetype;
+  title: string;
+  subtitle: string;
+  badge: string;
+  isRecommended: boolean;
+  explanation: string;
+}
+
+export interface OverDonationArchetypeOption {
+  id: OverDonationWarningArchetype;
+  title: string;
+  subtitle: string;
+  badge: string;
+  isRecommended: boolean;
+  explanation: string;
+}
+
+export interface CitizenNudgeRecommendation {
+  archetype: NudgeArchetype;
+  archetypeLabel: string;
+  archetypeDescription: string;
+  recommendedArchetype: NudgeArchetype;
+  recommendedArchetypeLabel: string;
+  recommendedArchetypeReason: string;
+  archetypeComparison: ArchetypeComparisonItem[];
+  suggestedAmountBtc: number;
+  minSuggestedBtc: number;
+  maxSuggestedBtc: number;
+  stepBtc: number;
+  presetsBtc: Array<{ label: string; amount: number; description: string }>;
+  liquidBtc: number;
+  liquidRatioToCountryMedian: number;
+  resourceWealthBtc: number;
+  resourceRatioToCountryMedian: number;
+  excessResourceBtc: number;
+  protectedGrowthReserveBtc: number;
+  taxableExcessResourceBtc: number;
+  excessStockpileAboveBufferBtc: number;
+  isHealthyGrowthSpeculation: boolean;
+  growthShieldSummary: string;
+  suggestedLiquidationPct: number; // e.g. 12.5% (10%-15% band)
+  grossIncomeBtc: number;
+  incomeRatioToCountryMedian: number;
+  targetQuotaPct: number;
+  rationaleSummary: string;
+  // Sophisticated 7D Recipe Projection & Anti-Speculation CapEx Audit
+  projected7dCompanyGrossOutputBtc: number;
+  projected7dCompanyRawInputBtc: number;
+  projected7dCompanyWagesBtc: number;
+  projected7dCompanyNetProfitBtc: number;
+  companyProjectionItems: CompanyRecipeProjectionItem[];
+  verified7dNetTradingBtc: number;
+  taxable7dNetTradingBtc: number;
+  tradingReinvestmentAllowanceBtc: number;
+  verified7dWagesEarnedBtc: number;
+  total7dProjectedEarningPowerBtc: number;
+  equipmentsWealthBtc: number;
+  weaponsWealthBtc: number;
+  companiesWealthBtc: number;
+  capexAuditVerdict: CapexAuditVerdict;
+  capexAuditBadge: string;
+  capexAuditExplanation: string;
+  capexGraceDiscountApplied: boolean;
+  constructionPurchasesBtc: number;
+  ironSteelPurchasesBtc: number;
+  ironSteelSalesBtc: number;
+  concreteLimestonePurchasesBtc: number;
+  // Adaptive Diplomatic Modes (Nudge vs. Merit-Based Commendation vs. Over-Donation Warning)
+  recommendedDiplomaticMode: DiplomaticActionMode;
+  recommendedDiplomaticModeLabel: string;
+  recommendedDiplomaticModeReason: string;
+  recommendedDiplomaticReason: string;
+  recommendedDiplomaticBadge: string;
+  recommendedCommendationArchetype: CommendationArchetype;
+  recommendedCommendationLabel: string;
+  recommendedCommendationReason: string;
+  commendationArchetypeOptions: CommendationArchetypeOption[];
+  commendationOptions: CommendationArchetypeOption[];
+  recommendedOverDonationArchetype: OverDonationWarningArchetype;
+  recommendedOverDonationLabel: string;
+  recommendedOverDonationReason: string;
+  overDonationArchetypeOptions: OverDonationArchetypeOption[];
+  overDonationOptions: OverDonationArchetypeOption[];
+  isOverDonatingBurnoutRisk: boolean;
+  sustainableWeeklyCapBtc: number;
+  overDonationExcessBtc: number;
+  donatedShareOfWeeklyIncomePct: number;
 }
 
 export interface MinistryConfig {
@@ -372,4 +567,9 @@ export interface MinisterialMessage {
   tone: 'diplomatic-formal' | 'patriotic-military' | 'firm-economic';
   title: string;
   body: string;
+  archetype?: NudgeArchetype;
+  diplomaticMode?: DiplomaticActionMode;
+  commendationArchetype?: CommendationArchetype;
+  overDonationArchetype?: OverDonationWarningArchetype;
+  suggestedAmountBtc?: number;
 }

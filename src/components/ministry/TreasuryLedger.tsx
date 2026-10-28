@@ -10,7 +10,7 @@ import {
   parseNationalTransactionsCsv,
 } from '../../services/ministryService';
 import { formatDateDDMMYYYY } from '../../utils/dateUtils';
-import { fetchNationalTransfers } from '../../services/apiService';
+import { fetchNationalTransfers, compareTransactionsNewestFirst } from '../../services/apiService';
 import { storage } from '../../services/storage';
 import {
   Coins,
@@ -113,8 +113,9 @@ export const TreasuryLedger: React.FC<TreasuryLedgerProps> = ({
         t.category.toLowerCase().includes(q)
       );
     }
-    return true;
-  });
+      return true;
+    })
+    .sort(compareTransactionsNewestFirst);
 
   // Calculate totals
   const totalSent = filtered

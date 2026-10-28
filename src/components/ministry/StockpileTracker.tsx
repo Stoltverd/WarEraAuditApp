@@ -12,7 +12,7 @@ import {
   fetchAllCommoditiesMarket,
 } from '../../services/marketService';
 import { storage } from '../../services/storage';
-import { fetchCountryInventoryDetailed } from '../../services/apiService';
+import { fetchCountryInventoryDetailed, compareTransactionsNewestFirst } from '../../services/apiService';
 import { formatDateDDMMYYYY } from '../../utils/dateUtils';
 import {
   Package,
@@ -337,7 +337,7 @@ export const StockpileTracker: React.FC<StockpileTrackerProps> = ({
         );
       }
       return true;
-    });
+    }).sort(compareTransactionsNewestFirst);
   }, [movements, movementPeriod, movementTypeFilter, search]);
 
   // Movement KPI summary

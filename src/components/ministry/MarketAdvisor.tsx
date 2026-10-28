@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { CommodityTrend, MarketAdvisory, CommoditySector } from '../../types/ministry';
+import { WareraItemIcon } from '../common/WareraItemIcon';
 import {
   TrendingUp,
   TrendingDown,

@@ -1,8 +1,9 @@
 /**
  * High-Performance Automatic Background Ledger Streamer
- * Continuously streams unverified citizen personal transaction receipts in the background
- * with polite rate-limiting, non-blocking asynchronous execution, pause/resume controls,
- * and atomic per-citizen local storage persistence.
+ * Concurrently streams unverified or stale (>30m) citizen personal transaction receipts
+ * in the background using a 4-Worker Priority-First Incremental Delta Streamer across ALL countries,
+ * with non-blinking multi-worker slot telemetry, automatic per-citizen exponential backoff retries,
+ * and a 30-minute automatic re-audit lifecycle.
  */
 
 import { CitizenEconomicProfile, MinistryConfig, CountryEconomicBenchmark } from '../types/ministry';
@@ -10,15 +11,34 @@ import { fetchUserTransactions } from './apiService';
 import { buildAuditedCitizenProfile } from './ministryService';
 import { storage } from './storage';
 
+export const AUDIT_STALE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const LAST_AUDIT_BY_COUNTRY_KEY = 'warera_last_audit_completed_by_country_v1';
+const LAST_APP_ACTIVE_AT_KEY = 'warera_last_app_active_at_v1';
+
+export interface ActiveAuditWorkerSlot {
+  workerIndex: number;
+  userId: string;
+  username: string;
+  receiptCount: number;
+  retryAttempt?: number;
+}
+
 export interface AutoAuditStreamState {
   isRunning: boolean;
   isPaused: boolean;
+  activeWorkers: ActiveAuditWorkerSlot[];
   currentCitizenName?: string;
   currentCitizenId?: string;
+  currentCitizenReceiptCount?: number;
+  retryAttempt?: number;
   auditedCount: number;
   totalTargetCount: number;
+  failedCount: number;
+  failedCitizenIds: string[];
   pct: number;
   statusMessage: string;
+  lastCompletedAt?: number;
+  nextScheduledAuditAt?: number;
 }
 
 type StreamListener = (state: AutoAuditStreamState) => void;
@@ -28,17 +48,34 @@ class AutoAuditStreamService {
   private isPaused = false;
   private abortController: AbortController | null = null;
   private listeners: Set<StreamListener> = new Set();
+  private onProfileAuditedCallback: ((profile: CitizenEconomicProfile) => void) | null = null;
+  private activeCountryId: string | undefined = undefined;
+  private activeWindowDays: number = 7;
+  private lastProfilesSnapshot: CitizenEconomicProfile[] = [];
+  private lastApiKey: string | undefined = undefined;
+  private lastConfig: MinistryConfig | undefined = undefined;
+  private lastBenchmark: CountryEconomicBenchmark | undefined = undefined;
+  private verifiedProfilesCache: Map<string, CitizenEconomicProfile> = new Map();
+  private completedPassTimestamps: Map<string, number> = new Map();
+  private deferredCitizenIdsByPass: Map<string, Set<string>> = new Map();
+
   private state: AutoAuditStreamState = {
     isRunning: false,
     isPaused: false,
+    activeWorkers: [],
     auditedCount: 0,
     totalTargetCount: 0,
+    failedCount: 0,
+    failedCitizenIds: [],
     pct: 0,
     statusMessage: 'Ready',
   };
 
   public getState(): AutoAuditStreamState {
-    return { ...this.state };
+    return {
+      ...this.state,
+      activeWorkers: [...(this.state.activeWorkers || [])],
+    };
   }
 
   public subscribe(listener: StreamListener): () => void {
@@ -54,17 +91,72 @@ class AutoAuditStreamService {
     this.listeners.forEach((fn) => fn(this.getState()));
   }
 
+  /**
+   * Checks whether an individual citizen's audit is missing or older than 30 minutes.
+   */
+  public isCitizenAuditStale(
+    profile: CitizenEconomicProfile,
+    ttlMs: number = AUDIT_STALE_TTL_MS
+  ): boolean {
+    if (profile.auditBaselineStatus !== 'audited' || !profile.auditedAt) {
+      return true;
+    }
+    const auditedMs = new Date(profile.auditedAt).getTime();
+    if (isNaN(auditedMs)) return true;
+    return Date.now() - auditedMs >= ttlMs;
+  }
+
+  public getLastCountryAuditTime(countryId?: string): number {
+    if (!countryId || typeof localStorage === 'undefined') return 0;
+    try {
+      const raw = localStorage.getItem(LAST_AUDIT_BY_COUNTRY_KEY);
+      if (!raw) return 0;
+      const map = JSON.parse(raw);
+      return Number(map?.[countryId] || 0);
+    } catch {
+      return 0;
+    }
+  }
+
+  public setLastCountryAuditTime(countryId?: string, ts: number = Date.now()): void {
+    if (!countryId || typeof localStorage === 'undefined') return;
+    try {
+      const raw = localStorage.getItem(LAST_AUDIT_BY_COUNTRY_KEY);
+      const map = raw ? JSON.parse(raw) : {};
+      map[countryId] = ts;
+      localStorage.setItem(LAST_AUDIT_BY_COUNTRY_KEY, JSON.stringify(map));
+    } catch {}
+  }
+
+  /**
+   * Records user activity and returns true if >= 30 minutes had elapsed since the app was last used.
+   */
+  public checkAndRecordAppActivity(now: number = Date.now()): boolean {
+    if (typeof localStorage === 'undefined') return false;
+    try {
+      const prevRaw = localStorage.getItem(LAST_APP_ACTIVE_AT_KEY);
+      const prevTs = prevRaw ? Number(prevRaw) : 0;
+      localStorage.setItem(LAST_APP_ACTIVE_AT_KEY, String(now));
+      if (prevTs > 0 && now - prevTs >= AUDIT_STALE_TTL_MS) {
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   public pause() {
     if (this.isRunning && !this.isPaused) {
       this.isPaused = true;
-      this.notify({ isPaused: true, statusMessage: 'Background audit paused by user' });
+      this.notify({ isPaused: true, statusMessage: 'Background audit paused' });
     }
   }
 
   public resume() {
     if (this.isRunning && this.isPaused) {
       this.isPaused = false;
-      this.notify({ isPaused: false, statusMessage: 'Resuming background audit stream...' });
+      this.notify({ isPaused: false, statusMessage: 'Resuming background audit...' });
     }
   }
 
@@ -78,12 +170,51 @@ class AutoAuditStreamService {
     this.notify({
       isRunning: false,
       isPaused: false,
-      statusMessage: 'Stream stopped',
+      activeWorkers: [],
+      currentCitizenName: undefined,
+      currentCitizenId: undefined,
+      currentCitizenReceiptCount: undefined,
+      retryAttempt: undefined,
+      statusMessage: 'Background stream stopped',
     });
   }
 
   /**
-   * Automatically iterates through unverified citizens in the background.
+   * Retries only the citizens that failed during the previous stream pass.
+   */
+  public async retryFailed(): Promise<void> {
+    if (
+      this.isRunning ||
+      !this.lastApiKey ||
+      !this.lastConfig ||
+      !this.onProfileAuditedCallback ||
+      this.lastProfilesSnapshot.length === 0
+    ) {
+      return;
+    }
+    const failedSet = new Set(this.state.failedCitizenIds);
+    const passKey = `${this.activeCountryId || 'default'}_${this.activeWindowDays}`;
+    this.deferredCitizenIdsByPass.delete(passKey);
+    const profilesToRetry = this.lastProfilesSnapshot.map((p) =>
+      failedSet.has(p.userId) ? { ...p, auditBaselineStatus: 'pending-audit' as const, auditedAt: undefined } : p
+    );
+    for (const id of failedSet) {
+      this.verifiedProfilesCache.delete(id);
+    }
+    await this.startStream(
+      profilesToRetry,
+      this.lastApiKey,
+      this.lastConfig,
+      this.lastBenchmark,
+      this.onProfileAuditedCallback,
+      false,
+      true
+    );
+  }
+
+  /**
+   * Automatically iterates through unverified or stale (>30m) citizens in the background
+   * using a 4-Worker Priority-First Incremental Delta Streamer across ALL countries.
    */
   public async startStream(
     profiles: CitizenEconomicProfile[],
@@ -91,147 +222,367 @@ class AutoAuditStreamService {
     config: MinistryConfig,
     countryBenchmark: CountryEconomicBenchmark | undefined,
     onProfileAudited: (profile: CitizenEconomicProfile) => void,
-    forceReaudit = false
+    forceReaudit = false,
+    isExplicitRetry = false
   ): Promise<void> {
+    this.onProfileAuditedCallback = onProfileAudited;
+    this.lastApiKey = apiKey;
+    this.lastConfig = config;
+    this.lastBenchmark = countryBenchmark;
+
     if (!apiKey || !apiKey.trim() || profiles.length === 0) {
       return;
     }
 
+    const incomingCountryId = profiles[0]?.countryId;
+    const incomingWindowDays = config.analysisPeriodDays || 7;
+    const passKey = `${incomingCountryId || 'default'}_${incomingWindowDays}`;
+
     if (this.isRunning) {
-      return;
+      if (
+        forceReaudit ||
+        (incomingCountryId && incomingCountryId !== this.activeCountryId) ||
+        incomingWindowDays !== this.activeWindowDays
+      ) {
+        this.stop();
+      } else {
+        return;
+      }
     }
 
-    const unverified = forceReaudit
-      ? [...profiles]
-      : profiles.filter((p) => p.auditBaselineStatus !== 'audited');
+    this.activeCountryId = incomingCountryId;
+    this.activeWindowDays = incomingWindowDays;
 
-    const totalCount = profiles.length;
-    const initialAuditedCount = totalCount - unverified.length;
+    // Hydrate incoming profiles with verified profiles from in-memory cache and localStorage
+    // so unapplied buffered updates or stale parent props never cause a false re-audit of the country.
+    const persistedMap = incomingCountryId ? storage.getAuditedProfiles(incomingCountryId) : {};
+    const hydratedProfiles = profiles.map((p) => {
+      if (p.auditBaselineStatus === 'audited' && p.auditedAt) {
+        this.verifiedProfilesCache.set(p.userId, p);
+        return p;
+      }
+      const cached = this.verifiedProfilesCache.get(p.userId) || persistedMap[p.userId];
+      if (cached && cached.auditBaselineStatus === 'audited' && cached.auditedAt) {
+        this.verifiedProfilesCache.set(p.userId, cached);
+        return {
+          ...p,
+          ...cached,
+          wealthBtc: p.wealthBtc,
+          liquidBtc: p.liquidBtc,
+          resourceWealthBtc: p.resourceWealthBtc,
+          companiesWealthBtc: p.companiesWealthBtc,
+          equipmentsWealthBtc: p.equipmentsWealthBtc,
+          weaponsWealthBtc: p.weaponsWealthBtc,
+          level: p.level,
+          manualTag: p.manualTag,
+          notes: p.notes,
+        };
+      }
+      return p;
+    });
+
+    this.lastProfilesSnapshot = hydratedProfiles;
+
+    const lastPassCompletedAt =
+      this.completedPassTimestamps.get(passKey) ||
+      this.getLastCountryAuditTime(incomingCountryId);
+    const isPassRecentlyCompleted =
+      lastPassCompletedAt > 0 && Date.now() - lastPassCompletedAt < AUDIT_STALE_TTL_MS;
+    const deferredSet =
+      !forceReaudit && !isExplicitRetry && isPassRecentlyCompleted
+        ? this.deferredCitizenIdsByPass.get(passKey) || new Set<string>()
+        : new Set<string>();
+
+    // Priority-First Queue for ALL countries:
+    // Priority score ranks potential leeches, high-liquid holders, resource stockpilers, and high-wealth pillars first.
+    const computePriorityScore = (p: CitizenEconomicProfile): number => {
+      const wealthScore = p.wealthBtc || 0;
+      const liquidBonus = (p.liquidBtc || 0) * 2.5;
+      const resourceBonus = (p.resourceWealthBtc || 0) * 2.0;
+      const companyBonus = (p.companiesCount || 0) * 500;
+      const lowDonorMultiplier = (p.periodDonatedBtc || 0) === 0 ? 1.35 : 1.0;
+      return (wealthScore + liquidBonus + resourceBonus + companyBonus) * lowDonorMultiplier;
+    };
+
+    const unverified = (
+      forceReaudit
+        ? [...hydratedProfiles]
+        : hydratedProfiles.filter(
+            (p) => !deferredSet.has(p.userId) && this.isCitizenAuditStale(p, AUDIT_STALE_TTL_MS)
+          )
+    ).sort((a, b) => computePriorityScore(b) - computePriorityScore(a));
+
+    const totalCount = hydratedProfiles.length;
+    const initialAuditedCount = totalCount - unverified.length - deferredSet.size;
     const initialPct = totalCount > 0 ? Math.round((initialAuditedCount / totalCount) * 100) : 100;
 
     if (unverified.length === 0) {
+      const lastCompleted = lastPassCompletedAt || Date.now();
+      const failedIdsList = Array.from(deferredSet);
       this.notify({
         isRunning: false,
         isPaused: false,
-        auditedCount: totalCount,
+        activeWorkers: [],
+        auditedCount: Math.max(0, totalCount - failedIdsList.length),
         totalTargetCount: totalCount,
-        pct: 100,
-        statusMessage: 'All citizens verified with live personal receipts',
+        failedCount: failedIdsList.length,
+        failedCitizenIds: failedIdsList,
+        pct:
+          totalCount > 0
+            ? Math.min(100, Math.round(((totalCount - failedIdsList.length) / totalCount) * 100))
+            : 100,
+        lastCompletedAt: lastCompleted,
+        nextScheduledAuditAt: lastCompleted + AUDIT_STALE_TTL_MS,
+        statusMessage:
+          failedIdsList.length > 0
+            ? `Audit pass finished (${totalCount - failedIdsList.length} verified, ${failedIdsList.length} need retry)`
+            : 'All citizens verified with live receipts',
       });
       return;
     }
 
     this.isRunning = true;
     this.isPaused = false;
-    this.abortController = new AbortController();
+    const localAbortController = new AbortController();
+    this.abortController = localAbortController;
+
+    const workerSlots = new Map<number, ActiveAuditWorkerSlot>();
+    const syncWorkerSlotsToState = (extraUpdates: Partial<AutoAuditStreamState> = {}) => {
+      const slotsList = Array.from(workerSlots.values()).sort(
+        (a, b) => a.workerIndex - b.workerIndex
+      );
+      const primarySlot = slotsList[0];
+      this.notify({
+        activeWorkers: slotsList,
+        currentCitizenName: primarySlot?.username,
+        currentCitizenId: primarySlot?.userId,
+        currentCitizenReceiptCount: primarySlot?.receiptCount,
+        retryAttempt: primarySlot?.retryAttempt,
+        ...extraUpdates,
+      });
+    };
 
     this.notify({
       isRunning: true,
       isPaused: false,
+      activeWorkers: [],
       auditedCount: initialAuditedCount,
       totalTargetCount: totalCount,
+      failedCount: 0,
+      failedCitizenIds: [],
       pct: initialPct,
-      statusMessage: `Starting background verification for ${unverified.length} citizens...`,
+      currentCitizenReceiptCount: undefined,
+      retryAttempt: undefined,
+      statusMessage: `Auditing ${unverified.length} citizens...`,
     });
 
-    const windowDays = config.analysisPeriodDays || 7;
-    let currentAudited = initialAuditedCount;
+    const windowDays = incomingWindowDays;
+    let completedCount = initialAuditedCount;
+    const failedIds: string[] = [];
+    let queueIndex = 0;
+    // Universal 4-worker concurrency across all countries, paced safely by rateLimitedFetch token bucket
+    const CONCURRENCY = Math.min(4, Math.max(1, unverified.length));
 
-    for (const citizen of unverified) {
-      if (!this.isRunning) break;
+    const worker = async (workerIndex: number) => {
+      while (
+        queueIndex < unverified.length &&
+        this.isRunning &&
+        !localAbortController.signal.aborted
+      ) {
+        while (this.isPaused && this.isRunning && !localAbortController.signal.aborted) {
+          await new Promise((resolve) => setTimeout(resolve, 350));
+        }
+        if (!this.isRunning || localAbortController.signal.aborted) break;
 
-      // Handle pause loop
-      while (this.isPaused && this.isRunning) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
+        const currentIndex = queueIndex++;
+        if (currentIndex >= unverified.length) break;
+        const citizen = unverified[currentIndex];
 
-      if (!this.isRunning) break;
+        workerSlots.set(workerIndex, {
+          workerIndex,
+          userId: citizen.userId,
+          username: citizen.username,
+          receiptCount: 0,
+          retryAttempt: undefined,
+        });
+        syncWorkerSlotsToState({
+          statusMessage: `Auditing ${citizen.username}...`,
+        });
 
-      this.notify({
-        currentCitizenName: citizen.username,
-        currentCitizenId: citizen.userId,
-        statusMessage: `Streaming receipts for ${citizen.username}...`,
-      });
+        const MAX_CITIZEN_ATTEMPTS = 3;
+        let attempt = 0;
+        let citizenSucceeded = false;
 
-      // Non-blocking polite pause between requests to preserve 60 FPS UI responsiveness
-      await new Promise((resolve) => setTimeout(resolve, 200));
-
-      try {
-        const txs = await fetchUserTransactions(
-          citizen.userId,
-          apiKey,
-          undefined,
-          this.abortController?.signal,
-          windowDays
-        );
-
+        // Pre-load already cached transactions for this citizen so fetchUserTransactions can delta-short-circuit
         const storedTxs = await storage.getUserPersonalTransactions(citizen.userId);
-        const mergedMap = new Map<string, import('../types/warera').WareraTransaction>();
-        for (const t of storedTxs) if (t._id) mergedMap.set(t._id, t);
-        for (const t of txs) if (t._id) mergedMap.set(t._id, t);
-        const allUserTxs = Array.from(mergedMap.values());
-
-        if (allUserTxs.length > 0) {
-          await storage.saveUserPersonalTransactions(citizen.userId, allUserTxs);
+        const knownTxIds = new Set<string>();
+        for (const st of storedTxs) {
+          if (st._id) knownTxIds.add(st._id);
         }
 
-        const auditedProfile = buildAuditedCitizenProfile(
-          citizen,
-          allUserTxs,
-          config,
-          countryBenchmark,
-          windowDays
-        );
+        while (
+          attempt < MAX_CITIZEN_ATTEMPTS &&
+          !citizenSucceeded &&
+          this.isRunning &&
+          !localAbortController.signal.aborted
+        ) {
+          attempt++;
+          try {
+            if (attempt > 1) {
+              const retryDelayMs = attempt * 2000;
+              workerSlots.set(workerIndex, {
+                workerIndex,
+                userId: citizen.userId,
+                username: citizen.username,
+                receiptCount: workerSlots.get(workerIndex)?.receiptCount || 0,
+                retryAttempt: attempt,
+              });
+              syncWorkerSlotsToState({
+                statusMessage: `Retrying ${citizen.username} (attempt ${attempt}/${MAX_CITIZEN_ATTEMPTS})...`,
+              });
+              await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+            }
 
-        // Atomic persistence: save to local storage immediately
-        storage.saveAuditedProfile(auditedProfile);
+            if (!this.isRunning || localAbortController.signal.aborted) break;
 
-        // Notify app state for instant reactive table row transition
-        onProfileAudited(auditedProfile);
+            const txs = await fetchUserTransactions(
+              citizen.userId,
+              apiKey,
+              (loadedCount) => {
+                workerSlots.set(workerIndex, {
+                  workerIndex,
+                  userId: citizen.userId,
+                  username: citizen.username,
+                  receiptCount: loadedCount + knownTxIds.size,
+                  retryAttempt: attempt > 1 ? attempt : undefined,
+                });
+                syncWorkerSlotsToState();
+              },
+              localAbortController.signal,
+              windowDays,
+              knownTxIds
+            );
 
-        currentAudited++;
-        const pct = Math.min(100, Math.round((currentAudited / totalCount) * 100));
+            if (!this.isRunning || localAbortController.signal.aborted) break;
 
-        this.notify({
-          auditedCount: currentAudited,
-          pct,
-          statusMessage: `Verified ${citizen.username} (${txs.length} receipts)`,
-        });
-      } catch (err: any) {
-        if (err?.name === 'AbortError') {
-          break;
+            const mergedMap = new Map<string, import('../types/warera').WareraTransaction>();
+            for (const t of storedTxs) if (t._id) mergedMap.set(t._id, t);
+            for (const t of txs) if (t._id) mergedMap.set(t._id, t);
+            const allUserTxs = Array.from(mergedMap.values());
+
+            if (txs.length > 0 && allUserTxs.length > 0) {
+              await storage.saveUserPersonalTransactions(citizen.userId, allUserTxs);
+            }
+
+            const auditedProfile = buildAuditedCitizenProfile(
+              citizen,
+              allUserTxs,
+              config,
+              countryBenchmark,
+              windowDays
+            );
+
+            // Atomic persistence: save verified profile immediately in memory and localStorage
+            this.verifiedProfilesCache.set(auditedProfile.userId, auditedProfile);
+            storage.saveAuditedProfile(auditedProfile);
+
+            if (this.onProfileAuditedCallback) {
+              this.onProfileAuditedCallback(auditedProfile);
+            } else {
+              onProfileAudited(auditedProfile);
+            }
+
+            citizenSucceeded = true;
+            completedCount++;
+            workerSlots.delete(workerIndex);
+            const pct = Math.min(
+              100,
+              Math.round(((completedCount + failedIds.length) / totalCount) * 100)
+            );
+
+            syncWorkerSlotsToState({
+              auditedCount: completedCount,
+              pct,
+              statusMessage: `Verified ${citizen.username} (${allUserTxs.length} receipts)`,
+            });
+          } catch (err: any) {
+            if (err?.name === 'AbortError' || localAbortController.signal.aborted) {
+              break;
+            }
+            const isRateLimit = String(err?.message || '').includes('429');
+            if (isRateLimit) {
+              workerSlots.set(workerIndex, {
+                workerIndex,
+                userId: citizen.userId,
+                username: citizen.username,
+                receiptCount: workerSlots.get(workerIndex)?.receiptCount || 0,
+                retryAttempt: attempt,
+              });
+              syncWorkerSlotsToState({
+                statusMessage: `API rate limit reached on ${citizen.username}. Cooling down...`,
+              });
+              await new Promise((resolve) => setTimeout(resolve, 3000));
+            }
+          }
         }
 
-        // Handle rate limiting / network jitter with polite backoff
-        if (String(err?.message || '').includes('429')) {
-          this.notify({
-            statusMessage: 'Rate limit encountered. Backing off for 2.5s before continuing...',
+        workerSlots.delete(workerIndex);
+
+        // If all retry attempts failed, do NOT fabricate an 'audited' status.
+        if (!citizenSucceeded && this.isRunning && !localAbortController.signal.aborted) {
+          failedIds.push(citizen.userId);
+          const pct = Math.min(
+            100,
+            Math.round(((completedCount + failedIds.length) / totalCount) * 100)
+          );
+          syncWorkerSlotsToState({
+            failedCount: failedIds.length,
+            failedCitizenIds: [...failedIds],
+            pct,
+            statusMessage: `Deferred ${citizen.username} after ${MAX_CITIZEN_ATTEMPTS} retries`,
           });
-          await new Promise((resolve) => setTimeout(resolve, 2500));
         }
-
-        // Mark as audited with fallback so queue does not stall
-        currentAudited++;
-        const pct = Math.min(100, Math.round((currentAudited / totalCount) * 100));
-        this.notify({
-          auditedCount: currentAudited,
-          pct,
-          statusMessage: `Skipped ${citizen.username} due to network timeout`,
-        });
       }
+      workerSlots.delete(workerIndex);
+      syncWorkerSlotsToState();
+    };
+
+    const workers = Array.from({ length: CONCURRENCY }, (_, idx) => worker(idx + 1));
+    await Promise.all(workers);
+
+    if (localAbortController.signal.aborted) {
+      return;
+    }
+
+    const completedAt = Date.now();
+    this.completedPassTimestamps.set(passKey, completedAt);
+    this.deferredCitizenIdsByPass.set(passKey, new Set(failedIds));
+    if (completedCount > 0 || failedIds.length === 0) {
+      this.setLastCountryAuditTime(incomingCountryId, completedAt);
     }
 
     this.isRunning = false;
     this.isPaused = false;
     this.abortController = null;
+    workerSlots.clear();
     this.notify({
       isRunning: false,
       isPaused: false,
+      activeWorkers: [],
       currentCitizenName: undefined,
       currentCitizenId: undefined,
-      auditedCount: totalCount,
-      pct: 100,
-      statusMessage: 'Background audit complete: 100% truth-based receipts verified',
+      currentCitizenReceiptCount: undefined,
+      retryAttempt: undefined,
+      auditedCount: completedCount,
+      failedCount: failedIds.length,
+      failedCitizenIds: [...failedIds],
+      pct: totalCount > 0 ? Math.min(100, Math.round((completedCount / totalCount) * 100)) : 100,
+      lastCompletedAt: completedAt,
+      nextScheduledAuditAt: completedAt + AUDIT_STALE_TTL_MS,
+      statusMessage:
+        failedIds.length > 0
+          ? `Audit pass finished (${completedCount} verified, ${failedIds.length} need retry)`
+          : 'Background audit complete: all citizen receipts verified',
     });
   }
 }

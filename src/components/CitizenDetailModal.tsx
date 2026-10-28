@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { DonorRankingItem, RankingTimeframe } from '../types/warera';
 import { Coins, Clock, X, Shield, Calendar, Check, Copy, Info, Swords, ShieldCheck } from 'lucide-react';
 import { formatDateDDMMYYYY } from '../utils/dateUtils';
+import { compareTransactionsNewestFirst } from '../services/apiService';
 
 interface CitizenDetailModalProps {
   donor: DonorRankingItem | null;
@@ -309,7 +310,7 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
                 </div>
               )}
 
-              {(donor.transactions || []).map((tx) => {
+              {[...(donor.transactions || [])].sort(compareTransactionsNewestFirst).map((tx) => {
                 const txDate = tx.createdAt ? new Date(tx.createdAt) : null;
                 const isValidDate = txDate && !isNaN(txDate.getTime());
                 const dateStr = isValidDate ? formatDateDDMMYYYY(txDate) : 'Recent';

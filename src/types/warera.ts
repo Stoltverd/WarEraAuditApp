@@ -99,7 +99,8 @@ export interface WareraUserLite {
     stamina?: { level?: number; value?: number; [key: string]: any };
     energy?: { level?: number; value?: number; [key: string]: any };
     companies?: { level?: number; value?: number; [key: string]: any };
-    entrepreneurship?: { level?: number; value?: number; [key: string]: any };
+    leadership?: { level?: number; value?: number; [key: string]: any };
+    entrepreneurship?: { level?: number; value?: number; [key: string]: any }; // Legacy pre-v0.27 fallback
     production?: { level?: number; value?: number; [key: string]: any };
     management?: { level?: number; value?: number; [key: string]: any };
     lootChance?: { level?: number; value?: number; [key: string]: any };
@@ -216,6 +217,66 @@ export interface SyncProgress {
   error?: string;
 }
 
+export type EmployeeTraitTier = 'must-have' | 'good-to-have' | 'ok-to-have';
+
+export type EmployeeTraitId =
+  // MUST HAVE! (S-Tier)
+  | 'handy'
+  | 'cosmopolitan'
+  | 'late_bloomer'
+  | 'craftsman'
+  | 'laborer'
+  | 'sociable'
+  | 'specialist'
+  | 'lucky_charm'
+  // GOOD TO HAVE (A-Tier)
+  | 'girl_power'
+  | 'band_of_brothers'
+  | 'rival'
+  | 'prima_donna'
+  | 'diamond_in_the_rough'
+  | 'patriot'
+  | 'expat'
+  | 'modest'
+  | 'recruiter'
+  | 'trainer'
+  // OK TO HAVE (B-Tier)
+  | 'improviser'
+  | 'nationalist'
+  | 'comic'
+  | 'bully'
+  | 'loner'
+  | 'quick_study'
+  | 'veteran'
+  | 'statist'
+  | 'loyal'
+  | 'scavenger'
+  | 'foreman';
+
+export interface WareraBotEmployee {
+  id: string;
+  name: string;
+  age: number; // Youngest (19-21) prioritized over 28+; >35 reroll candidate unless Late Bloomer
+  sex: 'male' | 'female';
+  nationality: string; // 'homeland' or foreign country code/name
+  isForeigner?: boolean;
+  happiness: number; // Starts at 50; <30 risks walking out; +/-1% output per point from 50
+  trainingPotential: number; // Total training sessions (typically 3-12+, 8-12+ is strong)
+  trainingUsed: number;
+  tenureDays: number; // Days in the same company (for Veteran 30d & Diamond in the Rough 10d)
+  isSpecializedInGood: boolean; // True if working in a company producing their specialized good
+  hasTool: boolean;
+  toolTier?: 'none' | 'common' | 'rare' | 'epic' | 'legendary' | 'mythic';
+  badHabitCount?: number; // Removable via Blue training event
+  stats: {
+    production: number; // Base 1-4+ PP/hr
+    luck: number; // Base 1-4+ (0.1% toolbox chance/hr per point)
+    responsibility: number; // Base 1-4+ (discipline / handling bad news)
+  };
+  traits: EmployeeTraitId[];
+  hourlyWageBtc: number;
+}
+
 export interface WareraCompany {
   _id: string;
   user: string;
@@ -228,11 +289,18 @@ export interface WareraCompany {
   activeUpgradeLevels?: {
     storage?: number;
     automatedEngine?: number;
-    breakRoom?: number;
+    breakRoom?: number; // Level 1 = 1 employee, Level 2 = 2 (20 steel), Level 3 = 3 (80 steel)
     [key: string]: number | undefined;
   };
   workerCount?: number;
+  employees?: WareraBotEmployee[];
+  managerId?: string;
+  managerName?: string;
+  hasManager?: boolean;
+  isHomelandSafeRegion?: boolean;
+  isOperatingActive?: boolean;
   estimatedValue?: number;
   createdAt?: string;
   updatedAt?: string;
 }
+

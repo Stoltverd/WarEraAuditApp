@@ -58,6 +58,10 @@ import {
   DEFAULT_STOCKPILES,
 } from './services/ministryService';
 import {
+  extractCitizenSkillBreakdown,
+  evaluateCitizenSkillBuild,
+} from './services/workforceService';
+import {
   CalendarDays,
   Share2,
   AlertCircle,
@@ -677,14 +681,35 @@ export default function App() {
       return isActive && level >= 10;
     });
 
+    const auditedIncomesMap = new Map<string, number>();
+    Object.values(auditedProfilesMap).forEach((ap) => {
+      if (ap && ap.userId && typeof ap.grossIncomeBtc === 'number' && ap.grossIncomeBtc > 0) {
+        auditedIncomesMap.set(ap.userId, ap.grossIncomeBtc);
+      }
+    });
+
+    const periodDonationsMap = new Map<string, number>();
+    const periodMs = (ministryConfig.analysisPeriodDays || 7) * 24 * 60 * 60 * 1000;
+    const cutoffTime = Date.now() - periodMs;
+    transactions.forEach((tx) => {
+      if (tx.userId && new Date(tx.createdAt).getTime() >= cutoffTime) {
+        const amt = Number(tx.money || tx.amount || 0);
+        if (amt > 0) {
+          periodDonationsMap.set(tx.userId, (periodDonationsMap.get(tx.userId) || 0) + amt);
+        }
+      }
+    });
+
     return calculateCountryEconomicBenchmark(
       countryId,
       activeCountryCitizens,
       allTimeCumulativeMap,
       undefined,
-      selectedCountry?.rankings?.countryActivePopulation?.value
+      selectedCountry?.rankings?.countryActivePopulation?.value,
+      auditedIncomesMap,
+      periodDonationsMap
     );
-  }, [selectedCountry, cumulative, transactions, usersMap]);
+  }, [selectedCountry, cumulative, transactions, usersMap, auditedProfilesMap, ministryConfig.analysisPeriodDays]);
 
   // Ministry of Economy: Citizen Economic Profiles
   const citizenEconomicProfiles: CitizenEconomicProfile[] = useMemo(() => {
@@ -803,6 +828,10 @@ export default function App() {
       const playstyle = evaluatePlaystyle(warPoints, ecoPoints);
       const daysInBuild = calculateDaysInBuild(user);
       const audited = auditedProfilesMap[user._id];
+      const activeCompsCap = audited?.activeCompaniesCount ?? Number(user.skills?.companies?.value ?? 2);
+      const skillBreakdown = extractCitizenSkillBreakdown(user);
+      const buildEvaluation = evaluateCitizenSkillBuild(level, playstyle, skillBreakdown, activeCompsCap);
+      const isAuditedValid = Boolean(audited && audited.auditBaselineStatus === 'audited' && audited.auditedAt);
       const currentWealthBasis = (ministryConfig.includeResourceWealth && resourceWealth > 0)
         ? wealth + resourceWealth
         : wealth;
@@ -837,7 +866,8 @@ export default function App() {
         historicalRank,
         isNationalHeavyHitter,
         heavyHitterRank,
-        countryBenchmark
+        countryBenchmark,
+        liquidMoney
       );
       const tagInfo = playerTags[user._id];
       const watchedItem = watchedMap.get(user._id);
@@ -871,34 +901,44 @@ export default function App() {
         equipmentsWealthBtc: equipmentsWealth,
         weaponsWealthBtc: weaponsWealth,
         pastWealthBtc: audited?.pastWealthBtc,
-        grossIncomeBtc: audited?.auditBaselineStatus === 'audited' ? audited.grossIncomeBtc : undefined,
-        grossInflowBtc: audited?.auditBaselineStatus === 'audited' ? (audited.grossInflowBtc ?? audited.grossIncomeBtc) : undefined,
-        netCashflowBtc: audited?.auditBaselineStatus === 'audited' ? audited.netCashflowBtc : undefined,
-        periodDonatedBtc: audited?.auditBaselineStatus === 'audited' && audited.periodDonatedBtc !== undefined ? audited.periodDonatedBtc : direct,
+        grossIncomeBtc: isAuditedValid ? audited.grossIncomeBtc : undefined,
+        grossInflowBtc: isAuditedValid ? (audited.grossInflowBtc ?? audited.grossIncomeBtc) : undefined,
+        netCashflowBtc: isAuditedValid ? audited.netCashflowBtc : undefined,
+        periodDonatedBtc: isAuditedValid && audited.periodDonatedBtc !== undefined ? audited.periodDonatedBtc : direct,
         totalDonatedBtc: totalDonated,
-        directDonatedBtc: audited?.auditBaselineStatus === 'audited' && audited.directDonatedBtc !== undefined ? audited.directDonatedBtc : direct,
+        directDonatedBtc: isAuditedValid && audited.directDonatedBtc !== undefined ? audited.directDonatedBtc : direct,
         damageDonatedBtc: damageDonated,
-        damageValueBtc: audited?.damageValueBtc !== undefined ? audited.damageValueBtc : damageValueBtc,
+        damageValueBtc: isAuditedValid && audited.damageValueBtc !== undefined ? audited.damageValueBtc : damageValueBtc,
         totalCombatDamage: weeklyCombatDamage,
         lifetimeCombatDamage,
         isHistoricalTopDonor,
         historicalRank,
         isNationalHeavyHitter,
         heavyHitterRank,
-        tierReasonBadge: audited?.auditBaselineStatus === 'audited' ? (audited.tierReasonBadge || reason) : (reason || 'Pending personal audit'),
+        tierReasonBadge: isAuditedValid
+          ? (audited.tierReasonBadge || reason)
+          : isHistoricalTopDonor
+          ? reason
+          : 'Pending personal receipt verification',
         donationCount,
         lastDonationAt: effectiveLastDonation,
-        contributionRatio: audited?.auditBaselineStatus === 'audited' ? audited.contributionRatio : 0,
-        leechTier: audited?.auditBaselineStatus === 'audited' ? audited.leechTier : tier,
-        economicStanding: resolveMasterCitizenStanding(
-          audited?.auditBaselineStatus === 'audited' ? audited.leechTier : tier,
-          audited?.ministerialVerdict,
-          isHistoricalTopDonor,
-          isNationalHeavyHitter
-        ),
+        contributionRatio: isAuditedValid ? audited.contributionRatio : 0,
+        leechTier: isAuditedValid ? audited.leechTier : (isHistoricalTopDonor ? 'historical-pillar' : 'moderate'),
+        economicStanding: isAuditedValid
+          ? resolveMasterCitizenStanding(
+              audited.leechTier,
+              audited?.ministerialVerdict,
+              isHistoricalTopDonor,
+              isNationalHeavyHitter
+            )
+          : isHistoricalTopDonor
+          ? 'historical-pillar'
+          : 'standard-contributor',
         warSkillPoints: warPoints,
         ecoSkillPoints: ecoPoints,
         playstyle,
+        skillBreakdown,
+        buildEvaluation,
         manualTag: tagInfo?.tag || 'none',
         notes: tagInfo?.notes,
         isActive: true,
@@ -907,20 +947,21 @@ export default function App() {
         isInactiveDonor,
         isOnWatch: Boolean(watchedItem),
         watchReason: watchedItem?.reasonNote,
-        auditBaselineStatus: audited?.auditBaselineStatus === 'audited' ? 'audited' : 'pending-audit',
-        auditedAt: audited?.auditedAt,
-        receiptCount: audited?.receiptCount,
-        auditDeltaAlert: audited?.auditDeltaAlert,
-        auditMethodologyNote: audited?.auditBaselineStatus === 'audited' ? audited.auditMethodologyNote : 'Pending live personal receipt stream.',
-        ministerialVerdict: audited?.ministerialVerdict,
-        ministerialVerdictReason: audited?.ministerialVerdictReason,
-        playerCashflow: audited?.auditBaselineStatus === 'audited' ? audited.playerCashflow : undefined,
-        companiesCount: audited?.companiesCount ?? Number(user.skills?.companies?.value ?? user.skills?.companies?.level ?? 2),
-        activeCompaniesCount: audited?.activeCompaniesCount ?? Number(user.skills?.companies?.value ?? 2),
+        auditBaselineStatus: isAuditedValid ? 'audited' : 'pending-audit',
+        auditedAt: isAuditedValid ? audited?.auditedAt : undefined,
+        receiptCount: isAuditedValid ? audited?.receiptCount : undefined,
+        auditDeltaAlert: isAuditedValid ? audited?.auditDeltaAlert : undefined,
+        auditMethodologyNote: isAuditedValid ? audited.auditMethodologyNote : 'Pending live personal receipt stream.',
+        ministerialVerdict: isAuditedValid ? audited?.ministerialVerdict : undefined,
+        ministerialVerdictReason: isAuditedValid ? audited?.ministerialVerdictReason : undefined,
+        playerCashflow: isAuditedValid ? audited.playerCashflow : undefined,
+        companiesCount: isAuditedValid ? audited?.companiesCount : undefined,
+        activeCompaniesCount: activeCompsCap,
         maxCompaniesCap: audited?.maxCompaniesCap ?? Number(user.skills?.companies?.value ?? 2),
-        automationLevelEst: audited?.automationLevelEst ?? 7,
-        storageLevelEst: audited?.storageLevelEst ?? 7,
-        estimatedCompanyCapacityBtc: audited?.estimatedCompanyCapacityBtc,
+        automationLevelEst: isAuditedValid ? audited?.automationLevelEst : undefined,
+        storageLevelEst: isAuditedValid ? audited?.storageLevelEst : undefined,
+        breakRoomLevelEst: isAuditedValid ? audited?.breakRoomLevelEst : undefined,
+        estimatedCompanyCapacityBtc: isAuditedValid ? audited?.estimatedCompanyCapacityBtc : undefined,
         worksCount: Number(user.stats?.worksCount || 0),
         employerCompanyId: typeof user.company === 'string' ? user.company : undefined,
       });
@@ -957,14 +998,37 @@ export default function App() {
         storage.saveWealthSnapshotsBatch.bind(storage),
         countryBenchmark,
         transactions,
-        usersMap
+        usersMap,
+        storage.getUserPersonalTransactions.bind(storage)
       );
-      const map: Record<string, CitizenEconomicProfile> = {};
-      audited.forEach((a) => {
-        map[a.userId] = a;
+      setAuditedProfilesMap((prev) => {
+        const next: Record<string, CitizenEconomicProfile> = { ...prev };
+        audited.forEach((a) => {
+          const existing = prev[a.userId];
+          if (
+            existing?.auditBaselineStatus === 'audited' &&
+            existing.auditedAt &&
+            a.auditBaselineStatus !== 'audited'
+          ) {
+            // Preserve live background-audited profile instead of overwriting with pending-audit
+            next[a.userId] = {
+              ...a,
+              ...existing,
+              wealthBtc: a.wealthBtc,
+              level: a.level,
+              ecoSkillPoints: a.ecoSkillPoints,
+              warSkillPoints: a.warSkillPoints,
+              playstyle: a.playstyle,
+              skillBreakdown: a.skillBreakdown ?? existing.skillBreakdown,
+              buildEvaluation: a.buildEvaluation ?? existing.buildEvaluation,
+            };
+          } else {
+            next[a.userId] = a;
+          }
+        });
+        storage.saveAuditedProfilesMap(selectedCountry?._id, next);
+        return next;
       });
-      setAuditedProfilesMap(map);
-      storage.saveAuditedProfilesMap(selectedCountry?._id, map);
 
       // Phase 4: Detect playstyle respecs and register alerts
       const priorPlaystyles = storage.getCitizenPlaystyles();
@@ -986,14 +1050,32 @@ export default function App() {
     }
   };
 
-  const handleUpdateProfile = (updatedProfile: CitizenEconomicProfile) => {
-    storage.saveAuditedProfile(updatedProfile);
-    setAuditedProfilesMap((prev) => {
-      const next = { ...prev, [updatedProfile.userId]: updatedProfile };
-      storage.saveAuditedProfilesMap(selectedCountry?._id, next);
-      return next;
-    });
-  };
+  const handleUpdateProfile = useCallback(
+    (updatedProfile: CitizenEconomicProfile) => {
+      storage.saveAuditedProfile(updatedProfile);
+      setAuditedProfilesMap((prev) => {
+        const next = { ...prev, [updatedProfile.userId]: updatedProfile };
+        storage.saveAuditedProfilesMap(selectedCountry?._id, next);
+        return next;
+      });
+    },
+    [selectedCountry?._id]
+  );
+
+  const handleUpdateProfilesBatch = useCallback(
+    (updatedList: CitizenEconomicProfile[]) => {
+      if (!updatedList || updatedList.length === 0) return;
+      setAuditedProfilesMap((prev) => {
+        const next = { ...prev };
+        for (const p of updatedList) {
+          next[p.userId] = p;
+        }
+        storage.saveAuditedProfilesMap(selectedCountry?._id, next);
+        return next;
+      });
+    },
+    [selectedCountry?._id]
+  );
 
   const handleUpdateMinistryConfig = async (cfg: MinistryConfig) => {
     setMinistryConfig(cfg);
@@ -1219,6 +1301,7 @@ export default function App() {
             onOpenDiagnostics={() => setIsDiagnosticsModalOpen(true)}
             countryBenchmark={countryBenchmark}
             onUpdateProfile={handleUpdateProfile}
+            onUpdateProfilesBatch={handleUpdateProfilesBatch}
           />
         ) : (
           <>

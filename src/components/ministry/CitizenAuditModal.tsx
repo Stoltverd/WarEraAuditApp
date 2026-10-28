@@ -5,16 +5,27 @@ import {
   DEFAULT_MINISTRY_CONFIG,
   WealthSnapshot,
   CountryEconomicBenchmark,
+  CommodityTrend,
 } from '../../types/ministry';
-import { WareraCompany, WareraTransaction } from '../../types/warera';
-import { fetchUserCompanies, fetchUserTransactions, extractItemTimestampMs } from '../../services/apiService';
+import { WareraCompany, WareraTransaction, WareraBotEmployee, EmployeeTraitId } from '../../types/warera';
+import { fetchUserCompanies, fetchUserTransactions, extractItemTimestampMs, compareTransactionsNewestFirst } from '../../services/apiService';
 import { storage } from '../../services/storage';
 import {
+  buildAuditedCitizenProfile,
   calculatePlayerCashflowSummary,
   evaluateLeechTier,
   resolveMasterCitizenStanding,
 } from '../../services/ministryService';
-import { formatDateDDMMYYYY } from '../../utils/dateUtils';
+import {
+  PIRATERERS_TRAIT_CATALOG,
+  TRAIT_MAP,
+  evaluateCitizenSkillBuild,
+  evaluateCompanyWorkforce,
+  createEmptyEmployeeSlot,
+  isManufacturedCommodity,
+} from '../../services/workforceService';
+import { formatDateDDMMYYYY, formatDateTimeDDMMYYYY } from '../../utils/dateUtils';
+import { WareraItemIcon } from '../common/WareraItemIcon';
 import {
   X,
   Coins,
@@ -57,6 +68,7 @@ interface CitizenAuditModalProps {
   countryName: string;
   apiKey?: string;
   countryBenchmark?: CountryEconomicBenchmark;
+  commodities?: CommodityTrend[];
   onClose: () => void;
   onUpdateProfile?: (updated: CitizenEconomicProfile) => void;
   onUpdateConfig?: (updated: MinistryConfig) => void;
@@ -68,6 +80,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
   countryName,
   apiKey,
   countryBenchmark,
+  commodities = [],
   onClose,
   onUpdateProfile,
   onUpdateConfig,
@@ -84,6 +97,10 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
   const [liveCompanies, setLiveCompanies] = useState<WareraCompany[]>([]);
   const [isLoadingCompanies, setIsLoadingCompanies] = useState(false);
   const [companyCommodityFilter, setCompanyCommodityFilter] = useState<string>('all');
+  const [expandedWorkforceCompId, setExpandedWorkforceCompId] = useState<string | null>(null);
+  const [companyWorkforceOverrides, setCompanyWorkforceOverrides] = useState<
+    Record<string, { breakRoom?: number; hasManager?: boolean; employees?: WareraBotEmployee[] }>
+  >({});
 
   // Forensic Transactions state
   const [personalTransactions, setPersonalTransactions] = useState<WareraTransaction[]>([]);
@@ -135,7 +152,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
       // Load cached personal transactions if present in offline storage
       storage.getUserPersonalTransactions(profile.userId).then((cached) => {
         if (cached && cached.length > 0) {
-          setPersonalTransactions(cached);
+          setPersonalTransactions([...cached].sort(compareTransactionsNewestFirst));
         }
       });
 
@@ -183,21 +200,45 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
     handleSyncLiveReceipts(days);
   };
 
-  // Automatic live receipts streaming on modal mount or citizen switch
+  // Keep audited numbers locked when opening the modal for an already-verified citizen.
+  // Only auto-stream on mount if the citizen's receipts are NOT yet verified (auditBaselineStatus !== 'audited').
   useEffect(() => {
-    if (localProfile?.userId && apiKey && autoStreamInitiatedRef.current !== `${localProfile.userId}-${auditPeriodDays}`) {
+    if (
+      localProfile?.userId &&
+      apiKey &&
+      localProfile.auditBaselineStatus !== 'audited' &&
+      autoStreamInitiatedRef.current !== `${localProfile.userId}-${auditPeriodDays}`
+    ) {
       autoStreamInitiatedRef.current = `${localProfile.userId}-${auditPeriodDays}`;
       handleSyncLiveReceipts(auditPeriodDays);
     }
-  }, [localProfile?.userId, apiKey, auditPeriodDays]);
+  }, [localProfile?.userId, localProfile?.auditBaselineStatus, apiKey, auditPeriodDays]);
+
+  // Clear transient auditDeltaAlert when citizen is inspected
+  useEffect(() => {
+    if (localProfile?.auditDeltaAlert) {
+      const cleared = { ...localProfile, auditDeltaAlert: undefined };
+      setLocalProfile(cleared);
+      onUpdateProfile?.(cleared);
+      storage.saveAuditedProfile(cleared);
+    }
+  }, [localProfile?.userId]);
 
   if (!localProfile) return null;
 
   const currentProfile = localProfile;
   const periodDays = auditPeriodDays;
 
-  // Dynamically compute cashflow metrics from personal receipts according to selected window (7D vs 30D)
+  // Respect locked audited summary when the citizen is already verified and window matches config,
+  // avoiding unexpected shifts on modal mount before user clicks manual re-stream.
   const dynamicCashflow = useMemo(() => {
+    if (
+      currentProfile.auditBaselineStatus === 'audited' &&
+      currentProfile.playerCashflow &&
+      auditPeriodDays === (config.analysisPeriodDays || 7)
+    ) {
+      return currentProfile.playerCashflow;
+    }
     if (personalTransactions && personalTransactions.length > 0) {
       const reconstructedUser: any = {
         _id: currentProfile.userId,
@@ -221,12 +262,13 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
         currentProfile.userId,
         reconstructedUser,
         personalTransactions,
-        auditPeriodDays
+        auditPeriodDays,
+        countryBenchmark
       );
       return res.summary;
     }
     return currentProfile.playerCashflow;
-  }, [personalTransactions, auditPeriodDays, currentProfile]);
+  }, [personalTransactions, auditPeriodDays, currentProfile, countryBenchmark, config.analysisPeriodDays]);
 
   const cashflow = dynamicCashflow;
 
@@ -255,25 +297,40 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
   const equipmentPurchases = cashflow?.equipmentPurchasesBtc ?? 0;
   // Real Net Trading Balance = Market Sales minus Market Purchases
   const netTradeMargin = Math.round((salesVolume - purchasesVolume) * 100) / 100;
-  const periodDonated = cashflow?.donationsGivenBtc && cashflow.donationsGivenBtc > 0
-    ? cashflow.donationsGivenBtc
-    : (currentProfile.periodDonatedBtc ?? currentProfile.directDonatedBtc ?? 0);
+  const periodDonated = Math.max(
+    cashflow?.donationsGivenBtc || 0,
+    currentProfile.periodDonatedBtc ?? currentProfile.directDonatedBtc ?? 0
+  );
   const tipsReceived = cashflow?.tipsReceivedBtc ?? 0;
   const tipsSent = cashflow?.tipsSentBtc ?? 0;
   const craftingExpenses = (cashflow?.craftingExpensesBtc || 0) + (cashflow?.dismantleExpensesBtc || 0) + (cashflow?.caseOpeningExpensesBtc || 0);
   const applicationFees = cashflow?.applicationFeesBtc || 0;
   // Gross Cash Inflow = labor wages + market sales + tips received
   const calculatedGrossInflow = Math.round((wagesEarned + salesVolume + tipsReceived) * 100) / 100;
-  // If verified personal receipts have not yet been streamed, respect the profile's unified audited gross income:
-  const grossIncome = calculatedGrossInflow > 0
-    ? calculatedGrossInflow
-    : (typeof currentProfile.grossIncomeBtc === 'number' && currentProfile.grossIncomeBtc > 0
-        ? currentProfile.grossIncomeBtc
-        : Math.round((periodDonated + 20) * 100) / 100);
+  // Respect the profile's unified audited gross income when already audited:
+  const grossIncome =
+    currentProfile.auditBaselineStatus === 'audited' &&
+    typeof currentProfile.grossIncomeBtc === 'number' &&
+    auditPeriodDays === (config.analysisPeriodDays || 7)
+      ? currentProfile.grossIncomeBtc
+      : calculatedGrossInflow > 0
+      ? Math.max(calculatedGrossInflow, periodDonated)
+      : typeof currentProfile.grossIncomeBtc === 'number' && currentProfile.grossIncomeBtc > 0
+      ? currentProfile.grossIncomeBtc
+      : currentProfile.auditBaselineStatus === 'audited'
+      ? periodDonated
+      : 0;
   // Net Disposable Cashflow = Gross Inflow minus Purchases minus Employer Payroll minus Crafting/Fees
-  const netDisposableIncome = calculatedGrossInflow > 0
-    ? Math.round((calculatedGrossInflow - purchasesVolume - wagesPaid - craftingExpenses - applicationFees) * 100) / 100
-    : grossIncome;
+  const netDisposableIncome =
+    currentProfile.auditBaselineStatus === 'audited' &&
+    typeof currentProfile.netCashflowBtc === 'number' &&
+    auditPeriodDays === (config.analysisPeriodDays || 7)
+      ? currentProfile.netCashflowBtc
+      : calculatedGrossInflow > 0
+      ? Math.round((calculatedGrossInflow - purchasesVolume - wagesPaid - craftingExpenses - applicationFees) * 100) / 100
+      : typeof currentProfile.netCashflowBtc === 'number'
+      ? currentProfile.netCashflowBtc
+      : grossIncome;
 
   // Capital Balance Sheet Assets
   const liquidBtc = typeof currentProfile.liquidBtc === 'number' && currentProfile.liquidBtc >= 0
@@ -377,102 +434,44 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
         windowDays
       );
 
-      setPersonalTransactions((prev) => {
-        const map = new Map<string, WareraTransaction>();
-        for (const tx of prev) if (tx?._id) map.set(tx._id, tx);
-        for (const tx of personalTxs) if (tx?._id) map.set(tx._id, tx);
-        return Array.from(map.values());
-      });
+      const mergedMap = new Map<string, WareraTransaction>();
+      for (const tx of personalTransactions) if (tx?._id) mergedMap.set(tx._id, tx);
+      for (const tx of personalTxs) if (tx?._id) mergedMap.set(tx._id, tx);
+      const mergedTxs = Array.from(mergedMap.values()).sort(compareTransactionsNewestFirst);
 
-      if (personalTxs.length === 0) {
-        setSyncStatusMsg(`Queried personal stream: 0 receipts found for this ${windowDays}D period.`);
-      } else {
-        await storage.saveUserPersonalTransactions(currentProfile.userId, personalTxs);
+      setPersonalTransactions(mergedTxs);
 
-        const reconstructedUser: any = {
-          _id: currentProfile.userId,
-          username: currentProfile.username,
-          avatarUrl: currentProfile.avatarUrl,
-          country: currentProfile.countryId,
-          level: currentProfile.level,
-          money: currentProfile.liquidBtc,
-          skills: {
-            companies: { value: currentProfile.activeCompaniesCount || 2 },
-          },
-          stats: {
-            wealth: {
-              total: currentProfile.wealthBtc,
-              money: currentProfile.liquidBtc || 0,
-              companies: currentProfile.companiesWealthBtc || 0,
-            },
-          },
-        };
-
-        const recalculated = calculatePlayerCashflowSummary(
-          currentProfile.userId,
-          reconstructedUser,
-          personalTxs,
+      if (mergedTxs.length === 0) {
+        const updatedProfile = buildAuditedCitizenProfile(
+          currentProfile,
+          [],
+          { ...config, analysisPeriodDays: windowDays },
+          countryBenchmark,
           windowDays
         );
-        const newWages = recalculated.summary.wagesEarnedBtc;
-        const newSales = recalculated.summary.salesVolumeBtc;
-        const newTips = recalculated.summary.tipsReceivedBtc || 0;
-        // Gross Cash Inflow = wages earned + market sales + tips (matches top Gross Cash Inflow card exactly)
-        const verifiedGrossInflow = Math.round((newWages + newSales + newTips) * 100) / 100;
-        const newPeriodDonated = recalculated.summary.donationsGivenBtc > 0 ? recalculated.summary.donationsGivenBtc : periodDonated;
-        const newGross = Math.max(verifiedGrossInflow, newPeriodDonated);
-        const verifiedRatio = newGross > 0 ? Math.round((newPeriodDonated / newGross) * 1000) / 10 : 0;
+        setLocalProfile(updatedProfile);
+        onUpdateProfile?.(updatedProfile);
+        storage.saveAuditedProfile(updatedProfile);
+        setSyncStatusMsg(`Queried personal stream: 0 receipts found for this ${windowDays}D period.`);
+      } else {
+        await storage.saveUserPersonalTransactions(currentProfile.userId, mergedTxs);
 
-        const currentWealthBasis = currentProfile.wealthBtc + (currentProfile.resourceWealthBtc || 0);
-        const tierEval = evaluateLeechTier(
-          currentWealthBasis,
-          newPeriodDonated,
+        // Use the single canonical buildAuditedCitizenProfile so manual streaming produces
+        // 100% identical LeechTier, MinisterialVerdict, and EconomicStanding as the Radar!
+        const updatedProfile = buildAuditedCitizenProfile(
+          currentProfile,
+          mergedTxs,
           { ...config, analysisPeriodDays: windowDays },
-          newGross,
-          currentProfile.playstyle,
-          currentProfile.totalDonatedBtc,
-          currentProfile.resourceWealthBtc,
-          currentProfile.totalCombatDamage,
-          currentProfile.isHistoricalTopDonor,
-          currentProfile.historicalRank,
-          currentProfile.isNationalHeavyHitter,
-          currentProfile.heavyHitterRank,
-          countryBenchmark
+          countryBenchmark,
+          windowDays
         );
-
-        const newStanding = resolveMasterCitizenStanding(
-          tierEval.tier,
-          recalculated.summary.ministerialVerdict,
-          currentProfile.isHistoricalTopDonor,
-          currentProfile.isNationalHeavyHitter
-        );
-
-        const updatedProfile: CitizenEconomicProfile = {
-          ...currentProfile,
-          playerCashflow: recalculated.summary,
-          grossIncomeBtc: newGross,
-          grossInflowBtc: verifiedGrossInflow,
-          netCashflowBtc: recalculated.summary.netCashflowBtc ?? recalculated.summary.netDisposableIncomeBtc,
-          periodDonatedBtc: newPeriodDonated,
-          directDonatedBtc: newPeriodDonated,
-          contributionRatio: verifiedRatio,
-          leechTier: tierEval.tier,
-          economicStanding: newStanding,
-          damageValueBtc: tierEval.damageValueBtc,
-          tierReasonBadge: tierEval.reason || currentProfile.tierReasonBadge,
-          ministerialVerdict: recalculated.summary.ministerialVerdict || currentProfile.ministerialVerdict,
-          ministerialVerdictReason: recalculated.summary.ministerialVerdictReason || currentProfile.ministerialVerdictReason,
-          companiesCount: recalculated.companiesCount,
-          activeCompaniesCount: recalculated.activeCompaniesCount,
-          auditBaselineStatus: 'audited',
-          auditedAt: new Date().toISOString(),
-          receiptCount: personalTxs.length,
-          auditMethodologyNote: `Verified via ${personalTxs.length} live in-game personal receipts (${windowDays}D window).`,
-        };
 
         setLocalProfile(updatedProfile);
         onUpdateProfile?.(updatedProfile);
-        setSyncStatusMsg(`Successfully streamed ${personalTxs.length} verified receipts (${recalculated.summary.wagesCount} wage shifts, ${recalculated.summary.salesCount} market sales across ${windowDays}D)!`);
+        storage.saveAuditedProfile(updatedProfile);
+        setSyncStatusMsg(
+          `Successfully verified ${mergedTxs.length} receipts (${updatedProfile.playerCashflow?.wagesCount || 0} wage shifts, ${updatedProfile.playerCashflow?.salesCount || 0} market sales across ${windowDays}D)!`
+        );
       }
     } catch (err: any) {
       if (err.name === 'AbortError') {
@@ -517,15 +516,17 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
   }, [auditPeriodDays]);
 
   const timeframeTransactions = useMemo(() => {
-    return personalTransactions.filter((tx) => {
-      if (!tx) return false;
-      const t = extractItemTimestampMs(tx);
-      if (isNaN(t)) {
-        // Undated transactions only qualify for broad 30D window, never 7D
-        return auditPeriodDays >= 30;
-      }
-      return t >= activeCutoffTime;
-    });
+    return personalTransactions
+      .filter((tx) => {
+        if (!tx) return false;
+        const t = extractItemTimestampMs(tx);
+        if (isNaN(t)) {
+          // Undated transactions only qualify for broad 30D window, never 7D
+          return auditPeriodDays >= 30;
+        }
+        return t >= activeCutoffTime;
+      })
+      .sort(compareTransactionsNewestFirst);
   }, [personalTransactions, activeCutoffTime, auditPeriodDays]);
 
   // Tab live transaction counts across all categories for the active timeframe
@@ -606,83 +607,165 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
         );
       }
       return true;
-    });
+    }).sort(compareTransactionsNewestFirst);
   }, [timeframeTransactions, txTypeFilter, txSearch]);
 
-  // Authentic Multi-Company Aggregation for Industrial Tab
+  // Authentic Live-API-Only Multi-Company Aggregation for Industrial Tab (Zero Fake Fallback Companies)
   const companiesToRender = useMemo(() => {
     type AuthenticCompany = WareraCompany & {
       isOperatingActive: boolean;
     };
-    let list: AuthenticCompany[] = [];
     const activeSlots = currentProfile.activeCompaniesCount ?? 2;
 
-    if (liveCompanies.length > 0) {
-      list = liveCompanies.map((c, idx) => {
-        const isOperatingActive = (c.workerCount && c.workerCount > 0) || idx < activeSlots;
-        return {
-          ...c,
-          isOperatingActive,
-        };
-      });
-    } else {
-      const totalCount = currentProfile.companiesCount || currentProfile.activeCompaniesCount || 0;
-      if (totalCount > 0) {
-        const commoditiesList = ['lead', 'steel', 'oil', 'food', 'munitions', 'iron'];
-
-        list = Array.from({ length: Math.min(totalCount, 8) }, (_, idx) => {
-          const isOperatingActive = idx < activeSlots;
-          const sLevel = Math.min(7, Math.max(1, (currentProfile.storageLevelEst || 5) - (idx % 2)));
-          const aLevel = isOperatingActive
-            ? Math.min(7, Math.max(1, (currentProfile.automationLevelEst || 7)))
-            : Math.max(1, (currentProfile.automationLevelEst || 7) - 2);
-          const compObj: WareraCompany = {
-            _id: `comp-spec-${currentProfile.userId}-${idx}`,
-            user: currentProfile.userId,
-            region: currentProfile.countryName || currentProfile.countryId,
-            name: `${currentProfile.username || 'Citizen'} Factory ${idx + 1}`,
-            itemCode: commoditiesList[idx % commoditiesList.length],
-            isFull: false,
-            production: isOperatingActive ? 20 + idx * 3.5 : 12,
-            activeUpgradeLevels: {
-              storage: sLevel,
-              automatedEngine: aLevel,
-            },
-            workerCount: isOperatingActive ? 2 : 0,
-          };
-          return {
-            ...compObj,
-            isOperatingActive,
-          };
-        });
-      }
-    }
+    const list: AuthenticCompany[] = liveCompanies.map((c, idx) => {
+      const isOperatingActive = (c.workerCount && c.workerCount > 0) || idx < activeSlots;
+      return {
+        ...c,
+        isOperatingActive,
+      };
+    });
 
     if (companyCommodityFilter !== 'all') {
       return list.filter((c) => (c.itemCode || '').toLowerCase() === companyCommodityFilter.toLowerCase());
     }
     return list;
-  }, [liveCompanies, currentProfile, companyCommodityFilter]);
+  }, [liveCompanies, currentProfile.activeCompaniesCount, companyCommodityFilter]);
 
   const allCommodityTypes = useMemo(() => {
-    const source = liveCompanies.length > 0 ? liveCompanies : (currentProfile.companiesCount ? ['lead', 'steel', 'oil', 'food', 'iron', 'munitions'] : []);
     const codes = new Set<string>();
-    if (Array.isArray(source)) {
-      source.forEach((c) => {
-        const code = typeof c === 'string' ? c : c.itemCode;
+    if (Array.isArray(liveCompanies)) {
+      liveCompanies.forEach((c) => {
+        const code = c?.itemCode;
         if (code) codes.add(code.toLowerCase());
       });
     }
     return Array.from(codes);
-  }, [liveCompanies, currentProfile.companiesCount]);
+  }, [liveCompanies]);
 
   const maxStorageAcrossCompanies = useMemo(() => {
+    if (companiesToRender.length === 0) return 0;
     return companiesToRender.reduce((acc, c) => Math.max(acc, c.activeUpgradeLevels?.storage || 1), 1);
   }, [companiesToRender]);
 
   const maxAutoAcrossCompanies = useMemo(() => {
+    if (companiesToRender.length === 0) return 0;
     return companiesToRender.reduce((acc, c) => Math.max(acc, c.activeUpgradeLevels?.automatedEngine || 1), 1);
   }, [companiesToRender]);
+
+  // Retrieve verified v0.27 Skill Breakdown (never fabricate 25% placeholder splits)
+  const hasVerifiedSkillBreakdown = Boolean(currentProfile.skillBreakdown);
+  const activeSkillBreakdown = useMemo(() => {
+    if (currentProfile.skillBreakdown) return currentProfile.skillBreakdown;
+    const comps = currentProfile.activeCompaniesCount ?? 2;
+    return {
+      companies: comps,
+      leadership: 0,
+      management: 0,
+      energy: 0,
+      production: 0,
+      lootChance: 0,
+      legacyEntrepreneurship: 0,
+      attack: 0,
+      criticalChance: 0,
+      criticalDamages: 0,
+      armor: 0,
+      precision: 0,
+      dodge: 0,
+      health: 0,
+      stamina: 0,
+    };
+  }, [currentProfile]);
+
+  const activeBuildEvaluation = useMemo(() => {
+    if (currentProfile.buildEvaluation) return currentProfile.buildEvaluation;
+    return evaluateCitizenSkillBuild(
+      currentProfile.level || 20,
+      currentProfile.playstyle,
+      activeSkillBreakdown,
+      currentProfile.activeCompaniesCount ?? 2
+    );
+  }, [currentProfile, activeSkillBreakdown]);
+
+  const getCompanyEffectiveRoster = (comp: WareraCompany) => {
+    const saved = companyWorkforceOverrides[comp._id] || storage.getCompanyWorkforceOverride(comp._id);
+    const hasOverride = Boolean(saved);
+    const liveBreakRoom = comp.activeUpgradeLevels?.breakRoom ?? 1;
+    const defaultBreakRoom = saved?.breakRoom ?? (saved as any)?.breakRoomLevel ?? liveBreakRoom;
+    const hasManager = saved?.hasManager ?? comp.hasManager ?? false;
+    const hasLiveEmployees = Array.isArray(comp.employees) && comp.employees.length > 0;
+    const hasVerifiedWorkerCount = typeof comp.workerCount === 'number' || hasLiveEmployees || hasOverride;
+
+    // STRICT DATA HONESTY: Never fabricate default employees unless the user explicitly created a Manual Inspector Override
+    const baseEmployees: WareraBotEmployee[] = Array.isArray(saved?.employees)
+      ? saved.employees
+      : hasLiveEmployees
+      ? comp.employees!
+      : [];
+
+    return {
+      breakRoom: defaultBreakRoom,
+      hasManager,
+      employees: baseEmployees.slice(0, Math.max(1, defaultBreakRoom)),
+      hasOverride,
+      hasLiveEmployees,
+      hasVerifiedWorkerCount,
+      reportedWorkerCount: hasVerifiedWorkerCount
+        ? Number(comp.workerCount ?? (hasLiveEmployees ? comp.employees!.length : baseEmployees.length))
+        : null,
+    };
+  };
+
+  const handleUpdateCompanyOverride = (
+    comp: WareraCompany,
+    patch: { breakRoom?: number; hasManager?: boolean; employees?: WareraBotEmployee[] }
+  ) => {
+    const current = getCompanyEffectiveRoster(comp);
+    const nextBreakRoom = patch.breakRoom ?? current.breakRoom;
+    const nextHasManager = patch.hasManager ?? current.hasManager;
+    let nextEmployees = Array.isArray(patch.employees) ? [...patch.employees] : [...current.employees];
+    if (nextEmployees.length > nextBreakRoom) {
+      nextEmployees = nextEmployees.slice(0, nextBreakRoom);
+    }
+
+    const updated = {
+      breakRoom: nextBreakRoom,
+      breakRoomLevel: nextBreakRoom,
+      hasManager: nextHasManager,
+      employees: nextEmployees,
+    };
+    setCompanyWorkforceOverrides((prev) => ({
+      ...prev,
+      [comp._id]: updated,
+    }));
+    storage.saveCompanyWorkforceOverride(comp._id, updated);
+  };
+
+  const handleResetCompanyOverride = (compId: string) => {
+    storage.clearCompanyWorkforceOverride(compId);
+    setCompanyWorkforceOverrides((prev) => {
+      const next = { ...prev };
+      delete next[compId];
+      return next;
+    });
+  };
+
+  const handleAddManualBotSlot = (comp: WareraCompany) => {
+    const current = getCompanyEffectiveRoster(comp);
+    const nextSlotIdx = current.employees.length;
+    const targetBreakRoom = Math.max(current.breakRoom, Math.min(3, nextSlotIdx + 1));
+    if (nextSlotIdx >= 3) return;
+    const newSlot = createEmptyEmployeeSlot(
+      comp._id,
+      nextSlotIdx,
+      comp.itemCode || 'steel',
+      currentProfile.countryName || countryName
+    );
+    handleUpdateCompanyOverride(comp, {
+      breakRoom: targetBreakRoom,
+      employees: [...current.employees, newSlot],
+    });
+    setExpandedWorkforceCompId(comp._id);
+  };
 
   return (
     <div
@@ -694,7 +777,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-start justify-between pb-4 border-b border-slate-800">
+        <div className="shrink-0 flex items-start justify-between pb-4 border-b border-slate-800">
           <div className="flex items-center gap-4">
             <div className="w-14 h-14 rounded-2xl bg-amber-500/20 border-2 border-amber-400/50 overflow-hidden shrink-0 flex items-center justify-center font-black text-amber-300 text-xl shadow-lg">
               {currentProfile.avatarUrl ? (
@@ -716,27 +799,33 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                 <h3 className="text-xl sm:text-2xl font-black text-white tracking-tight">
                   {currentProfile.username || `Citizen #${(currentProfile.userId || '').slice(-6)}`}
                 </h3>
-                {/* Unified Master Standing Badge */}
-                <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border ${
-                  standing === 'evader-leech'
-                    ? 'bg-red-500/20 text-red-300 border-red-500/40'
-                    : standing === 'subsistence-worker'
-                    ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
-                    : standing === 'illiquid-fighter'
-                    ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
-                    : standing === 'sovereign-patriot'
-                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                    : standing === 'historical-pillar'
-                    ? 'bg-amber-400/20 text-amber-300 border-amber-400/50'
-                    : 'bg-slate-800 text-slate-300 border-slate-700'
-                }`}>
-                  {standing === 'evader-leech' && '🚨 Evader / Leech'}
-                  {standing === 'subsistence-worker' && '🛡️ Subsistence Worker'}
-                  {standing === 'illiquid-fighter' && '🔒 Illiquid Combatant'}
-                  {standing === 'sovereign-patriot' && '🌟 Sovereign Patriot'}
-                  {standing === 'historical-pillar' && '🏛️ Historical Pillar'}
-                  {standing === 'standard-contributor' && '🔵 Standard Contributor'}
-                </span>
+                {/* Unified Master Standing Badge (only shown once audited or historical pillar) */}
+                {currentProfile.auditBaselineStatus !== 'audited' && timeframeTransactions.length === 0 && standing !== 'historical-pillar' ? (
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-bold border bg-amber-500/15 text-amber-300 border-amber-500/40">
+                    ⏳ Pending Receipt Verification
+                  </span>
+                ) : (
+                  <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border ${
+                    standing === 'evader-leech'
+                      ? 'bg-red-500/20 text-red-300 border-red-500/40'
+                      : standing === 'subsistence-worker'
+                      ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
+                      : standing === 'illiquid-fighter'
+                      ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                      : standing === 'sovereign-patriot'
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                      : standing === 'historical-pillar'
+                      ? 'bg-amber-400/20 text-amber-300 border-amber-400/50'
+                      : 'bg-slate-800 text-slate-300 border-slate-700'
+                  }`}>
+                    {standing === 'evader-leech' && '🚨 Evader / Leech'}
+                    {standing === 'subsistence-worker' && '🛡️ Subsistence Worker'}
+                    {standing === 'illiquid-fighter' && '🔒 Illiquid Combatant'}
+                    {standing === 'sovereign-patriot' && '🌟 Sovereign Patriot'}
+                    {standing === 'historical-pillar' && '🏛️ Historical Pillar'}
+                    {standing === 'standard-contributor' && '🔵 Standard Contributor'}
+                  </span>
+                )}
                 <span className="text-xs font-mono text-slate-400">
                   Level {currentProfile.level} · {countryName}
                 </span>
@@ -815,57 +904,57 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
         </div>
 
         {/* Navigation Tabs */}
-        <div className="flex items-center gap-1.5 border-b border-slate-800 pt-3 pb-2 text-xs font-bold overflow-x-auto">
+        <div className="shrink-0 flex items-center gap-2 border-b border-slate-800 py-3 px-0.5 text-xs sm:text-sm font-bold overflow-x-auto">
           <button
             type="button"
             onClick={() => setActiveTab('cashflow')}
-            className={`px-3.5 py-1.5 rounded-xl transition flex items-center gap-1.5 whitespace-nowrap ${
+            className={`shrink-0 px-4 py-2 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
               activeTab === 'cashflow'
                 ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent'
             }`}
           >
-            <Calculator className="w-3.5 h-3.5" />
+            <Calculator className="w-4 h-4 shrink-0" />
             <span>Financial &amp; Solvency Audit</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('transactions')}
-            className={`px-3.5 py-1.5 rounded-xl transition flex items-center gap-1.5 whitespace-nowrap ${
+            className={`shrink-0 px-4 py-2 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
               activeTab === 'transactions'
                 ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent'
             }`}
           >
-            <FileText className="w-3.5 h-3.5" />
+            <FileText className="w-4 h-4 shrink-0" />
             <span>Line-Item Transaction Ledger ({timeframeTransactions.length})</span>
-            {isSyncingLedger && <RefreshCw className="w-2.5 h-2.5 animate-spin text-amber-400" />}
+            {isSyncingLedger && <RefreshCw className="w-3 h-3 animate-spin text-amber-400 shrink-0" />}
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('companies')}
-            className={`px-3.5 py-1.5 rounded-xl transition flex items-center gap-1.5 whitespace-nowrap ${
+            className={`shrink-0 px-4 py-2 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
               activeTab === 'companies'
                 ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 shadow-sm'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent'
             }`}
           >
-            <Building2 className="w-3.5 h-3.5" />
-            <span>Companies ({liveCompanies.length || currentProfile.companiesCount || 0})</span>
+            <Building2 className="w-4 h-4 shrink-0" />
+            <span>Companies &amp; Bot Workforce</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('defense')}
-            className={`px-3.5 py-1.5 rounded-xl transition flex items-center gap-1.5 whitespace-nowrap ${
+            className={`shrink-0 px-4 py-2 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
               activeTab === 'defense'
                 ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-sm'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent'
             }`}
           >
-            <Swords className="w-3.5 h-3.5" />
+            <Swords className="w-4 h-4 shrink-0" />
             <span>Military &amp; Battlefield Defense</span>
           </button>
         </div>
@@ -877,34 +966,67 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
             <div className="space-y-4 animate-fade-in">
               {/* Sync Action Header */}
               {apiKey ? (
-                <div className="p-3 bg-slate-950 border border-slate-800 rounded-2xl flex items-center justify-between gap-3 flex-wrap">
-                  <div className="flex items-center gap-2 text-xs text-slate-300 font-mono">
-                    <RefreshCw className={`w-4 h-4 text-cyan-400 ${isSyncingLedger ? 'animate-spin' : ''}`} />
-                    <span>
-                      {syncStatusMsg || (timeframeTransactions.length > 0 ? `Loaded ${timeframeTransactions.length} verified in-game receipts (${wagesCount} wage slips, ${salesCount} market sales across ${periodDays}D).` : 'Personal receipts pending. Click to stream line-item ledger.')}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {isSyncingLedger && (
+                <div className="space-y-2">
+                  <div className="p-3 bg-slate-950 border border-slate-800 rounded-2xl flex items-center justify-between gap-3 flex-wrap">
+                    <div className="flex items-center gap-2 text-xs text-slate-300 font-mono">
+                      <RefreshCw className={`w-4 h-4 text-cyan-400 ${isSyncingLedger ? 'animate-spin' : ''}`} />
+                      <span>
+                        {syncStatusMsg || (timeframeTransactions.length > 0 ? `Loaded ${timeframeTransactions.length} verified in-game receipts (${wagesCount} wage slips, ${salesCount} market sales across ${periodDays}D).` : 'Personal receipts pending. Click to stream line-item ledger.')}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {isSyncingLedger && (
+                        <button
+                          type="button"
+                          onClick={handleStopStreaming}
+                          className="px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 border border-rose-800/80 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm"
+                        >
+                          <StopCircle className="w-3.5 h-3.5 text-rose-400" />
+                          <span>Halt Stream</span>
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={handleStopStreaming}
-                        className="px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 border border-rose-800/80 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm"
+                        onClick={() => handleSyncLiveReceipts()}
+                        disabled={isSyncingLedger}
+                        className="px-3 py-1.5 bg-cyan-600/30 hover:bg-cyan-600/50 text-cyan-200 border border-cyan-500/40 rounded-xl text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50"
                       >
-                        <StopCircle className="w-3.5 h-3.5 text-rose-400" />
-                        <span>Halt Stream</span>
+                        <RefreshCw className={`w-3.5 h-3.5 ${isSyncingLedger ? 'animate-spin' : ''}`} />
+                        {isSyncingLedger ? 'Streaming receipts...' : 'Stream Live In-Game Receipts'}
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => handleSyncLiveReceipts()}
-                      disabled={isSyncingLedger}
-                      className="px-3 py-1.5 bg-cyan-600/30 hover:bg-cyan-600/50 text-cyan-200 border border-cyan-500/40 rounded-xl text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncingLedger ? 'animate-spin' : ''}`} />
-                      {isSyncingLedger ? 'Streaming receipts...' : 'Stream Live In-Game Receipts'}
-                    </button>
+                    </div>
                   </div>
+
+                  {/* High-Integrity Streaming Shield Banner */}
+                  {isSyncingLedger && (
+                    <div className="p-3.5 bg-cyan-950/40 border border-cyan-500/40 rounded-2xl space-y-2 animate-fade-in shadow-inner">
+                      <div className="flex items-center justify-between gap-3 flex-wrap">
+                        <div className="flex items-center gap-2 text-xs font-mono text-cyan-200">
+                          <RefreshCw className="w-4 h-4 text-cyan-400 animate-spin" />
+                          <span className="font-bold">Streaming Personal Receipts: Page {streamProgress?.page ?? 1} ({streamProgress?.loaded ?? 0} receipts verified)...</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-900/60 border border-cyan-500/30 text-cyan-300">
+                            Staging Buffer Active
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handleStopStreaming}
+                            className="px-2.5 py-0.5 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-sans font-semibold border border-slate-700 transition"
+                            title="Stop streaming and calculate financial totals with receipts collected so far"
+                          >
+                            Halt &amp; Keep Loaded
+                          </button>
+                        </div>
+                      </div>
+                      <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div className="h-full bg-gradient-to-r from-cyan-500 to-indigo-500 animate-pulse rounded-full w-full" />
+                      </div>
+                      <p className="text-[11px] text-slate-400 font-sans">
+                        Financial metrics are shielded under skeleton loaders until receipt stream completes, preventing temporary misleading figures.
+                      </p>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="p-3 bg-amber-950/20 border border-amber-800/40 rounded-2xl text-xs text-amber-300/90 flex items-center gap-2">
@@ -929,16 +1051,26 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                       <HelpCircle className="w-4 h-4 text-cyan-400" />
                     </button>
                   </div>
-                  <div className="flex items-baseline gap-2 mt-1">
-                    <div className="text-2xl font-black font-mono text-cyan-300">
-                      {formatBtc(grossIncome)} <span className="text-xs text-cyan-400 font-bold">BTC</span>
+                  {isSyncingLedger ? (
+                    <div className="flex items-center gap-2 mt-2 py-1">
+                      <div className="h-8 w-36 rounded-xl bg-cyan-950/60 border border-cyan-800/40 animate-pulse flex items-center px-3 gap-2">
+                        <RefreshCw className="w-3.5 h-3.5 text-cyan-400 animate-spin shrink-0" />
+                        <span className="text-xs font-mono text-cyan-300 font-semibold">Calculating...</span>
+                      </div>
                     </div>
-                    {isSyncingLedger && (
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-950 border border-cyan-800/80 text-cyan-300 animate-pulse flex items-center gap-1">
-                        <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Syncing...
+                  ) : currentProfile.auditBaselineStatus !== 'audited' && timeframeTransactions.length === 0 ? (
+                    <div className="mt-2 py-1">
+                      <span className="px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-mono font-bold inline-block">
+                        Unverified · Stream Receipts First
                       </span>
-                    )}
-                  </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-baseline gap-2 mt-1">
+                      <div className="text-2xl font-black font-mono text-cyan-300">
+                        {formatBtc(grossIncome)} <span className="text-xs text-cyan-400 font-bold">BTC</span>
+                      </div>
+                    </div>
+                  )}
                   <p className="text-[11px] text-slate-400 mt-1">
                     Total BTC passing into wallet from wages, commodity/gear sales turnover, and tips.
                   </p>
@@ -958,16 +1090,26 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                       <HelpCircle className="w-4 h-4 text-emerald-400" />
                     </button>
                   </div>
-                  <div className="flex items-baseline gap-2 mt-1">
-                    <div className="text-2xl font-black font-mono text-emerald-300">
-                      {formatBtc(netDisposableIncome)} <span className="text-xs text-emerald-400 font-bold">BTC</span>
+                  {isSyncingLedger ? (
+                    <div className="flex items-center gap-2 mt-2 py-1">
+                      <div className="h-8 w-36 rounded-xl bg-emerald-950/60 border border-emerald-800/40 animate-pulse flex items-center px-3 gap-2">
+                        <RefreshCw className="w-3.5 h-3.5 text-emerald-400 animate-spin shrink-0" />
+                        <span className="text-xs font-mono text-emerald-300 font-semibold">Calculating net...</span>
+                      </div>
                     </div>
-                    {isSyncingLedger && (
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-950 border border-emerald-800/80 text-emerald-300 animate-pulse flex items-center gap-1">
-                        <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Syncing...
+                  ) : currentProfile.auditBaselineStatus !== 'audited' && timeframeTransactions.length === 0 ? (
+                    <div className="mt-2 py-1">
+                      <span className="px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-mono font-bold inline-block">
+                        Unverified · Stream Receipts First
                       </span>
-                    )}
-                  </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-baseline gap-2 mt-1">
+                      <div className="text-2xl font-black font-mono text-emerald-300">
+                        {formatBtc(netDisposableIncome)} <span className="text-xs text-emerald-400 font-bold">BTC</span>
+                      </div>
+                    </div>
+                  )}
                   <p className="text-[11px] text-slate-400 mt-1">
                     Net BTC gained or lost from wages and market trading after subtracting purchases and payroll.
                   </p>
@@ -987,19 +1129,31 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                       <HelpCircle className="w-4 h-4 text-amber-400" />
                     </button>
                   </div>
-                  <div className="flex items-baseline gap-2 mt-1">
-                    <div className="text-2xl font-black font-mono text-amber-300">
-                      {formatBtc(periodDonated)} <span className="text-xs text-amber-400 font-bold">BTC</span>
+                  {isSyncingLedger ? (
+                    <div className="flex items-center gap-2 mt-2 py-1">
+                      <div className="h-8 w-36 rounded-xl bg-amber-950/60 border border-amber-800/40 animate-pulse flex items-center px-3 gap-2">
+                        <RefreshCw className="w-3.5 h-3.5 text-amber-400 animate-spin shrink-0" />
+                        <span className="text-xs font-mono text-amber-300 font-semibold">Verifying ratio...</span>
+                      </div>
                     </div>
-                    {isSyncingLedger && (
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-950 border border-amber-800/80 text-amber-300 animate-pulse flex items-center gap-1">
-                        <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Syncing...
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-[11px] text-slate-400 mt-1 font-mono">
-                    {(grossIncome > 0 ? (periodDonated / grossIncome) * 100 : (currentProfile.contributionRatio || 0)).toFixed(1)}% contribution ratio · {formatBtc(currentProfile.totalDonatedBtc)} BTC lifetime
-                  </p>
+                  ) : (
+                    <div className="flex items-baseline gap-2 mt-1">
+                      <div className="text-2xl font-black font-mono text-amber-300">
+                        {formatBtc(periodDonated)} <span className="text-xs text-amber-400 font-bold">BTC</span>
+                      </div>
+                    </div>
+                  )}
+                  {isSyncingLedger ? (
+                    <div className="h-3 w-48 rounded bg-slate-800 animate-pulse mt-2" />
+                  ) : (
+                    <p className="text-[11px] text-slate-400 mt-1 font-mono">
+                      {grossIncome > 0
+                        ? `${((periodDonated / grossIncome) * 100).toFixed(1)}% contribution ratio`
+                        : (currentProfile.auditBaselineStatus === 'audited'
+                            ? `${(currentProfile.contributionRatio || 0).toFixed(1)}% contribution ratio`
+                            : 'Pending live stream verification')} · {formatBtc(currentProfile.totalDonatedBtc)} BTC lifetime
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -1018,7 +1172,11 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                         <Briefcase className="w-3.5 h-3.5 text-emerald-400" /> Wages Earned (Labor Salary)
                       </span>
                       <div className="flex items-center gap-1.5">
-                        <span className="font-mono text-emerald-300 font-bold text-sm">+{formatBtc(wagesEarned)} BTC</span>
+                        {isSyncingLedger ? (
+                          <div className="h-5 w-20 rounded bg-slate-800 animate-pulse" />
+                        ) : (
+                          <span className="font-mono text-emerald-300 font-bold text-sm">+{formatBtc(wagesEarned)} BTC</span>
+                        )}
                         <button
                           type="button"
                           onClick={() => setActiveExplainerCard('wages')}
@@ -1041,7 +1199,11 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                         <span className="font-bold text-white flex items-center gap-1.5">
                           <Users className="w-3.5 h-3.5 text-rose-400" /> Wages Paid (Employee Payroll)
                         </span>
-                        <span className="font-mono text-rose-300 font-bold text-sm">-{formatBtc(wagesPaid)} BTC</span>
+                        {isSyncingLedger ? (
+                          <div className="h-5 w-20 rounded bg-slate-800 animate-pulse" />
+                        ) : (
+                          <span className="font-mono text-rose-300 font-bold text-sm">-{formatBtc(wagesPaid)} BTC</span>
+                        )}
                       </div>
                       <div className="text-[11px] text-slate-400">
                         {wagesPaidCount} payroll disbursements to hired factory workers.
@@ -1056,7 +1218,11 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                         <ShoppingBag className="w-3.5 h-3.5 text-cyan-400" /> Market Sales (Trading &amp; Gear)
                       </span>
                       <div className="flex items-center gap-1.5">
-                        <span className="font-mono text-cyan-300 font-bold text-sm">+{formatBtc(salesVolume)} BTC</span>
+                        {isSyncingLedger ? (
+                          <div className="h-5 w-20 rounded bg-slate-800 animate-pulse" />
+                        ) : (
+                          <span className="font-mono text-cyan-300 font-bold text-sm">+{formatBtc(salesVolume)} BTC</span>
+                        )}
                         <button
                           type="button"
                           onClick={() => setActiveExplainerCard('sales')}
@@ -1079,7 +1245,11 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                         <ArrowDownLeft className="w-3.5 h-3.5 text-rose-400" /> Purchases (Supplies &amp; Gear)
                       </span>
                       <div className="flex items-center gap-1.5">
-                        <span className="font-mono text-rose-300 font-bold text-sm">-{formatBtc(purchasesVolume)} BTC</span>
+                        {isSyncingLedger ? (
+                          <div className="h-5 w-20 rounded bg-slate-800 animate-pulse" />
+                        ) : (
+                          <span className="font-mono text-rose-300 font-bold text-sm">-{formatBtc(purchasesVolume)} BTC</span>
+                        )}
                         <button
                           type="button"
                           onClick={() => setActiveExplainerCard('purchases')}
@@ -1102,9 +1272,13 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                         <ArrowUpRight className="w-3.5 h-3.5 text-amber-400" /> Net Trading Balance
                       </span>
                       <div className="flex items-center gap-1.5">
-                        <span className={`font-mono font-bold text-sm ${netTradeMargin >= 0 ? 'text-amber-300' : 'text-rose-400'}`}>
-                          {netTradeMargin >= 0 ? '+' : ''}{formatBtc(netTradeMargin)} BTC
-                        </span>
+                        {isSyncingLedger ? (
+                          <div className="h-5 w-20 rounded bg-slate-800 animate-pulse" />
+                        ) : (
+                          <span className={`font-mono font-bold text-sm ${netTradeMargin >= 0 ? 'text-amber-300' : 'text-rose-400'}`}>
+                            {netTradeMargin >= 0 ? '+' : ''}{formatBtc(netTradeMargin)} BTC
+                          </span>
+                        )}
                         <button
                           type="button"
                           onClick={() => setActiveExplainerCard('tradingMargin')}
@@ -1127,9 +1301,13 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                         <span className="font-bold text-white flex items-center gap-1.5">
                           <FileText className="w-3.5 h-3.5 text-indigo-400" /> Journalism Tips &amp; Crafting
                         </span>
-                        <span className="font-mono text-indigo-300 font-bold text-sm">
-                          {tipsReceived > craftingExpenses ? '+' : ''}{formatBtc(tipsReceived - craftingExpenses)} BTC
-                        </span>
+                        {isSyncingLedger ? (
+                          <div className="h-5 w-20 rounded bg-slate-800 animate-pulse" />
+                        ) : (
+                          <span className="font-mono text-indigo-300 font-bold text-sm">
+                            {tipsReceived > craftingExpenses ? '+' : ''}{formatBtc(tipsReceived - craftingExpenses)} BTC
+                          </span>
+                        )}
                       </div>
                       <div className="text-[11px] text-slate-400">
                         Tips: +{formatBtc(tipsReceived)} BTC · Crafting/cases: -{formatBtc(craftingExpenses)} BTC
@@ -1382,7 +1560,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                           const isBuyer = buyerStr === currentProfile.userId;
                           const isDonation = typeLower.includes('donat');
                           const dateStr = tx.createdAt
-                            ? formatDateDDMMYYYY(tx.createdAt, 'Recent')
+                            ? formatDateTimeDDMMYYYY(tx.createdAt, 'Recent')
                             : 'Recent';
 
                           // Accurately determine if wage was earned as worker or paid out as employer
@@ -1429,9 +1607,9 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                               </td>
                               <td className="py-2.5 px-3 font-sans">
                                 {itemStr ? (
-                                  <span className="capitalize font-bold text-white flex items-center gap-1">
-                                    <Package className="w-3 h-3 text-cyan-400 shrink-0" />
-                                    {itemStr.replace(/_/g, ' ')}
+                                  <span className="capitalize font-bold text-white flex items-center gap-1.5">
+                                    <WareraItemIcon itemCode={itemStr} size="xs" />
+                                    <span>{itemStr.replace(/_/g, ' ')}</span>
                                   </span>
                                 ) : (
                                   <span className="text-slate-500">—</span>
@@ -1468,18 +1646,115 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
             </div>
           )}
 
-          {/* TAB 3: COMPANIES PORTFOLIO */}
+          {/* TAB 3: COMPANIES & BOT WORKFORCE PORTFOLIO */}
           {activeTab === 'companies' && (
             <div className="space-y-4 animate-fade-in">
+              {/* v0.27 BuhDeuce Skill Build & Workforce Evaluation Scorecard */}
+              <div className="p-4 bg-slate-950 border border-slate-800 rounded-2xl space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-black text-white uppercase tracking-wider">
+                        v0.27 Skill Build &amp; BuhDeuce Workforce Evaluation
+                      </span>
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
+                          activeBuildEvaluation.grade === 'optimal-meta'
+                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                            : activeBuildEvaluation.grade === 'optimal-early-selfwork'
+                            ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                            : activeBuildEvaluation.grade === 'viable-selfwork'
+                            ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
+                            : activeBuildEvaluation.grade === 'war-ready'
+                            ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                            : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                        }`}
+                      >
+                        {activeBuildEvaluation.badgeLabel || activeBuildEvaluation.shortLabel}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                      {activeBuildEvaluation.summary}
+                    </p>
+                  </div>
+                  <div className="text-right font-mono shrink-0">
+                    <div className="text-[10px] text-slate-400 uppercase font-sans">Mgmt Bot Boost</div>
+                    <div className="text-base font-black text-emerald-400">
+                      +{activeSkillBreakdown.management * 2}% Output
+                    </div>
+                  </div>
+                </div>
+
+                {/* v0.27 Skill Points Breakdown Strip */}
+                {hasVerifiedSkillBreakdown ? (
+                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center font-mono text-xs">
+                    <div className="p-2 bg-slate-900 border border-slate-800 rounded-xl">
+                      <div className="text-[10px] text-slate-400 font-sans">Companies</div>
+                      <div className="font-black text-white mt-0.5">{activeSkillBreakdown.companies}</div>
+                    </div>
+                    <div className="p-2 bg-slate-900 border border-slate-800 rounded-xl">
+                      <div className="text-[10px] text-slate-400 font-sans">Leadership</div>
+                      <div className="font-black text-amber-300 mt-0.5">{activeSkillBreakdown.leadership}</div>
+                    </div>
+                    <div className="p-2 bg-slate-900 border border-slate-800 rounded-xl">
+                      <div className="text-[10px] text-slate-400 font-sans">Management</div>
+                      <div className="font-black text-emerald-300 mt-0.5">
+                        {activeSkillBreakdown.management} <span className="text-[10px] text-emerald-400">(+{activeSkillBreakdown.management * 2}%)</span>
+                      </div>
+                    </div>
+                    <div className="p-2 bg-slate-900 border border-slate-800 rounded-xl">
+                      <div className="text-[10px] text-slate-400 font-sans">Energy</div>
+                      <div className="font-black text-cyan-300 mt-0.5">{activeSkillBreakdown.energy}</div>
+                    </div>
+                    <div className="p-2 bg-slate-900 border border-slate-800 rounded-xl">
+                      <div className="text-[10px] text-slate-400 font-sans">Production</div>
+                      <div className="font-black text-blue-300 mt-0.5">{activeSkillBreakdown.production}</div>
+                    </div>
+                    <div className="p-2 bg-slate-900 border border-slate-800 rounded-xl">
+                      <div className="text-[10px] text-slate-400 font-sans">Luck / Loot</div>
+                      <div className="font-black text-purple-300 mt-0.5">{activeSkillBreakdown.lootChance ?? 0}</div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-3 bg-slate-900/80 border border-slate-800 rounded-xl text-xs text-slate-400 font-mono text-center">
+                    Individual skill node breakdown not exposed by API for this citizen (Total SP: {currentProfile.ecoSkillPoints} Eco / {currentProfile.warSkillPoints} War). No synthetic split displayed.
+                  </div>
+                )}
+
+                {/* Recommendations & Warnings */}
+                {(activeBuildEvaluation.recommendations.length > 0 || activeBuildEvaluation.warnings.length > 0) && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] pt-1">
+                    {activeBuildEvaluation.recommendations.map((rec, idx) => (
+                      <div
+                        key={`rec-${idx}`}
+                        className="p-2 rounded-xl bg-slate-900/90 border border-slate-800 text-slate-300 flex items-start gap-2"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                        <span>{rec}</span>
+                      </div>
+                    ))}
+                    {activeBuildEvaluation.warnings.map((warn, idx) => (
+                      <div
+                        key={`warn-${idx}`}
+                        className="p-2 rounded-xl bg-amber-950/30 border border-amber-500/30 text-amber-200 flex items-start gap-2"
+                      >
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                        <span>{warn}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {/* Aggregate Portfolio Summary */}
               <div className="p-4 bg-slate-950 border border-slate-800 rounded-2xl grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
                 <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
-                  <div className="text-[10px] text-slate-400 font-sans">Total Owned Companies</div>
+                  <div className="text-[10px] text-slate-400 font-sans">Live Synced Companies</div>
                   <div className="text-xl font-black text-white mt-0.5">
-                    {liveCompanies.length || currentProfile.companiesCount || 0}
+                    {liveCompanies.length}
                   </div>
                   <div className="text-[10px] text-slate-500 font-sans mt-0.5">
-                    {currentProfile.activeCompaniesCount ?? 2} / {currentProfile.maxCompaniesCap ?? 2} active slots
+                    Profile reports {currentProfile.companiesCount ?? liveCompanies.length} owned ({currentProfile.activeCompaniesCount ?? 2} slots)
                   </div>
                 </div>
 
@@ -1494,7 +1769,13 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                 <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
                   <div className="text-[10px] text-slate-400 font-sans">Highest Storage Upgrade</div>
                   <div className="text-xl font-black text-amber-300 mt-0.5">
-                    Level {maxStorageAcrossCompanies} <span className="text-xs text-slate-400 font-normal">/ 7</span>
+                    {maxStorageAcrossCompanies > 0 ? (
+                      <>
+                        Level {maxStorageAcrossCompanies} <span className="text-xs text-slate-400 font-normal">/ 7</span>
+                      </>
+                    ) : (
+                      <span className="text-sm text-slate-500">Not Synced</span>
+                    )}
                   </div>
                   <div className="text-[10px] text-slate-500 font-sans mt-0.5">PP storage buffer</div>
                 </div>
@@ -1502,7 +1783,13 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                 <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
                   <div className="text-[10px] text-slate-400 font-sans">Max Automation Engine</div>
                   <div className="text-xl font-black text-cyan-300 mt-0.5">
-                    Level {maxAutoAcrossCompanies} <span className="text-xs text-slate-400 font-normal">/ 7</span>
+                    {maxAutoAcrossCompanies > 0 ? (
+                      <>
+                        Level {maxAutoAcrossCompanies} <span className="text-xs text-slate-400 font-normal">/ 7</span>
+                      </>
+                    ) : (
+                      <span className="text-sm text-slate-500">Not Synced</span>
+                    )}
                   </div>
                   <div className="text-[10px] text-slate-500 font-sans mt-0.5">Peak engine upgrade</div>
                 </div>
@@ -1512,9 +1799,9 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
               <div className="space-y-2.5">
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <div className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
-                    <span>Registered Companies &amp; Upgrade Inspection</span>
+                    <span>Live Registered Companies, Breakroom Lvl 3 &amp; Bot Workforce Roster</span>
                     <span className="px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[10px] font-mono">
-                      {companiesToRender.length} Verified Companies
+                      {companiesToRender.length} Live API Record(s)
                     </span>
                   </div>
 
@@ -1523,11 +1810,11 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                       type="button"
                       onClick={handleRefreshCompanies}
                       disabled={isLoadingCompanies}
-                      className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-xs font-medium border border-slate-700 flex items-center gap-1.5 transition disabled:opacity-50 font-sans"
-                      title="Fetch live company and upgrade records from War Era"
+                      className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold border border-indigo-500/40 flex items-center gap-1.5 transition disabled:opacity-50 font-sans shadow-sm"
+                      title="Fetch live company and upgrade records from War Era API"
                     >
-                      <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${isLoadingCompanies ? 'animate-spin' : ''}`} />
-                      <span>{isLoadingCompanies ? 'Refreshing...' : 'Refresh Companies'}</span>
+                      <RefreshCw className={`w-3.5 h-3.5 text-white ${isLoadingCompanies ? 'animate-spin' : ''}`} />
+                      <span>{isLoadingCompanies ? 'Syncing Live Companies...' : 'Sync Live Companies'}</span>
                     </button>
 
                     {/* Commodity Quick Filters */}
@@ -1565,82 +1852,513 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
 
                 {isLoadingCompanies ? (
                   <div className="p-8 bg-slate-950 border border-slate-800 rounded-2xl text-center text-xs text-slate-400 animate-pulse">
-                    Retrieving verified company records from War Era server...
+                    Retrieving live company and upgrade records from War Era server...
                   </div>
                 ) : companiesToRender.length > 0 ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3.5">
                     {companiesToRender.map((comp) => {
                       const storageLevel = comp.activeUpgradeLevels?.storage ?? 1;
                       const autoLevel = comp.activeUpgradeLevels?.automatedEngine ?? 1;
+                      const effectiveRoster = getCompanyEffectiveRoster(comp);
+                      const breakRoomLevel = effectiveRoster.breakRoom;
+                      const hasManager = effectiveRoster.hasManager;
+                      const employees = effectiveRoster.employees;
+                      const hasOverride = effectiveRoster.hasOverride;
+                      const hasLiveEmployees = effectiveRoster.hasLiveEmployees;
+                      const reportedWorkers = effectiveRoster.reportedWorkerCount;
+
+                      const evalComp: WareraCompany = {
+                        ...comp,
+                        activeUpgradeLevels: {
+                          ...comp.activeUpgradeLevels,
+                          storage: storageLevel,
+                          automatedEngine: autoLevel,
+                          breakRoom: breakRoomLevel,
+                        },
+                        hasManager,
+                        employees,
+                      };
+                      const wfEval = evaluateCompanyWorkforce(
+                        evalComp,
+                        employees,
+                        activeSkillBreakdown.management,
+                        10,
+                        commodities
+                      );
+                      const isExpanded = expandedWorkforceCompId === comp._id;
+                      const isManufactured = isManufacturedCommodity(comp.itemCode || '');
 
                       return (
                         <div
                           key={comp._id}
-                          className="p-3.5 bg-slate-950 border border-slate-800 rounded-2xl space-y-2.5 hover:border-slate-700 transition"
+                          className="p-4 sm:p-5 bg-slate-950 border border-slate-800 rounded-2xl space-y-3.5 hover:border-slate-700 transition shadow-sm"
                         >
-                          <div className="flex items-start justify-between gap-2">
-                            <div>
-                              <div className="flex items-center gap-2 flex-wrap mb-1">
-                                <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                                  comp.isOperatingActive
-                                    ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
-                                    : 'bg-slate-800 text-slate-400 border border-slate-700'
-                                }`}>
-                                  <span className={`w-1.5 h-1.5 rounded-full ${comp.isOperatingActive ? 'bg-emerald-400' : 'bg-slate-500'}`} />
-                                  {comp.isOperatingActive ? 'Active Production Slot' : 'Reserve / Idle Company'}
-                                </span>
-                                {comp.workerCount !== undefined && comp.workerCount > 0 && (
-                                  <span className="text-[10px] text-slate-400 font-mono">
-                                    {comp.workerCount} Active Worker{comp.workerCount > 1 ? 's' : ''}
+                          {/* Clean Decluttered Company Summary Header */}
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <div className="flex items-start sm:items-center gap-3.5">
+                              <WareraItemIcon itemCode={comp.itemCode} size="md" />
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-black text-white text-base tracking-tight">
+                                    {comp.name}
                                   </span>
-                                )}
-                              </div>
-                              <div className="font-bold text-white text-sm flex items-center gap-2">
-                                <span>{comp.name}</span>
-                                <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] uppercase font-mono font-bold">
-                                  {comp.itemCode}
-                                </span>
-                              </div>
-                              <div className="text-[10px] text-slate-400 font-mono mt-0.5">
-                                Company ID: {String(comp._id || '').slice(-6) || 'N/A'} · Territory: {comp.region || currentProfile.countryName || 'Active'}
+                                  <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 text-[11px] uppercase font-mono font-bold">
+                                    {comp.itemCode}
+                                  </span>
+                                  <span
+                                    className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono font-bold ${
+                                      comp.isOperatingActive
+                                        ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                                        : 'bg-slate-800 text-slate-400 border border-slate-700'
+                                    }`}
+                                  >
+                                    <span
+                                      className={`w-1.5 h-1.5 rounded-full ${
+                                        comp.isOperatingActive ? 'bg-emerald-400' : 'bg-slate-500'
+                                      }`}
+                                    />
+                                    {comp.isOperatingActive ? 'Active Slot' : 'Idle Reserve'}
+                                  </span>
+                                  {hasOverride && (
+                                    <span className="px-2 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-[11px] font-mono font-bold text-amber-300">
+                                      🛠️ Manual Override
+                                    </span>
+                                  )}
+                                </div>
+
+                                {/* Unboxed Single-Line Recipe, Live Price & Infrastructure Metadata */}
+                                <div className="text-xs text-slate-300 font-mono flex items-center gap-2 flex-wrap leading-relaxed">
+                                  <span className="text-emerald-300 font-bold">
+                                    Live Price: {wfEval.unitMarketPriceBtc.toFixed(3)} BTC / {wfEval.commodityUnit}
+                                  </span>
+                                  <span className="text-slate-600">·</span>
+                                  <span className="text-amber-300">
+                                    Recipe: {wfEval.recipeSummary}
+                                  </span>
+                                  <span className="text-slate-600">·</span>
+                                  <span className="text-slate-400">
+                                    Breakroom Lvl {breakRoomLevel}/3 ({employees.length > 0 ? `${employees.length} Configured` : reportedWorkers !== null ? `${reportedWorkers} API Workers` : 'Unverified'})
+                                  </span>
+                                  {hasManager && (
+                                    <>
+                                      <span className="text-slate-600">·</span>
+                                      <span className="text-emerald-400 font-bold">👔 Manager (+5 Happy)</span>
+                                    </>
+                                  )}
+                                </div>
                               </div>
                             </div>
-                            <div className="text-right shrink-0">
-                              <span className={`inline-flex items-center px-2 py-1 rounded-lg text-[10px] font-mono font-bold ${
-                                comp.isOperatingActive
-                                  ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30'
-                                  : 'bg-slate-800 text-slate-400 border border-slate-700'
-                              }`}>
-                                {comp.isOperatingActive ? '⚡ Operating' : '💤 Idle'}
-                              </span>
+
+                            {/* Right Action Cluster: Reset (if overridden) + Inspect Bots & Traits Drawer Toggle */}
+                            <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
+                              {hasOverride && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleResetCompanyOverride(comp._id)}
+                                  className="px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs font-bold flex items-center gap-1.5 transition"
+                                  title="Clear manual inspector overrides and revert to strict live API data"
+                                >
+                                  <RefreshCw className="w-3.5 h-3.5" />
+                                  <span>Reset to Live API</span>
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedWorkforceCompId(isExpanded ? null : comp._id)
+                                }
+                                className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition ${
+                                  isExpanded
+                                    ? 'bg-indigo-500/30 text-white border-indigo-400 shadow-sm'
+                                    : 'bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border-indigo-500/40'
+                                }`}
+                              >
+                                <Users className="w-4 h-4" />
+                                <span>{isExpanded ? 'Close Bot Inspector' : 'Inspect Bots & Traits'}</span>
+                                {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                              </button>
                             </div>
                           </div>
 
-                          {/* Authentic In-Game Upgrades Grid */}
-                          <div className="grid grid-cols-2 gap-2 text-center text-xs font-mono">
-                            <div className="p-2 bg-slate-900 rounded-xl border border-slate-800">
-                              <div className="text-[9px] text-slate-400 font-sans">Storage Limit</div>
-                              <div className="font-black text-amber-300 mt-0.5">
-                                Lv {storageLevel} <span className="text-[9px] text-slate-500 font-normal">/ 7</span>
+                          {/* 4 Clean Tabular KPI Tiles */}
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-center text-xs font-mono pt-1">
+                            <div className="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800/80">
+                              <div className="text-[11px] text-slate-400 font-sans">Total Daily Output</div>
+                              <div className="font-black text-cyan-300 text-sm mt-0.5 tabular-nums">
+                                {comp.isOperatingActive ? `${wfEval.totalDailyPP} PP/day (${wfEval.dailyUnitsProduced.toFixed(1)} u)` : '0 PP/day'}
                               </div>
-                              <div className="text-[8px] text-slate-500 font-sans mt-0.5">PP Buffer Cap</div>
+                              <div className="text-[11px] text-slate-500 font-sans mt-0.5">
+                                Engine {wfEval.engineHourlyPP.toFixed(1)}/h + Bots {wfEval.workforceHourlyPP.toFixed(1)}/h
+                              </div>
                             </div>
 
-                            <div className="p-2 bg-slate-900 rounded-xl border border-slate-800">
-                              <div className="text-[9px] text-slate-400 font-sans">Automation Engine</div>
-                              <div className="font-black text-cyan-300 mt-0.5">
-                                Lv {autoLevel} <span className="text-[9px] text-slate-500 font-normal">/ 7</span>
+                            <div className="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800/80">
+                              <div className="text-[11px] text-slate-400 font-sans">Bot Payroll Cost</div>
+                              <div className="font-black text-rose-300 text-sm mt-0.5 tabular-nums">
+                                {employees.length > 0 ? `-${wfEval.totalDailyWagesBtc.toFixed(1)} BTC` : 'Unverified'}
                               </div>
-                              <div className="text-[8px] text-cyan-500 font-sans mt-0.5">PP Gen / hr</div>
+                              <div className="text-[11px] text-slate-500 font-sans mt-0.5">
+                                {employees.length > 0
+                                  ? `${employees.length} Configured Bot(s)`
+                                  : reportedWorkers !== null
+                                  ? `${reportedWorkers} API Worker(s) (Traits Private)`
+                                  : 'Traits Private on API'}
+                              </div>
+                            </div>
+
+                            <div className="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800/80">
+                              <div className="text-[11px] text-slate-400 font-sans">
+                                Real Daily Profit (@ {wfEval.unitMarketPriceBtc.toFixed(2)} BTC)
+                              </div>
+                              <div className={`font-black text-sm mt-0.5 tabular-nums ${wfEval.estimatedDailyNetProfitBtc >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {comp.isOperatingActive ? `${wfEval.estimatedDailyNetProfitBtc >= 0 ? '+' : ''}${wfEval.estimatedDailyNetProfitBtc.toFixed(2)} BTC` : '0 BTC'}
+                              </div>
+                              <div className="text-[11px] text-emerald-500/80 font-sans mt-0.5">
+                                Gross Rev: {wfEval.estimatedDailyRevenueBtc.toFixed(2)} BTC/d ({wfEval.dailyUnitsProduced.toFixed(1)} {wfEval.commodityUnit})
+                              </div>
+                            </div>
+
+                            <div className="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800/80">
+                              <div className="text-[11px] text-slate-400 font-sans">Infrastructure &amp; Score</div>
+                              <div className="font-black text-amber-300 text-sm mt-0.5 tabular-nums">
+                                {employees.length > 0 ? `${wfEval.overallScore} / 100` : `Engine Lvl ${autoLevel}/7`}
+                              </div>
+                              <div className="text-[11px] text-slate-500 font-sans mt-0.5">
+                                Storage Lvl {storageLevel}/7 · Engine Lvl {autoLevel}/7
+                              </div>
                             </div>
                           </div>
+
+                          {/* Compact Trait Chips Preview when collapsed (only shown if traits are configured) */}
+                          {!isExpanded && employees.length > 0 && (
+                            <div className="flex items-center justify-between flex-wrap gap-2 px-1 pt-1 text-xs">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-slate-400 font-semibold">Configured Bot Traits:</span>
+                                {employees.flatMap((e) => e.traits || []).slice(0, 6).map((tId, idx) => {
+                                  const tDef = TRAIT_MAP[tId];
+                                  if (!tDef) return null;
+                                  return (
+                                    <span
+                                      key={`${comp._id}-t-${idx}`}
+                                      className={`px-2 py-0.5 rounded text-[11px] font-mono border ${
+                                        tDef.tier === 'must-have'
+                                          ? 'bg-red-500/15 text-red-300 border-red-500/30'
+                                          : tDef.tier === 'good-to-have'
+                                          ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                                          : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                      }`}
+                                    >
+                                      {tDef.name}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Expandable Bot Employee Roster & Trait Inspector Drawer */}
+                          {isExpanded && (
+                            <div className="pt-4 border-t border-slate-800 space-y-3.5 animate-fade-in">
+                              {/* Drawer Control Bar: Breakroom, Manager, Add Bot Slot, Re-Sync, Reset */}
+                              <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                <div className="text-xs text-slate-300 space-y-0.5">
+                                  <div className="font-bold text-white flex items-center gap-2 flex-wrap">
+                                    <span>Bot Workforce &amp; Trait Simulator</span>
+                                    <span className="text-[11px] font-mono text-slate-400">
+                                      ({isManufactured ? 'Manufactured Good: Craftsman +3' : 'Raw Resource: Laborer +3'})
+                                    </span>
+                                  </div>
+                                  <div className="text-[11px] text-slate-400">
+                                    {hasOverride
+                                      ? 'Manual Inspector Override active — saved locally. Click "Reset to Live API" to revert anytime.'
+                                      : `Live API reports ${reportedWorkers ?? 0} worker(s), Breakroom Lvl ${breakRoomLevel}/3, Storage Lvl ${storageLevel}/7, Engine Lvl ${autoLevel}/7.`}
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-2 flex-wrap shrink-0">
+                                  <select
+                                    value={breakRoomLevel}
+                                    onChange={(e) =>
+                                      handleUpdateCompanyOverride(comp, { breakRoom: Number(e.target.value) })
+                                    }
+                                    className="px-3 py-1.5 bg-slate-950 border border-slate-700 rounded-xl text-xs font-mono font-bold text-amber-300 focus:outline-none focus:border-amber-500"
+                                    title="Set Breakroom Upgrade Level (1 = 1 slot, 2 = 2 slots [20 Steel], 3 = 3 slots [80 Steel])"
+                                  >
+                                    <option value={1}>Breakroom Lvl 1 (1 Bot)</option>
+                                    <option value={2}>Breakroom Lvl 2 (2 Bots)</option>
+                                    <option value={3}>Breakroom Lvl 3 (3 Bots)</option>
+                                  </select>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => handleUpdateCompanyOverride(comp, { hasManager: !hasManager })}
+                                    className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition ${
+                                      hasManager
+                                        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                        : 'bg-slate-950 text-slate-400 border border-slate-800 hover:text-white'
+                                    }`}
+                                    title="Toggle whether a trusted Manager is assigned (+5 Happiness to saddest worker & boost to top earner)"
+                                  >
+                                    {hasManager ? '👔 Manager Active (+5 Happy)' : 'No Manager'}
+                                  </button>
+
+                                  {employees.length < 3 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAddManualBotSlot(comp)}
+                                      className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs transition"
+                                    >
+                                      + Configure Bot Slot #{employees.length + 1}
+                                    </button>
+                                  )}
+
+                                  {hasOverride && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleResetCompanyOverride(comp._id)}
+                                      className="px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs font-bold transition"
+                                    >
+                                      Reset to Live API
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {employees.length === 0 ? (
+                                <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                                  <div className="space-y-1">
+                                    <div className="font-bold text-amber-300 flex items-center gap-1.5">
+                                      <Info className="w-4 h-4 text-amber-400 shrink-0" />
+                                      <span>Private Employee Traits Not Returned by Public War Era API</span>
+                                    </div>
+                                    <p className="text-slate-300 text-xs leading-relaxed">
+                                      The live War Era API verified this company&apos;s infrastructure (<strong>Storage Lvl {storageLevel}</strong>, <strong>Automated Engine Lvl {autoLevel}</strong>, <strong>{reportedWorkers ?? 0} active worker(s)</strong>), but restricts private employee trait arrays on third-party queries. Click <strong>&quot;+ Configure Bot Slot #1&quot;</strong> above to simulate bot traits and wages.
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={handleRefreshCompanies}
+                                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold flex items-center gap-1.5 transition shrink-0"
+                                  >
+                                    <RefreshCw className="w-3.5 h-3.5 text-indigo-400" />
+                                    <span>Re-Sync API</span>
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                  {employees.map((emp, empIdx) => {
+                                    const empEval = wfEval.employeeBreakdown[empIdx];
+                                    const hourlyWage = Number(emp.hourlyWageBtc ?? (emp as any).wageBtc ?? 0.45);
+                                    const trainUsed = Number(emp.trainingUsed ?? (emp as any).trainingSessionsUsed ?? 0);
+                                    const trainMax = Number(emp.trainingPotential ?? (emp as any).trainingSessionsMax ?? 10);
+                                    const isSpec = Boolean(emp.isSpecializedInGood ?? (emp as any).isSpecializedInCompanyItem ?? true);
+
+                                    return (
+                                      <div
+                                        key={emp.id || `slot-${empIdx}`}
+                                        className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-2.5 text-xs"
+                                      >
+                                        <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                                          <div>
+                                            <div className="font-bold text-white text-xs">{emp.name || `Bot Employee #${empIdx + 1}`}</div>
+                                            <div className="text-[11px] font-mono text-slate-400">
+                                              Age {emp.age} · {trainUsed}/{trainMax} Trainings
+                                            </div>
+                                          </div>
+                                          <span className="px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-mono text-xs font-black">
+                                            {(empEval?.effectivePP ?? 0).toFixed(1)} PP/hr
+                                          </span>
+                                        </div>
+
+                                        <div className="grid grid-cols-3 gap-2 text-[11px]">
+                                          <div>
+                                            <label className="text-slate-400 block mb-0.5">Age</label>
+                                            <input
+                                              type="number"
+                                              min={18}
+                                              max={75}
+                                              value={emp.age}
+                                              onChange={(e) => {
+                                                const next = employees.map((item, i) =>
+                                                  i === empIdx ? { ...item, age: Number(e.target.value) } : item
+                                                );
+                                                handleUpdateCompanyOverride(comp, { employees: next });
+                                              }}
+                                              className="w-full px-2 py-1 bg-slate-950 border border-slate-800 rounded text-white font-mono"
+                                            />
+                                          </div>
+                                          <div>
+                                            <label className="text-slate-400 block mb-0.5">Happy</label>
+                                            <input
+                                              type="number"
+                                              min={0}
+                                              max={100}
+                                              value={emp.happiness}
+                                              onChange={(e) => {
+                                                const next = employees.map((item, i) =>
+                                                  i === empIdx ? { ...item, happiness: Number(e.target.value) } : item
+                                                );
+                                                handleUpdateCompanyOverride(comp, { employees: next });
+                                              }}
+                                              className={`w-full px-2 py-1 bg-slate-950 border rounded font-mono ${
+                                                emp.happiness < 30 ? 'border-rose-500 text-rose-400' : 'border-slate-800 text-emerald-300'
+                                              }`}
+                                            />
+                                          </div>
+                                          <div>
+                                            <label className="text-slate-400 block mb-0.5">Wage/hr</label>
+                                            <input
+                                              type="number"
+                                              step="0.05"
+                                              min={0.05}
+                                              value={hourlyWage}
+                                              onChange={(e) => {
+                                                const next = employees.map((item, i) =>
+                                                  i === empIdx ? { ...item, hourlyWageBtc: Number(e.target.value) } : item
+                                                );
+                                                handleUpdateCompanyOverride(comp, { employees: next });
+                                              }}
+                                              className="w-full px-2 py-1 bg-slate-950 border border-slate-800 rounded text-amber-300 font-mono"
+                                            />
+                                          </div>
+                                        </div>
+
+                                        <div className="flex items-center justify-between text-[11px] pt-0.5">
+                                          <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer">
+                                            <input
+                                              type="checkbox"
+                                              checked={Boolean(emp.hasTool)}
+                                              onChange={(e) => {
+                                                const next = employees.map((item, i) =>
+                                                  i === empIdx ? { ...item, hasTool: e.target.checked } : item
+                                                );
+                                                handleUpdateCompanyOverride(comp, { employees: next });
+                                              }}
+                                              className="rounded accent-amber-500"
+                                            />
+                                            <span>Equipped Tool</span>
+                                          </label>
+                                          <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer">
+                                            <input
+                                              type="checkbox"
+                                              checked={isSpec}
+                                              onChange={(e) => {
+                                                const next = employees.map((item, i) =>
+                                                  i === empIdx
+                                                    ? { ...item, isSpecializedInGood: e.target.checked }
+                                                    : item
+                                                );
+                                                handleUpdateCompanyOverride(comp, { employees: next });
+                                              }}
+                                              className="rounded accent-emerald-500"
+                                            />
+                                            <span>Specialized</span>
+                                          </label>
+                                        </div>
+
+                                        {/* 3 Trait Dropdowns */}
+                                        <div className="space-y-1.5 pt-1 border-t border-slate-800">
+                                          {[0, 1, 2].map((slotIdx) => {
+                                            const selectedTrait = (emp.traits || [])[slotIdx] || '';
+                                            return (
+                                              <select
+                                                key={slotIdx}
+                                                value={selectedTrait}
+                                                onChange={(e) => {
+                                                  const val = e.target.value;
+                                                  const next = employees.map((item, i) => {
+                                                    if (i !== empIdx) return item;
+                                                    const updatedTraits = [...(item.traits || [])];
+                                                    if (!val) {
+                                                      updatedTraits.splice(slotIdx, 1);
+                                                    } else {
+                                                      updatedTraits[slotIdx] = val as EmployeeTraitId;
+                                                    }
+                                                    const unique = Array.from(new Set(updatedTraits.filter(Boolean))) as EmployeeTraitId[];
+                                                    return { ...item, traits: unique.slice(0, 3) };
+                                                  });
+                                                  handleUpdateCompanyOverride(comp, { employees: next });
+                                                }}
+                                                className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-[11px] text-white focus:outline-none focus:border-amber-500"
+                                              >
+                                                <option value="">— Trait Slot #{slotIdx + 1} —</option>
+                                                <optgroup label="🔥 MUST HAVE! (S-Tier)">
+                                                  {PIRATERERS_TRAIT_CATALOG.filter((t) => t.tier === 'must-have').map((t) => (
+                                                    <option key={t.id} value={t.id}>
+                                                      {t.name} ({t.effectText})
+                                                    </option>
+                                                  ))}
+                                                </optgroup>
+                                                <optgroup label="💎 GOOD TO HAVE (A-Tier)">
+                                                  {PIRATERERS_TRAIT_CATALOG.filter((t) => t.tier === 'good-to-have').map((t) => (
+                                                    <option key={t.id} value={t.id}>
+                                                      {t.name} ({t.effectText})
+                                                    </option>
+                                                  ))}
+                                                </optgroup>
+                                                <optgroup label="✅ OK TO HAVE (B-Tier)">
+                                                  {PIRATERERS_TRAIT_CATALOG.filter((t) => t.tier === 'ok-to-have').map((t) => (
+                                                    <option key={t.id} value={t.id}>
+                                                      {t.name} ({t.effectText})
+                                                    </option>
+                                                  ))}
+                                                </optgroup>
+                                              </select>
+                                            );
+                                          })}
+                                        </div>
+
+                                        {/* Synergies & Warnings */}
+                                        {empEval && (
+                                          <div className="space-y-1 pt-1">
+                                            {empEval.activeSynergies.map((syn, sIdx) => (
+                                              <div key={sIdx} className="text-[11px] font-mono text-emerald-300">
+                                                ✓ {syn}
+                                              </div>
+                                            ))}
+                                            {empEval.warnings.map((w, wIdx) => (
+                                              <div key={wIdx} className="text-[11px] font-mono text-rose-300">
+                                                ⚠️ {w}
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       );
                     })}
                   </div>
                 ) : (
-                  <div className="p-6 bg-slate-950 border border-slate-800 rounded-2xl text-center text-xs text-slate-400">
-                    No company entities registered directly to this user ID. Industrial equity is derived from general asset valuation.
+                  <div className="p-6 bg-slate-950 border border-amber-500/30 rounded-2xl text-center space-y-3">
+                    <div className="text-xs font-bold text-amber-300 flex items-center justify-center gap-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                      <span>
+                        {liveCompanies.length === 0 && (currentProfile.companiesCount || 0) > 0
+                          ? `Live Company Records Not Yet Synced (Profile Reports ${currentProfile.companiesCount} Owned Companies)`
+                          : 'No Live Company Records Returned by War Era API'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 max-w-xl mx-auto leading-relaxed">
+                      Zero fabricated or estimated companies are displayed. Click below to query the live War Era API (`company.getCompanies` &amp; `company.getById`) for verified company infrastructure and upgrades.
+                    </p>
+                    <div className="flex justify-center pt-1">
+                      <button
+                        type="button"
+                        onClick={handleRefreshCompanies}
+                        disabled={isLoadingCompanies}
+                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-black flex items-center gap-2 transition shadow-md disabled:opacity-50"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isLoadingCompanies ? 'animate-spin' : ''}`} />
+                        <span>{isLoadingCompanies ? 'Querying War Era API...' : 'Sync Live Companies Now'}</span>
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>

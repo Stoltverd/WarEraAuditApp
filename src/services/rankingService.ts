@@ -8,6 +8,7 @@ import {
   batchResolveUsers,
   fetchCountryCitizens,
   knownCountryIdsSet,
+  compareTransactionsNewestFirst,
 } from './apiService';
 import {
   DonorRankingItem,
@@ -144,10 +145,12 @@ export function filterTransactionsByTimeframe(
   }
 
   const startDate = new Date(startTime).toISOString();
-  const filtered = transactions.filter((t) => {
-    const txTime = new Date(t.createdAt).getTime();
-    return txTime >= startTime && txTime <= endTime;
-  });
+  const filtered = transactions
+    .filter((t) => {
+      const txTime = new Date(t.createdAt).getTime();
+      return txTime >= startTime && txTime <= endTime;
+    })
+    .sort(compareTransactionsNewestFirst);
 
   return { filtered, startDate, endDate };
 }
@@ -335,9 +338,7 @@ export function calculateGranularRankings(
     }
 
     const combinedTotal = parseFloat((d.directAmount + damageAmount).toFixed(3));
-    const sortedTx = d.transactions.sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
+    const sortedTx = [...d.transactions].sort(compareTransactionsNewestFirst);
 
     return {
       ...d,
@@ -446,16 +447,16 @@ export function calculateCumulativeRankings(
     const allCitizenRecentTxs = transactions
       ? transactions
           .filter((t) => t.userId === c.userId && (!targetCountryId || !t.countryId || t.countryId === targetCountryId))
-          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+          .sort(compareTransactionsNewestFirst)
       : [];
     const latestTx = allCitizenRecentTxs[0];
     const lastDonationAmount = latestTx ? Number(latestTx.money || latestTx.amount || 0) : undefined;
     const lastDonationAt = latestTx ? latestTx.createdAt : (c.updatedAt || c.createdAt);
 
     const countrySpecificTxs = transactions && targetCountryId && timeframe !== 'all'
-      ? transactions.filter(
-          (t) => t.userId === c.userId && (!t.countryId || t.countryId === targetCountryId)
-        )
+      ? transactions
+          .filter((t) => t.userId === c.userId && (!t.countryId || t.countryId === targetCountryId))
+          .sort(compareTransactionsNewestFirst)
       : [];
     const donationCount = countrySpecificTxs.length > 0 ? countrySpecificTxs.length : 1;
     const resolvedTransactions = countrySpecificTxs.length > 0 ? countrySpecificTxs : [singleTx];

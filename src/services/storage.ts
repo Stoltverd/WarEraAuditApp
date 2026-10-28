@@ -24,6 +24,42 @@ import {
 const DB_NAME = 'warera_donations_granular_db';
 const DB_VERSION = 3;
 
+function extractRecordTimestampMs(item: any): number {
+  if (!item) return 0;
+  const raw = item.createdAt ?? item.timestamp ?? item.date ?? item.updatedAt ?? item.time ?? item.addedAt;
+  if (raw !== undefined && raw !== null) {
+    if (typeof raw === 'number') {
+      return raw < 100000000000 ? raw * 1000 : raw;
+    }
+    if (typeof raw === 'string') {
+      const num = Number(raw.trim());
+      if (!isNaN(num) && num > 0) {
+        return num < 100000000000 ? num * 1000 : num;
+      }
+      const t = new Date(raw.trim()).getTime();
+      if (!isNaN(t)) return t;
+    }
+    if (raw instanceof Date) return raw.getTime();
+  }
+  const idStr = typeof item._id === 'string' ? item._id : (typeof item.id === 'string' ? item.id : '');
+  if (idStr.length >= 8 && /^[0-9a-fA-F]{8}/.test(idStr)) {
+    const tsSec = parseInt(idStr.slice(0, 8), 16);
+    if (!isNaN(tsSec) && tsSec > 1500000000 && tsSec < 2500000000) {
+      return tsSec * 1000;
+    }
+  }
+  return 0;
+}
+
+function compareItemsNewestFirst(a: any, b: any): number {
+  const timeA = extractRecordTimestampMs(a);
+  const timeB = extractRecordTimestampMs(b);
+  if (timeB !== timeA) return timeB - timeA;
+  const idA = String(a?._id || a?.id || '');
+  const idB = String(b?._id || b?.id || '');
+  return idB.localeCompare(idA);
+}
+
 /**
  * Normalizes and sanitizes any stored or drafted MinistryConfig,
  * guaranteeing positive numbers and strict hierarchy Patriot > Moderate > Low >= 0.
@@ -306,7 +342,7 @@ class OfflineStorageService {
         const store = tx.objectStore('transactions');
         const index = store.index('countryId');
         const request = index.getAll(countryId);
-        request.onsuccess = () => resolve(request.result || []);
+        request.onsuccess = () => resolve(((request.result || []) as WareraTransaction[]).sort(compareItemsNewestFirst));
         request.onerror = () => reject(request.error);
       });
     } catch {
@@ -399,7 +435,7 @@ class OfflineStorageService {
         const store = tx.objectStore('transactions');
         const index = store.index('userId');
         const request = index.getAll(userId);
-        request.onsuccess = () => resolve(request.result || []);
+        request.onsuccess = () => resolve(((request.result || []) as WareraTransaction[]).sort(compareItemsNewestFirst));
         request.onerror = () => resolve([]);
       });
     } catch {
@@ -678,7 +714,7 @@ class OfflineStorageService {
       }
     }
 
-    return results;
+    return results.sort(compareItemsNewestFirst);
   }
 
   // --- Ministry: National Stockpiles ---
@@ -748,7 +784,7 @@ class OfflineStorageService {
         const raw = localStorage.getItem(`warera_commodity_movements_${countryId}`);
         if (raw) {
           const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed.sort(compareItemsNewestFirst);
         }
       } catch {}
     }
@@ -757,7 +793,7 @@ class OfflineStorageService {
       const raw = localStorage.getItem('warera_commodity_movements');
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed.sort(compareItemsNewestFirst);
       }
     } catch {}
 
@@ -879,12 +915,12 @@ class OfflineStorageService {
         const tx = db.transaction('respec_alerts', 'readonly');
         const store = tx.objectStore('respec_alerts');
         const req = store.getAll();
-        req.onsuccess = () => resolve(req.result || []);
+        req.onsuccess = () => resolve(((req.result || []) as RespecAlert[]).sort(compareItemsNewestFirst));
         req.onerror = () => resolve([]);
       });
     } catch {
       const raw = localStorage.getItem('warera_respec_alerts');
-      return raw ? JSON.parse(raw) : [];
+      return raw ? (JSON.parse(raw) as RespecAlert[]).sort(compareItemsNewestFirst) : [];
     }
   }
 
@@ -1272,6 +1308,76 @@ class OfflineStorageService {
       localStorage.setItem(key, JSON.stringify(map));
     } catch {}
   }
+
+  // --- Ministry: Per-Company Bot Employee Roster & Breakroom Overrides (v0.27 Hybrid Evaluator) ---
+  getCompanyWorkforceOverride(companyId: string): {
+    breakRoom?: number;
+    breakRoomLevel?: number;
+    hasManager?: boolean;
+    isHomelandSafeRegion?: boolean;
+    employees?: import('../types/warera').WareraBotEmployee[];
+  } | null {
+    if (!companyId || typeof localStorage === 'undefined') return null;
+    try {
+      const raw =
+        localStorage.getItem('warera_company_workforce_overrides') ||
+        localStorage.getItem('warera_company_workforce_overrides_v1');
+      if (!raw) return null;
+      const map = JSON.parse(raw);
+      const entry = map[companyId];
+      if (!entry) return null;
+      const resolvedBreakRoom = entry.breakRoom ?? entry.breakRoomLevel;
+      return {
+        ...entry,
+        breakRoom: resolvedBreakRoom,
+        breakRoomLevel: resolvedBreakRoom,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  saveCompanyWorkforceOverride(
+    companyId: string,
+    override: {
+      breakRoom?: number;
+      breakRoomLevel?: number;
+      hasManager?: boolean;
+      isHomelandSafeRegion?: boolean;
+      employees?: import('../types/warera').WareraBotEmployee[];
+    }
+  ): void {
+    if (!companyId || typeof localStorage === 'undefined') return;
+    try {
+      const raw = localStorage.getItem('warera_company_workforce_overrides') || '{}';
+      const map = JSON.parse(raw);
+      const resolvedBreakRoom = override.breakRoom ?? override.breakRoomLevel ?? map[companyId]?.breakRoom ?? map[companyId]?.breakRoomLevel;
+      map[companyId] = {
+        ...(map[companyId] || {}),
+        ...override,
+        breakRoom: resolvedBreakRoom,
+        breakRoomLevel: resolvedBreakRoom,
+        updatedAt: new Date().toISOString(),
+      };
+      localStorage.setItem('warera_company_workforce_overrides', JSON.stringify(map));
+    } catch {}
+  }
+
+  clearCompanyWorkforceOverride(companyId: string): void {
+    if (!companyId || typeof localStorage === 'undefined') return;
+    for (const key of ['warera_company_workforce_overrides', 'warera_company_workforce_overrides_v1']) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        const map = JSON.parse(raw);
+        if (map && typeof map === 'object' && companyId in map) {
+          delete map[companyId];
+          localStorage.setItem(key, JSON.stringify(map));
+        }
+      } catch {}
+    }
+  }
 }
 
 export const storage = new OfflineStorageService();
+

@@ -97,7 +97,7 @@ export function clearDiagnosticLogs(): void {
 export async function rateLimitedFetch(
   url: string,
   options?: RequestInit,
-  retries = 3
+  retries = 4
 ): Promise<Response> {
   const startTs = Date.now();
   const currentKey = storage.getApiKey()?.trim();
@@ -152,20 +152,28 @@ export async function rateLimitedFetch(
           }
         }
 
-        if (res.status === 429 && retries > 0) {
-          // Upstream API rate limit hit: pause queue and back off exponentially
+        const isRetryableStatus =
+          res.status === 429 ||
+          res.status === 500 ||
+          res.status === 502 ||
+          res.status === 503 ||
+          res.status === 504;
+
+        if (isRetryableStatus && retries > 0 && !mergedOptions.signal?.aborted) {
           const retryHeader = res.headers.get('Retry-After');
+          const attemptNum = 5 - retries;
           const backoffDelay = retryHeader
             ? Math.max(1500, parseInt(retryHeader, 10) * 1000)
-            : (4 - retries) * 1800;
+            : attemptNum * 2000;
 
-          console.warn(`[War Era Rate-Limiter] HTTP 429 detected on ${endpointName}. Pacing queue for ${backoffDelay}ms (attempt ${4 - retries}/3)...`);
+          console.warn(
+            `[War Era Rate-Limiter] HTTP ${res.status} on ${endpointName}. Backing off for ${backoffDelay}ms (attempt ${attemptNum}/4)...`
+          );
           await new Promise((r) => setTimeout(r, backoffDelay));
 
           activeRequests = Math.max(0, activeRequests - 1);
           pumpQueue();
 
-          // Re-queue with one fewer retry
           resolve(rateLimitedFetch(url, mergedOptions, retries - 1));
           return;
         }
@@ -195,6 +203,15 @@ export async function rateLimitedFetch(
 
         activeRequests = Math.max(0, activeRequests - 1);
         pumpQueue();
+
+        if (retries > 0 && err?.name !== 'AbortError' && !mergedOptions.signal?.aborted) {
+          const attemptNum = 5 - retries;
+          const backoffDelay = attemptNum * 2000;
+          await new Promise((r) => setTimeout(r, backoffDelay));
+          resolve(rateLimitedFetch(url, mergedOptions, retries - 1));
+          return;
+        }
+
         reject(err);
       }
     };
@@ -269,7 +286,7 @@ export function normalizeTransactionTimestamp(val: any, fallbackIso?: string): s
 
 export function extractItemTimestampMs(item: any): number {
   if (!item) return NaN;
-  const raw = item.createdAt ?? item.timestamp ?? item.date ?? item.updatedAt ?? item.time;
+  const raw = item.createdAt ?? item.timestamp ?? item.date ?? item.updatedAt ?? item.time ?? item.addedAt;
   if (raw !== undefined && raw !== null) {
     if (typeof raw === 'number') {
       return raw < 100000000000 ? raw * 1000 : raw;
@@ -293,6 +310,26 @@ export function extractItemTimestampMs(item: any): number {
     }
   }
   return NaN;
+}
+
+/**
+ * Universal reverse-chronological comparator (Newest First).
+ * Safely compares any transaction, donation, receipt, movement, or alert object by timestamp descending,
+ * with a deterministic reverse ObjectId/ID tie-breaker when timestamps are identical.
+ */
+export function compareTransactionsNewestFirst(a: any, b: any): number {
+  const timeA = extractItemTimestampMs(a);
+  const timeB = extractItemTimestampMs(b);
+  const validA = !isNaN(timeA) && timeA > 0 ? timeA : 0;
+  const validB = !isNaN(timeB) && timeB > 0 ? timeB : 0;
+
+  if (validB !== validA) {
+    return validB - validA;
+  }
+
+  const idA = String(a?._id || a?.id || '');
+  const idB = String(b?._id || b?.id || '');
+  return idB.localeCompare(idA);
 }
 
 export function normalizeTransactionType(rawType?: string): string {
@@ -651,7 +688,8 @@ export async function fetchGranularDonationTransactions(
     }
   }
 
-  // Save to IndexedDB
+  // Sort newest-first before saving & returning
+  allTransactions.sort(compareTransactionsNewestFirst);
   await storage.saveTransactions(allTransactions);
   return allTransactions;
 }
@@ -665,7 +703,8 @@ export async function fetchUserTransactions(
   apiKey: string,
   onProgress?: (loaded: number, page: number) => void,
   signal?: AbortSignal,
-  daysLimit = 35
+  daysLimit = 35,
+  knownTxIds?: Set<string>
 ): Promise<WareraTransaction[]> {
   if (!apiKey || !apiKey.trim() || !userId) {
     return [];
@@ -676,7 +715,7 @@ export async function fetchUserTransactions(
   let cursor: string | undefined = undefined;
   let hasMore = true;
   let page = 0;
-  const maxPages = 30; // up to 1,500 transactions (stops early once date window is reached)
+  const maxPages = 20; // up to 2,000 transactions (at 100/page; stops early once date window or cached tx is reached)
   const effectiveCutoff = Date.now() - (daysLimit + 1) * 24 * 60 * 60 * 1000;
 
   while (hasMore && page < maxPages) {
@@ -686,7 +725,7 @@ export async function fetchUserTransactions(
     page++;
     const queryInput: Record<string, any> = {
       userId,
-      limit: 50,
+      limit: 100,
     };
     if (cursor) {
       queryInput.cursor = cursor;
@@ -694,15 +733,19 @@ export async function fetchUserTransactions(
 
     const encoded = encodeURIComponent(JSON.stringify(queryInput));
     try {
-      const res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/transaction.getPaginatedTransactions?input=${encoded}`, {
-        headers: {
-          'Accept': 'application/json',
-          'X-API-Key': apiKey.trim(),
-        },
-      });
+      const res = await rateLimitedFetch(
+        `${WARERA_TRPC_BASE}/transaction.getPaginatedTransactions?input=${encoded}`,
+        {
+          headers: {
+            Accept: 'application/json',
+            'X-API-Key': apiKey.trim(),
+          },
+          signal,
+        }
+      );
 
       if (!res.ok) {
-        break;
+        throw new Error(`HTTP_${res.status}: Failed to fetch transactions for citizen ${userId}`);
       }
 
       const json = await res.json();
@@ -820,13 +863,25 @@ export async function fetchUserTransactions(
         };
       });
 
+      let hitKnownCachedTx = false;
       for (const it of items) {
+        if (knownTxIds && it._id && knownTxIds.has(it._id)) {
+          hitKnownCachedTx = true;
+        }
         if (!seenIds.has(it._id)) {
           seenIds.add(it._id);
           allTransactions.push(it);
         }
       }
       onProgress?.(allTransactions.length, page);
+
+      // Incremental Delta Sync Short-Circuit:
+      // Since transactions are returned newest-first, encountering an already-cached transaction _id
+      // means all older history for this citizen is already stored locally.
+      if (hitKnownCachedTx) {
+        hasMore = false;
+        break;
+      }
 
       const oldestRaw = rawItems[rawItems.length - 1];
       const oldestTime = extractItemTimestampMs(oldestRaw);
@@ -840,13 +895,17 @@ export async function fetchUserTransactions(
       hasMore = Boolean(cursor && rawItems.length > 0);
 
       if (hasMore) {
-        await new Promise((r) => setTimeout(r, 60));
+        await new Promise((r) => setTimeout(r, 35));
       }
-    } catch {
-      break;
+    } catch (err: any) {
+      if (signal?.aborted || err?.name === 'AbortError') {
+        break;
+      }
+      throw err;
     }
   }
 
+  allTransactions.sort(compareTransactionsNewestFirst);
   return allTransactions;
 }
 
@@ -1183,17 +1242,68 @@ export async function fetchUserCompanies(userId: string, forceRefresh = false): 
           const cJson = await cRes.json();
           const d = cJson?.result?.data;
           if (d && d._id) {
+            const rawEmployees: any[] = Array.isArray(d.employees)
+              ? d.employees
+              : Array.isArray(d.workers)
+              ? d.workers
+              : [];
+
+            const parsedEmployees = rawEmployees
+              .filter((emp) => emp && typeof emp === 'object')
+              .map((emp, idx) => ({
+                id: String(emp._id || emp.id || `${d._id}_emp_${idx + 1}`),
+                name: String(emp.name || emp.username || `Employee #${idx + 1}`),
+                age: Number(emp.age ?? 21),
+                sex: (String(emp.sex || emp.gender || 'male').toLowerCase().startsWith('f') ? 'female' : 'male') as 'male' | 'female',
+                nationality: String(emp.nationality || emp.country || 'Homeland'),
+                happiness: Number(emp.happiness ?? 55),
+                trainingPotential: Number(emp.trainingPotential ?? emp.potential ?? emp.maxTrainings ?? 9),
+                trainingUsed: Number(emp.trainingUsed ?? emp.trainings ?? 3),
+                tenureDays: Number(emp.tenureDays ?? emp.daysWorked ?? 10),
+                isSpecializedInGood: Boolean(emp.isSpecialized ?? emp.specialized ?? true),
+                hasTool: Boolean(emp.hasTool ?? emp.tool ?? false),
+                toolTier: emp.toolTier || 'rare',
+                stats: {
+                  production: Number(emp.stats?.production ?? emp.production ?? 3),
+                  luck: Number(emp.stats?.luck ?? emp.luck ?? 2),
+                  responsibility: Number(emp.stats?.responsibility ?? emp.responsibility ?? emp.discipline ?? 3),
+                },
+                traits: Array.isArray(emp.traits) ? emp.traits : [],
+                hourlyWageBtc: Number(emp.hourlyWage ?? emp.wage ?? 0.45),
+              }));
+
+            const breakRoomLvl = Number(
+              d.activeUpgradeLevels?.breakRoom ??
+              d.activeUpgradeLevels?.breakroom ??
+              d.breakRoomLevel ??
+              d.breakRoom ??
+              (parsedEmployees.length > 0 ? Math.min(3, Math.max(1, parsedEmployees.length)) : 1)
+            );
+
+            const managerObj = typeof d.manager === 'object' && d.manager ? d.manager : null;
+            const managerId = managerObj?._id || (typeof d.manager === 'string' ? d.manager : d.managerId);
+            const managerName = managerObj?.username || managerObj?.name || d.managerName;
+
             companies.push({
               _id: d._id,
               user: d.user || userId,
-              region: d.region,
+              region: typeof d.region === 'object' ? (d.region?.name || d.region?._id) : d.region,
               name: d.name || 'Unnamed Factory',
               itemCode: d.itemCode || 'commodity',
               isFull: Boolean(d.isFull),
               concreteInvested: d.concreteInvested,
               production: Number(d.production || 0),
-              activeUpgradeLevels: d.activeUpgradeLevels || {},
-              workerCount: Number(d.workerCount || 0),
+              activeUpgradeLevels: {
+                ...(d.activeUpgradeLevels || {}),
+                storage: Number(d.activeUpgradeLevels?.storage ?? 1),
+                automatedEngine: Number(d.activeUpgradeLevels?.automatedEngine ?? 1),
+                breakRoom: Math.min(3, Math.max(1, breakRoomLvl || 1)),
+              },
+              workerCount: Number(d.workerCount ?? (parsedEmployees.length || 0)),
+              employees: parsedEmployees.length > 0 ? parsedEmployees : undefined,
+              managerId: managerId ? String(managerId) : undefined,
+              managerName: managerName ? String(managerName) : undefined,
+              hasManager: Boolean(managerId || d.hasManager),
               estimatedValue: Number(d.estimatedValue || 0),
               createdAt: d.createdAt,
               updatedAt: d.updatedAt,
@@ -1452,6 +1562,7 @@ export async function fetchNationalTransfers(
       });
     });
 
+    transfers.sort(compareTransactionsNewestFirst);
     if (transfers.length > 0) {
       await storage.saveNationalTransactions(transfers, countryId);
     }

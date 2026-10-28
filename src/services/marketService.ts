@@ -248,6 +248,15 @@ export async function fetchAllCommoditiesMarket(forceRefresh = false): Promise<C
 }
 
 /**
+ * Returns the latest live-fetched market trends if cached in memory, or fallback baseline if not yet loaded
+ */
+export function getCachedOrFallbackMarketTrends(): CommodityTrend[] {
+  return cachedMarketTrends && cachedMarketTrends.length > 0
+    ? cachedMarketTrends
+    : generateFallbackMarketTrends();
+}
+
+/**
  * Generate fallback baseline for the 24 canonical commodities if network is completely unavailable
  */
 export function generateFallbackMarketTrends(): CommodityTrend[] {

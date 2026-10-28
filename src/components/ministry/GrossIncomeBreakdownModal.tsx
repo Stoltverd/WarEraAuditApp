@@ -154,7 +154,8 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
           currentProfile.userId,
           reconstructedUser as any,
           personalTxs,
-          periodDays
+          periodDays,
+          countryBenchmark
         );
         const newWages = recalculated.summary.wagesEarnedBtc;
         const newTrade = recalculated.summary.netTradeProfitBtc;
@@ -177,7 +178,8 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
           currentProfile.historicalRank,
           currentProfile.isNationalHeavyHitter,
           currentProfile.heavyHitterRank,
-          countryBenchmark
+          countryBenchmark,
+          currentProfile.liquidBtc
         );
 
         const updatedProfile: CitizenEconomicProfile = {
