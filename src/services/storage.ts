@@ -22,7 +22,8 @@ import {
 } from '../types/ministry';
 
 const DB_NAME = 'warera_donations_granular_db';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
+export const AUDIT_PROFILE_SCHEMA_VERSION = 2;
 
 function extractRecordTimestampMs(item: any): number {
   if (!item) return 0;
@@ -123,6 +124,7 @@ export function sanitizePolicyConfig(raw?: Partial<MinistryConfig> | null): Mini
 
 class OfflineStorageService {
   private dbPromise: Promise<IDBDatabase> | null = null;
+  private personalReceiptsMemory: Map<string, WareraTransaction[]> = new Map();
 
   constructor() {
     this.initDB();
@@ -200,6 +202,16 @@ class OfflineStorageService {
           const store = db.createObjectStore('watched_citizens', { keyPath: 'userId' });
           store.createIndex('countryId', 'countryId', { unique: false });
           store.createIndex('addedAt', 'addedAt', { unique: false });
+        }
+
+        // ⚠️ CRITICAL ARCHITECTURAL INVARIANT (DO NOT REMOVE OR MERGE WITH 'transactions'):
+        // Personal citizen transaction streams (wages, trading, itemMarket, donations, tips, fees)
+        // MUST live in 'personal_receipts' (keyed by userId) and NEVER in 'transactions'.
+        // Storing national treasury donations and personal receipts in the same store caused
+        // getUserPersonalTransactions(userId) to return 4 national donations and trick the
+        // audit engine into thinking the citizen was already audited or aborting on Page 1.
+        if (!db.objectStoreNames.contains('personal_receipts')) {
+          db.createObjectStore('personal_receipts', { keyPath: 'userId' });
         }
       };
 
@@ -409,37 +421,72 @@ class OfflineStorageService {
     }
   }
 
-  // --- Personal Citizen Receipts (Wages, Item Market, Articles) ---
+  // --- Personal Citizen Receipts (Wages, Trading, Item Market, Articles, Donations) ---
+  // ⚠️ CRITICAL ARCHITECTURAL INVARIANT — DO NOT MODIFY TO USE 'transactions' STORE:
+  // Personal citizen receipts MUST be persisted and queried EXCLUSIVELY from the dedicated
+  // 'personal_receipts' objectStore (and personalReceiptsMemory fallback).
+  // NEVER read or write personal receipts from the 'transactions' objectStore, which is
+  // reserved strictly for country-level treasury donation streams.
   async saveUserPersonalTransactions(userId: string, transactions: WareraTransaction[]): Promise<void> {
+    if (!userId) return;
+    const dedupMap = new Map<string, WareraTransaction>();
+    for (const t of transactions) {
+      if (!t || !t._id) continue;
+      dedupMap.set(t._id, {
+        ...t,
+        userId,
+        isPersonalReceipt: true,
+      });
+    }
+    const normalizedList = Array.from(dedupMap.values()).sort(compareItemsNewestFirst);
+    this.personalReceiptsMemory.set(userId, normalizedList);
+
     try {
       const db = await this.initDB();
-      const tx = db.transaction('transactions', 'readwrite');
-      const store = tx.objectStore('transactions');
-      for (const t of transactions) {
-        store.put({ ...t, userId });
-      }
+      if (!db.objectStoreNames.contains('personal_receipts')) return;
+      const tx = db.transaction('personal_receipts', 'readwrite');
+      const store = tx.objectStore('personal_receipts');
+      store.put({
+        userId,
+        transactions: normalizedList,
+        updatedAt: new Date().toISOString(),
+      });
       return new Promise((resolve) => {
         tx.oncomplete = () => resolve();
         tx.onerror = () => resolve();
       });
     } catch {
-      // In-memory / graceful fallback
+      // In-memory personalReceiptsMemory already updated
     }
   }
 
   async getUserPersonalTransactions(userId: string): Promise<WareraTransaction[]> {
+    if (!userId) return [];
     try {
       const db = await this.initDB();
+      if (!db.objectStoreNames.contains('personal_receipts')) {
+        return this.personalReceiptsMemory.get(userId) || [];
+      }
       return new Promise((resolve) => {
-        const tx = db.transaction('transactions', 'readonly');
-        const store = tx.objectStore('transactions');
-        const index = store.index('userId');
-        const request = index.getAll(userId);
-        request.onsuccess = () => resolve(((request.result || []) as WareraTransaction[]).sort(compareItemsNewestFirst));
-        request.onerror = () => resolve([]);
+        const tx = db.transaction('personal_receipts', 'readonly');
+        const store = tx.objectStore('personal_receipts');
+        const request = store.get(userId);
+        request.onsuccess = () => {
+          const record = request.result;
+          if (record && Array.isArray(record.transactions)) {
+            const list = (record.transactions as WareraTransaction[])
+              .map((t) => ({ ...t, userId, isPersonalReceipt: true }))
+              .sort(compareItemsNewestFirst);
+            this.personalReceiptsMemory.set(userId, list);
+            resolve(list);
+          } else {
+            resolve(this.personalReceiptsMemory.get(userId) || []);
+          }
+        };
+        request.onerror = () => resolve(this.personalReceiptsMemory.get(userId) || []);
       });
     } catch {
-      return [];
+      return this.personalReceiptsMemory.get(userId) || [];
     }
   }
 
@@ -1258,9 +1305,10 @@ class OfflineStorageService {
       const parsed = JSON.parse(raw);
       const existing = parsed[profile.userId];
 
-      // Monotonic guard: do not overwrite a more complete audit with a smaller partial stream
+      // Monotonic guard: ONLY apply when existing record is already on the current AUDIT_PROFILE_SCHEMA_VERSION
       if (
         existing &&
+        existing.auditSchemaVersion === AUDIT_PROFILE_SCHEMA_VERSION &&
         existing.auditBaselineStatus === 'audited' &&
         (existing.receiptCount || 0) > (profile.receiptCount || 0)
       ) {
@@ -1268,9 +1316,10 @@ class OfflineStorageService {
         return;
       }
 
-      // Track stream difference if existing audit is being updated with new data
+      // Track stream difference if existing v2+ audit is being updated with new data
       if (
         existing &&
+        existing.auditSchemaVersion === AUDIT_PROFILE_SCHEMA_VERSION &&
         existing.auditBaselineStatus === 'audited' &&
         typeof existing.grossInflowBtc === 'number' &&
         typeof profile.grossInflowBtc === 'number'
@@ -1287,7 +1336,10 @@ class OfflineStorageService {
         }
       }
 
-      parsed[profile.userId] = profile;
+      parsed[profile.userId] = {
+        ...profile,
+        auditSchemaVersion: AUDIT_PROFILE_SCHEMA_VERSION,
+      };
       localStorage.setItem(key, JSON.stringify(parsed));
     } catch {}
   }
@@ -1296,7 +1348,23 @@ class OfflineStorageService {
     try {
       const key = `warera_audited_profiles_${countryId || 'default'}`;
       const raw = localStorage.getItem(key) || '{}';
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      const validMap: Record<string, CitizenEconomicProfile> = {};
+      let purgedLegacy = false;
+      for (const [uid, prof] of Object.entries(parsed)) {
+        const p = prof as CitizenEconomicProfile;
+        if (p && p.auditSchemaVersion === AUDIT_PROFILE_SCHEMA_VERSION) {
+          validMap[uid] = p;
+        } else {
+          purgedLegacy = true;
+        }
+      }
+      if (purgedLegacy) {
+        try {
+          localStorage.setItem(key, JSON.stringify(validMap));
+        } catch {}
+      }
+      return validMap;
     } catch {
       return {};
     }
@@ -1305,7 +1373,13 @@ class OfflineStorageService {
   saveAuditedProfilesMap(countryId: string | undefined, map: Record<string, CitizenEconomicProfile>): void {
     try {
       const key = `warera_audited_profiles_${countryId || 'default'}`;
-      localStorage.setItem(key, JSON.stringify(map));
+      const stamped: Record<string, CitizenEconomicProfile> = {};
+      for (const [uid, p] of Object.entries(map)) {
+        if (p) {
+          stamped[uid] = { ...p, auditSchemaVersion: AUDIT_PROFILE_SCHEMA_VERSION };
+        }
+      }
+      localStorage.setItem(key, JSON.stringify(stamped));
     } catch {}
   }
 

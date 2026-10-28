@@ -822,6 +822,11 @@ const EXACT_PHRASE_ES: Record<string, string> = {
   'Skill Tree & SP Audit': 'Árbol de Habilidades y Auditoría SP',
   'Receipts & Ledger': 'Recibos y Libro Mayor',
   'Close': 'Cerrar',
+  'Military Unit Donations (Cashflow Outflow)': 'Donaciones a Unidad Militar (Egreso de Caja)',
+  'Donor (Military Unit)': 'Donante (Unidad Militar)',
+  '- Country Treasury Donations:': '- Donaciones al Tesoro Nacional:',
+  '- Military Unit Donations (Cashflow Only):': '- Donaciones a Unidad Militar (Solo Flujo de Caja):',
+  '- Journalism Tips Sent:': '- Propinas de Periodismo Enviadas:',
 
   // Watchlist, Policy, Snapshot & Backup Modals
   'Under Surveillance': 'Bajo Vigilancia',
@@ -979,6 +984,11 @@ const REGEX_REPLACEMENTS_ES: Array<[RegExp, string]> = [
   [/^Company:\s*(.+)$/i, 'Empresa: $1'],
   [/^Seller:\s*(.+)$/i, 'Vendedor: $1'],
   [/^Buyer:\s*(.+)$/i, 'Comprador: $1'],
+  [/^Military Unit:\s*(.+)$/i, 'Unidad Militar: $1'],
+  [/^(\d+)\s+transfer\(s\)\s*·\s*Deducted from Net Cashflow only \(excluded from country leaderboard & citizen classification\)\.$/i,
+    '$1 transferencia(s) · Deducido solo del Flujo de Caja Neto (excluido del ranking nacional y clasificación ciudadana).'],
+  [/^Successfully verified (\d+) receipts \((\d+) wage shifts, (\d+) market sales across (\d+)D\)!$/i,
+    '¡Verificados con éxito $1 recibos ($2 turnos de salario, $3 ventas de mercado en $4D)!'],
   [/^\+(\d+)%\s+Output$/i, '+$1% Producción'],
   [/^(\d+)\s+Live API Record\(s\)$/i, '$1 Registro(s) API en Vivo'],
   [/^Calibrated at ([\d.]+) BTC per 1,000 DMG$/i, 'Calibrado a $1 BTC por 1,000 DMG'],

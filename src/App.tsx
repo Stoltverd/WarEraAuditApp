@@ -527,20 +527,15 @@ export default function App() {
     appliedDamageConfig,
   ]);
 
-  // Verified active citizens count for the selected country
+  // Verified active citizens count for the selected country.
+  // While the initial census sync (isSyncing) is running, use the official server population estimate
+  // for progress bar calculation; once isSyncing finishes, snap to the exact verified Level 10+ active cohort
+  // so sub-Level-10 or emigrated accounts never cause the census banner to hang at e.g. 95/98 (97%).
   const totalActiveCitizens = useMemo(() => {
     if (!selectedCountry?._id) return 0;
-    // Prefer authoritative active census population directly from country record
-    const officialCensus =
-      selectedCountry.rankings?.countryActivePopulation?.value ??
-      (selectedCountry as any).currentPopulation;
-    if (typeof officialCensus === 'number' && officialCensus > 0) {
-      return officialCensus;
-    }
-
     const countryId = selectedCountry._id;
     const liveCensus = getLiveCountryCensusIds(countryId);
-    return Object.values(usersMap).filter((u) => {
+    const verifiedCohortCount = Object.values(usersMap).filter((u) => {
       if (!u || !u._id) return false;
       if (liveCensus && liveCensus.size > 0) {
         if (!liveCensus.has(u._id)) return false;
@@ -552,7 +547,20 @@ export default function App() {
       const lvl = Number(u.leveling?.level ?? u.level ?? 0);
       return isActive && lvl >= 10;
     }).length;
-  }, [usersMap, selectedCountry]);
+
+    if (!isSyncing && verifiedCohortCount > 0) {
+      return verifiedCohortCount;
+    }
+
+    const officialCensus =
+      selectedCountry.rankings?.countryActivePopulation?.value ??
+      (selectedCountry as any).currentPopulation;
+    if (typeof officialCensus === 'number' && officialCensus > 0) {
+      return officialCensus;
+    }
+
+    return verifiedCohortCount;
+  }, [usersMap, selectedCountry, isSyncing]);
 
   // Just-in-time on-demand hydration for visible leaderboard citizens with incremental live streaming
   const handleResolveUsers = useCallback(async (userIds: string[]) => {
@@ -820,14 +828,25 @@ export default function App() {
       const weaponsWealth = Number(wealthObj?.weapons ?? 0);
       
       // Determine real period donations vs lifetime donations:
+      // Strictly filter for Country Treasury donations (`!t.sellerMuId` and matching `countryId`) within `analysisPeriodDays`.
       let direct = 0;
       if (transactions && transactions.length > 0) {
         const periodMs = (ministryConfig.analysisPeriodDays || 7) * 24 * 60 * 60 * 1000;
         const cutoffTime = Date.now() - periodMs;
         direct = transactions
-          .filter((t) => t.userId === user._id && new Date(t.createdAt).getTime() >= cutoffTime)
+          .filter(
+            (t) =>
+              (t.userId === user._id || t.buyerId === user._id) &&
+              !t.sellerMuId &&
+              (!t.sellerCountryId || t.sellerCountryId === countryId) &&
+              new Date(t.createdAt).getTime() >= cutoffTime
+          )
           .reduce((sum, t) => sum + Number(t.money || t.amount || 0), 0);
-      } else if (donor && timeframe !== 'all') {
+      } else if (
+        donor &&
+        ((ministryConfig.analysisPeriodDays === 7 && timeframe === 'weekly') ||
+          (ministryConfig.analysisPeriodDays === 30 && timeframe === 'monthly'))
+      ) {
         direct = Number(donor.directAmount || 0);
       }
       const totalDonated = lifetimeData ? Number(lifetimeData.totalAmount || 0) : (donor ? Number(donor.totalAmount || 0) : 0);
@@ -843,7 +862,12 @@ export default function App() {
       const activeCompsCap = audited?.activeCompaniesCount ?? Number(user.skills?.companies?.value ?? 2);
       const skillBreakdown = extractCitizenSkillBreakdown(user);
       const buildEvaluation = evaluateCitizenSkillBuild(level, playstyle, skillBreakdown, activeCompsCap);
-      const isAuditedValid = Boolean(audited && audited.auditBaselineStatus === 'audited' && audited.auditedAt);
+      const isAuditedValid = Boolean(
+        audited &&
+          audited.auditBaselineStatus === 'audited' &&
+          audited.auditSchemaVersion === 2 &&
+          audited.auditedAt
+      );
       const currentWealthBasis = (ministryConfig.includeResourceWealth && resourceWealth > 0)
         ? wealth + resourceWealth
         : wealth;
@@ -919,6 +943,7 @@ export default function App() {
         periodDonatedBtc: isAuditedValid && audited.periodDonatedBtc !== undefined ? audited.periodDonatedBtc : direct,
         totalDonatedBtc: totalDonated,
         directDonatedBtc: isAuditedValid && audited.directDonatedBtc !== undefined ? audited.directDonatedBtc : direct,
+        muDonationsBtc: isAuditedValid ? audited.muDonationsBtc : undefined,
         damageDonatedBtc: damageDonated,
         damageValueBtc: isAuditedValid && audited.damageValueBtc !== undefined ? audited.damageValueBtc : damageValueBtc,
         totalCombatDamage: weeklyCombatDamage,
@@ -960,6 +985,7 @@ export default function App() {
         isOnWatch: Boolean(watchedItem),
         watchReason: watchedItem?.reasonNote,
         auditBaselineStatus: isAuditedValid ? 'audited' : 'pending-audit',
+        auditSchemaVersion: isAuditedValid ? audited.auditSchemaVersion : undefined,
         auditedAt: isAuditedValid ? audited?.auditedAt : undefined,
         receiptCount: isAuditedValid ? audited?.receiptCount : undefined,
         auditDeltaAlert: isAuditedValid ? audited?.auditDeltaAlert : undefined,
@@ -998,13 +1024,27 @@ export default function App() {
           setAuditedProfilesMap(storage.getAuditedProfiles(selectedCountry._id) || {});
         }
       }
+      const countryId = selectedCountry?._id || '';
       const profilesForAudit = citizenEconomicProfiles.map((p) => {
+        if (
+          p.auditBaselineStatus === 'audited' &&
+          p.auditSchemaVersion === 2 &&
+          typeof p.periodDonatedBtc === 'number'
+        ) {
+          return p;
+        }
         let periodDirect = p.directDonatedBtc;
         if (transactions && transactions.length > 0) {
           const periodMs = (cfg.analysisPeriodDays || 7) * 24 * 60 * 60 * 1000;
           const cutoffTime = Date.now() - periodMs;
           periodDirect = transactions
-            .filter((t) => t.userId === p.userId && new Date(t.createdAt).getTime() >= cutoffTime)
+            .filter(
+              (t) =>
+                (t.userId === p.userId || t.buyerId === p.userId) &&
+                !t.sellerMuId &&
+                (!t.sellerCountryId || t.sellerCountryId === countryId) &&
+                new Date(t.createdAt).getTime() >= cutoffTime
+            )
             .reduce((sum, t) => sum + Number(t.money || t.amount || 0), 0);
         }
         return {
@@ -1030,10 +1070,12 @@ export default function App() {
           const existing = prev[a.userId];
           if (
             existing?.auditBaselineStatus === 'audited' &&
+            existing.auditSchemaVersion === 2 &&
             existing.auditedAt &&
-            a.auditBaselineStatus !== 'audited'
+            (a.auditBaselineStatus !== 'audited' ||
+              ((existing.receiptCount || 0) > 0 && (a.receiptCount || 0) === 0))
           ) {
-            // Preserve live background-audited profile instead of overwriting with pending-audit
+            // Preserve live background-audited profile instead of overwriting with pending-audit or empty profile
             next[a.userId] = {
               ...a,
               ...existing,
@@ -1101,6 +1143,7 @@ export default function App() {
           if (selectedCountry?._id && p.countryId && p.countryId !== selectedCountry._id) {
             continue;
           }
+          storage.saveAuditedProfile(p);
           next[p.userId] = p;
         }
         storage.saveAuditedProfilesMap(selectedCountry?._id, next);
@@ -1119,12 +1162,12 @@ export default function App() {
     await handleRunIncomeAudit(cfg);
   };
 
-  // Automatically execute 7-day income growth audit whenever country changes or donors sync
+  // Automatically execute 7-day income growth audit ONLY AFTER the national census sync finishes (!isSyncing)
   useEffect(() => {
-    if (citizenEconomicProfiles.length > 0) {
+    if (!isSyncing && citizenEconomicProfiles.length > 0) {
       handleRunIncomeAudit();
     }
-  }, [selectedCountry?._id, summary.leaderboard.length]);
+  }, [selectedCountry?._id, summary.leaderboard.length, isSyncing]);
 
   // Ministry Handlers
   const handleUpdatePlayerTag = async (userId: string, tag: PlayerTag, notes = '') => {

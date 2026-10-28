@@ -142,29 +142,74 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
       document.body.style.touchAction = originalTouchAction;
       document.body.style.overscrollBehavior = originalOverscroll;
       window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [onClose]);
+
+  // Only abort in-flight receipt streaming when the modal actually unmounts
+  useEffect(() => {
+    return () => {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
     };
-  }, [onClose]);
+  }, []);
 
-  // Sync state when input profile changes & load cached data
+  // Sync state when input profile changes & load cached data.
+  // If IndexedDB already contains personal receipts for this citizen (e.g., 2,993 receipts for N3V1T5)
+  // while the passed-in profile shows 0 receipts or unverified status, immediately rebuild and commit
+  // the verified profile from the cached receipts!
   useEffect(() => {
     setLocalProfile(profile);
     if (profile?.userId) {
-      // Load cached personal transactions if present in offline storage
+      let isCancelled = false;
       storage.getUserPersonalTransactions(profile.userId).then((cached) => {
-        if (cached && cached.length > 0) {
-          setPersonalTransactions([...cached].sort(compareTransactionsNewestFirst));
+        if (isCancelled) return;
+        const sortedCached = cached && cached.length > 0
+          ? [...cached].sort(compareTransactionsNewestFirst)
+          : [];
+        if (sortedCached.length > 0) {
+          setPersonalTransactions(sortedCached);
+          const needsAutoHealFromCache =
+            profile.auditBaselineStatus !== 'audited' ||
+            profile.auditSchemaVersion !== 2 ||
+            ((profile.receiptCount || 0) === 0 && (profile.grossInflowBtc || 0) === 0);
+          if (needsAutoHealFromCache) {
+            const healedProfile = buildAuditedCitizenProfile(
+              profile,
+              sortedCached,
+              { ...config, analysisPeriodDays: auditPeriodDays },
+              countryBenchmark,
+              auditPeriodDays
+            );
+            setLocalProfile(healedProfile);
+            onUpdateProfile?.(healedProfile);
+            storage.saveAuditedProfile(healedProfile);
+            setSyncStatusMsg(
+              `Loaded ${healedProfile.receiptCount || sortedCached.length} verified in-game receipts (${healedProfile.playerCashflow?.wagesCount || 0} wage shifts, ${healedProfile.playerCashflow?.salesCount || 0} market sales across ${auditPeriodDays}D).`
+            );
+          }
+        } else if (
+          apiKey &&
+          (profile.auditBaselineStatus !== 'audited' || profile.auditSchemaVersion !== 2) &&
+          autoStreamInitiatedRef.current !== `${profile.userId}-${auditPeriodDays}`
+        ) {
+          autoStreamInitiatedRef.current = `${profile.userId}-${auditPeriodDays}`;
+          handleSyncLiveReceipts(auditPeriodDays);
         }
       });
 
       // Load damage and wealth snapshots for honest 30-day combat calculations
       storage.getCitizenSnapshots(profile.userId).then((list) => {
-        setSnapshots(list || []);
+        if (!isCancelled) {
+          setSnapshots(list || []);
+        }
       });
+
+      return () => {
+        isCancelled = true;
+      };
     }
-  }, [profile]);
+  }, [profile?.userId]);
 
   // Load companies when modal opens or companies tab active
   useEffect(() => {
@@ -203,20 +248,6 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
     handleSyncLiveReceipts(days);
   };
 
-  // Keep audited numbers locked when opening the modal for an already-verified citizen.
-  // Only auto-stream on mount if the citizen's receipts are NOT yet verified (auditBaselineStatus !== 'audited').
-  useEffect(() => {
-    if (
-      localProfile?.userId &&
-      apiKey &&
-      localProfile.auditBaselineStatus !== 'audited' &&
-      autoStreamInitiatedRef.current !== `${localProfile.userId}-${auditPeriodDays}`
-    ) {
-      autoStreamInitiatedRef.current = `${localProfile.userId}-${auditPeriodDays}`;
-      handleSyncLiveReceipts(auditPeriodDays);
-    }
-  }, [localProfile?.userId, localProfile?.auditBaselineStatus, apiKey, auditPeriodDays]);
-
   // Clear transient auditDeltaAlert when citizen is inspected
   useEffect(() => {
     if (localProfile?.auditDeltaAlert) {
@@ -232,12 +263,13 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
   const currentProfile = localProfile;
   const periodDays = auditPeriodDays;
 
-  // Respect locked audited summary when the citizen is already verified and window matches config,
-  // avoiding unexpected shifts on modal mount before user clicks manual re-stream.
+  // Compute dynamic cashflow from personalTransactions whenever available (or fallback to currentProfile.playerCashflow)
   const dynamicCashflow = useMemo(() => {
     if (
       currentProfile.auditBaselineStatus === 'audited' &&
+      currentProfile.auditSchemaVersion === 2 &&
       currentProfile.playerCashflow &&
+      ((currentProfile.receiptCount || 0) > 0 || (personalTransactions?.length || 0) === 0) &&
       auditPeriodDays === (config.analysisPeriodDays || 7)
     ) {
       return currentProfile.playerCashflow;
@@ -300,40 +332,49 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
   const equipmentPurchases = cashflow?.equipmentPurchasesBtc ?? 0;
   // Real Net Trading Balance = Market Sales minus Market Purchases
   const netTradeMargin = Math.round((salesVolume - purchasesVolume) * 100) / 100;
-  const periodDonated = Math.max(
-    cashflow?.donationsGivenBtc || 0,
-    currentProfile.periodDonatedBtc ?? currentProfile.directDonatedBtc ?? 0
-  );
+  // Country Treasury Donations strictly within the active window (excludes Military Unit donations)
+  const periodDonated =
+    cashflow && typeof cashflow.donationsGivenBtc === 'number'
+      ? cashflow.donationsGivenBtc
+      : Number(currentProfile.periodDonatedBtc ?? currentProfile.directDonatedBtc ?? 0);
+  // Military Unit Donations (count toward cashflow outflows, never toward country leaderboard or standing)
+  const muDonated = cashflow?.muDonationsBtc ?? currentProfile.muDonationsBtc ?? 0;
+  const muDonationsCount = cashflow?.muDonationsCount ?? 0;
   const tipsReceived = cashflow?.tipsReceivedBtc ?? 0;
   const tipsSent = cashflow?.tipsSentBtc ?? 0;
   const craftingExpenses = (cashflow?.craftingExpensesBtc || 0) + (cashflow?.dismantleExpensesBtc || 0) + (cashflow?.caseOpeningExpensesBtc || 0);
   const applicationFees = cashflow?.applicationFeesBtc || 0;
-  // Gross Cash Inflow = labor wages + market sales + tips received
+  // Gross Cash Inflow = labor wages + market sales + tips received (NEVER artificially inflated by donations)
   const calculatedGrossInflow = Math.round((wagesEarned + salesVolume + tipsReceived) * 100) / 100;
-  // Respect the profile's unified audited gross income when already audited:
   const grossIncome =
     currentProfile.auditBaselineStatus === 'audited' &&
-    typeof currentProfile.grossIncomeBtc === 'number' &&
+    currentProfile.auditSchemaVersion === 2 &&
+    typeof currentProfile.grossInflowBtc === 'number' &&
+    ((currentProfile.receiptCount || 0) > 0 || calculatedGrossInflow === 0) &&
     auditPeriodDays === (config.analysisPeriodDays || 7)
-      ? currentProfile.grossIncomeBtc
-      : calculatedGrossInflow > 0
-      ? Math.max(calculatedGrossInflow, periodDonated)
-      : typeof currentProfile.grossIncomeBtc === 'number' && currentProfile.grossIncomeBtc > 0
-      ? currentProfile.grossIncomeBtc
-      : currentProfile.auditBaselineStatus === 'audited'
-      ? periodDonated
-      : 0;
-  // Net Disposable Cashflow = Gross Inflow minus Purchases minus Employer Payroll minus Crafting/Fees
+      ? currentProfile.grossInflowBtc
+      : calculatedGrossInflow;
+  // Net Cashflow = Gross Inflow minus all Outflows (Purchases + Payroll + Crafting/Fees + Tips Sent + Country Donations + MU Donations)
   const netDisposableIncome =
     currentProfile.auditBaselineStatus === 'audited' &&
+    currentProfile.auditSchemaVersion === 2 &&
     typeof currentProfile.netCashflowBtc === 'number' &&
+    ((currentProfile.receiptCount || 0) > 0 || calculatedGrossInflow === 0) &&
     auditPeriodDays === (config.analysisPeriodDays || 7)
       ? currentProfile.netCashflowBtc
-      : calculatedGrossInflow > 0
-      ? Math.round((calculatedGrossInflow - purchasesVolume - wagesPaid - craftingExpenses - applicationFees) * 100) / 100
-      : typeof currentProfile.netCashflowBtc === 'number'
-      ? currentProfile.netCashflowBtc
-      : grossIncome;
+      : cashflow && typeof cashflow.netCashflowBtc === 'number'
+      ? cashflow.netCashflowBtc
+      : Math.round(
+          (calculatedGrossInflow -
+            purchasesVolume -
+            wagesPaid -
+            craftingExpenses -
+            applicationFees -
+            tipsSent -
+            periodDonated -
+            muDonated) *
+            100
+        ) / 100;
 
   // Capital Balance Sheet Assets
   const liquidBtc = typeof currentProfile.liquidBtc === 'number' && currentProfile.liquidBtc >= 0
@@ -426,6 +467,8 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
     abortControllerRef.current = controller;
 
     try {
+      // Always read existing cached receipts from IndexedDB first so mount closures never drop cached transactions
+      const cachedFromDb = await storage.getUserPersonalTransactions(currentProfile.userId);
       const personalTxs = await fetchUserTransactions(
         currentProfile.userId,
         apiKey,
@@ -438,6 +481,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
       );
 
       const mergedMap = new Map<string, WareraTransaction>();
+      for (const tx of cachedFromDb || []) if (tx?._id) mergedMap.set(tx._id, tx);
       for (const tx of personalTransactions) if (tx?._id) mergedMap.set(tx._id, tx);
       for (const tx of personalTxs) if (tx?._id) mergedMap.set(tx._id, tx);
       const mergedTxs = Array.from(mergedMap.values()).sort(compareTransactionsNewestFirst);
@@ -473,14 +517,14 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
         onUpdateProfile?.(updatedProfile);
         storage.saveAuditedProfile(updatedProfile);
         setSyncStatusMsg(
-          `Successfully verified ${mergedTxs.length} receipts (${updatedProfile.playerCashflow?.wagesCount || 0} wage shifts, ${updatedProfile.playerCashflow?.salesCount || 0} market sales across ${windowDays}D)!`
+          `Successfully verified ${updatedProfile.receiptCount || mergedTxs.length} receipts (${updatedProfile.playerCashflow?.wagesCount || 0} wage shifts, ${updatedProfile.playerCashflow?.salesCount || 0} market sales across ${windowDays}D)!`
         );
       }
     } catch (err: any) {
-      if (err.name === 'AbortError') {
+      if (err?.name === 'AbortError') {
         setSyncStatusMsg('Stream paused by user.');
       } else {
-        setSyncStatusMsg(`Sync notice: ${err.message || 'Stream interrupted'}`);
+        setSyncStatusMsg(`Sync notice: ${err?.message || 'Stream interrupted'}`);
       }
     } finally {
       setIsSyncingLedger(false);
@@ -1323,6 +1367,27 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                       </div>
                     </div>
                   )}
+
+                  {/* Military Unit Donations (Cashflow Outflow Only) */}
+                  {muDonated > 0 && (
+                    <div className="p-3.5 bg-slate-900/90 border border-slate-800 rounded-xl space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-white flex items-center gap-1.5">
+                          <Swords className="w-3.5 h-3.5 text-rose-400" /> Military Unit Donations (Cashflow Outflow)
+                        </span>
+                        {isSyncingLedger ? (
+                          <div className="h-5 w-20 rounded bg-slate-800 animate-pulse" />
+                        ) : (
+                          <span className="font-mono text-rose-400 font-bold text-sm">
+                            -{formatBtc(muDonated)} BTC
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        {`${muDonationsCount} transfer(s) · Deducted from Net Cashflow only (excluded from country leaderboard & citizen classification).`}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1568,6 +1633,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                           const isSeller = sellerStr === currentProfile.userId;
                           const isBuyer = buyerStr === currentProfile.userId;
                           const isDonation = typeLower.includes('donat');
+                          const isMuDonation = isDonation && Boolean(tx.sellerMuId);
                           const dateStr = tx.createdAt
                             ? formatDateTimeDDMMYYYY(tx.createdAt, 'Recent')
                             : 'Recent';
@@ -1583,15 +1649,17 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                             ? 'Employer (Wage Outflow)'
                             : isWorkerWage
                             ? 'Worker (Wage Inflow)'
+                            : isDonation
+                            ? isMuDonation
+                              ? 'Donor (Military Unit)'
+                              : 'Donor (Treasury Transfer)'
                             : isSeller
                             ? 'Seller (Market Inflow)'
                             : isBuyer
                             ? 'Buyer (Market Outflow)'
-                            : isDonation
-                            ? 'Donor (Treasury Transfer)'
                             : 'Participant';
 
-                          const itemStr = safelyExtractItemString(tx.item || tx.resourceType);
+                          const itemStr = safelyExtractItemString(tx.itemCode || tx.item || tx.resourceType);
 
                           return (
                             <tr key={tx._id || `tx-${idx}`} className="hover:bg-slate-900/50 transition">
@@ -1634,7 +1702,11 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                                 {isPositiveInflow ? '+' : isNegativeOutflow ? '-' : ''}{formatBtc(amt)} BTC
                               </td>
                               <td className="py-2.5 px-3 text-slate-400 text-[11px] truncate max-w-xs font-sans">
-                                {isEmployerWage && recipientStr
+                                {isMuDonation && tx.sellerMuId
+                                  ? `Military Unit: ${String(tx.sellerMuId).slice(-6)}`
+                                  : isDonation
+                                  ? 'Domestic sovereign ledger'
+                                  : isEmployerWage && recipientStr
                                   ? `Worker: ${recipientStr.slice(-6)}`
                                   : companyStr
                                   ? `Company: ${companyStr.slice(-6)}`
@@ -2581,6 +2653,24 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                     <div className="flex justify-between text-slate-300">
                       <span>- Application &amp; Registration Fees:</span>
                       <span className="text-rose-400 font-bold">-{formatBtc(applicationFees)} BTC</span>
+                    </div>
+                  )}
+                  {tipsSent > 0 && (
+                    <div className="flex justify-between text-slate-300">
+                      <span>- Journalism Tips Sent:</span>
+                      <span className="text-rose-400 font-bold">-{formatBtc(tipsSent)} BTC</span>
+                    </div>
+                  )}
+                  {periodDonated > 0 && (
+                    <div className="flex justify-between text-slate-300">
+                      <span>- Country Treasury Donations:</span>
+                      <span className="text-amber-400 font-bold">-{formatBtc(periodDonated)} BTC</span>
+                    </div>
+                  )}
+                  {muDonated > 0 && (
+                    <div className="flex justify-between text-slate-300">
+                      <span>- Military Unit Donations (Cashflow Only):</span>
+                      <span className="text-rose-400 font-bold">-{formatBtc(muDonated)} BTC</span>
                     </div>
                   )}
                   <div className="pt-2 border-t border-slate-800 flex justify-between font-bold text-white text-xs">

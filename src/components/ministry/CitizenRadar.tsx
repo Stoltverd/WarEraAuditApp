@@ -176,7 +176,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
   // Active citizens counts (authoritative game census aligned with radar profiles)
   const activeCount = totalActiveCitizens || profiles.length;
   const targetCohortSize = totalActiveCitizens && totalActiveCitizens > 0 ? totalActiveCitizens : profiles.length;
-  const isCohortAuditing = Boolean(isSyncing) || (totalActiveCitizens !== undefined && totalActiveCitizens > 0 && profiles.length < totalActiveCitizens);
+  const isCohortAuditing = Boolean(isSyncing);
   const auditProgressPct = targetCohortSize > 0 ? Math.min(100, Math.round((profiles.length / targetCohortSize) * 100)) : 100;
 
   // High-performance automatic background ledger streamer state
@@ -245,29 +245,82 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
     }
   }, [profiles, countryName, isSyncing, streamState.isRunning, selectedAuditProfile]);
 
-  // Handler for background stream updates: stages in buffer so rows never jump mid-browsing
-  const handleBackgroundStreamUpdate = useCallback((updated: CitizenEconomicProfile) => {
-    const currentProfiles = profilesRef.current;
-    if (
-      currentProfiles.length > 0 &&
-      updated.countryId &&
-      currentProfiles[0]?.countryId &&
-      updated.countryId !== currentProfiles[0].countryId
-    ) {
-      return;
-    }
-    if (!currentProfiles.some((p) => p.userId === updated.userId)) {
-      return;
-    }
-    bufferedMapRef.current = {
-      ...bufferedMapRef.current,
-      [updated.userId]: updated,
-    };
-    setBufferedUpdatesMap((prev) => ({
-      ...prev,
-      [updated.userId]: updated,
-    }));
-  }, []);
+  // Refs to keep background lifecycle checks stable without re-triggering on every profile/benchmark state commit
+  const profilesRef = useRef(profiles);
+  profilesRef.current = profiles;
+  const displayedProfilesRef = useRef(displayedProfiles);
+  displayedProfilesRef.current = displayedProfiles;
+  const configRef = useRef(config);
+  configRef.current = config;
+  const benchmarkRef = useRef(countryBenchmark);
+  benchmarkRef.current = countryBenchmark;
+  const hasActiveFilterRef = useRef(false);
+  hasActiveFilterRef.current = Boolean(
+    search.trim() ||
+      filterFiscalStanding !== 'all' ||
+      filterBuild !== 'all' ||
+      filterBuildGrade !== 'all' ||
+      onlyInactiveDonors
+  );
+  const selectedAuditProfileRef = useRef(selectedAuditProfile);
+  selectedAuditProfileRef.current = selectedAuditProfile;
+
+  // Handler for background stream updates:
+  // If the citizen was previously unverified or had 0 receipts, or if no filter/modal is active,
+  // apply the verified receipt profile immediately to displayedProfiles and parent state so no citizen
+  // ever stays stuck showing 0.0 BTC / 0 receipts after being audited.
+  // Only stage in bufferedUpdatesMap when a filter or modal is active AND the citizen was already verified.
+  const handleBackgroundStreamUpdate = useCallback(
+    (updated: CitizenEconomicProfile) => {
+      const currentProfiles = profilesRef.current;
+      if (
+        currentProfiles.length > 0 &&
+        updated.countryId &&
+        currentProfiles[0]?.countryId &&
+        updated.countryId !== currentProfiles[0].countryId
+      ) {
+        return;
+      }
+      if (!currentProfiles.some((p) => p.userId === updated.userId)) {
+        return;
+      }
+
+      const existingRow = displayedProfilesRef.current.find((p) => p.userId === updated.userId);
+      const wasUnverifiedOrEmpty =
+        !existingRow ||
+        existingRow.auditBaselineStatus !== 'audited' ||
+        existingRow.auditSchemaVersion !== 2 ||
+        ((existingRow.receiptCount || 0) === 0 && (existingRow.grossInflowBtc || 0) === 0);
+
+      if (wasUnverifiedOrEmpty || (!hasActiveFilterRef.current && !selectedAuditProfileRef.current)) {
+        if (bufferedMapRef.current[updated.userId]) {
+          const nextRef = { ...bufferedMapRef.current };
+          delete nextRef[updated.userId];
+          bufferedMapRef.current = nextRef;
+        }
+        setBufferedUpdatesMap((prev) => {
+          if (!prev[updated.userId]) return prev;
+          const next = { ...prev };
+          delete next[updated.userId];
+          return next;
+        });
+        setDisplayedProfiles((prev) =>
+          prev.map((p) => (p.userId === updated.userId ? updated : p))
+        );
+        onUpdateProfile?.(updated);
+      } else {
+        bufferedMapRef.current = {
+          ...bufferedMapRef.current,
+          [updated.userId]: updated,
+        };
+        setBufferedUpdatesMap((prev) => ({
+          ...prev,
+          [updated.userId]: updated,
+        }));
+      }
+    },
+    [onUpdateProfile]
+  );
 
   // Handler for manual user-triggered updates inside CitizenAuditModal:
   // Updates the citizen in-place and pins their row in the current filtered view so they never vanish
@@ -358,15 +411,14 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
   }, [displayedProfiles, bufferedUpdatesMap, streamState.lastCompletedAt, streamState.failedCitizenIds]);
   const pendingAuditCount = Math.max(0, displayedProfiles.length - auditedCount);
 
-  // Refs to keep background lifecycle checks stable without re-triggering on every profile/benchmark state commit
-  const profilesRef = useRef(profiles);
-  profilesRef.current = profiles;
-  const configRef = useRef(config);
-  configRef.current = config;
-  const benchmarkRef = useRef(countryBenchmark);
-  benchmarkRef.current = countryBenchmark;
+  // Stop any running background receipt audit immediately if a national census sync begins
+  useEffect(() => {
+    if (isSyncing && streamState.isRunning) {
+      auditStreamService.stop();
+    }
+  }, [isSyncing, streamState.isRunning]);
 
-  // Seamless background stream trigger: initiates non-blocking verification for unverified or >30m stale citizens
+  // Seamless background stream trigger: initiates non-blocking verification ONLY AFTER the national census is complete (!isSyncing && !isCohortAuditing)
   useEffect(() => {
     const currentCountryId = profiles[0]?.countryId;
     const isRunningDifferentCountry =
@@ -377,6 +429,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
 
     if (
       !isSyncing &&
+      !isCohortAuditing &&
       apiKey &&
       apiKey.trim() &&
       profiles.length > 0 &&
@@ -400,6 +453,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
     profiles.length,
     actionableStaleCount,
     isSyncing,
+    isCohortAuditing,
     apiKey,
     config.analysisPeriodDays,
     streamState.isRunning,
@@ -417,7 +471,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
   const activeCountryId = profiles[0]?.countryId || countryName;
 
   useEffect(() => {
-    if (!apiKey || !apiKey.trim() || profilesRef.current.length === 0 || isSyncing) return;
+    if (!apiKey || !apiKey.trim() || profilesRef.current.length === 0 || isSyncing || isCohortAuditing) return;
 
     const checkAndTriggerThirtyMinAudit = (fromUserReturn: boolean) => {
       const state = auditStreamService.getState();
@@ -473,12 +527,13 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
     return () => {
       window.clearInterval(intervalId);
       window.removeEventListener('focus', handleUserReturnToTab);
-      document.removeEventListener('visibilitychange', handleUserReturnToTab);
+      window.removeEventListener('visibilitychange', handleUserReturnToTab);
     };
   }, [
     activeCountryId,
     apiKey,
     isSyncing,
+    isCohortAuditing,
     config.analysisPeriodDays,
     handleBackgroundStreamUpdate,
   ]);

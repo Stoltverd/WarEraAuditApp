@@ -405,12 +405,14 @@ export function extractCitizenFromTransaction(
   const targetCId = targetCountryId ? extractId(targetCountryId) : '';
   const itemCId = extractId(item.countryId);
 
-  // Candidate ID fields in priority order (citizen sender/actor candidates)
+  // Candidate ID fields in priority order (in WarEra TransactionListItem, buyerId is the citizen donor/spender)
   const candidateIds: string[] = [
     extractId(item.senderId),
     extractId(item.sender),
     extractId(item.donorId),
     extractId(item.donor),
+    extractId(item.buyerId),
+    extractId(item.buyer),
     extractId(item.citizenId),
     extractId(item.citizen),
     extractId(item.fromId),
@@ -432,8 +434,6 @@ export function extractCitizenFromTransaction(
     extractId(item.player),
     extractId(item.sellerId),
     extractId(item.seller),
-    extractId(item.buyerId),
-    extractId(item.buyer),
     extractId(item.byId),
     extractId(item.by),
     extractId(item.ownerId),
@@ -538,7 +538,8 @@ export async function fetchGranularDonationTransactions(
     page++;
     const queryInput: Record<string, any> = {
       countryId,
-      limit: 50,
+      transactionType: 'donation',
+      limit: 100,
     };
     if (cursor) {
       queryInput.cursor = cursor;
@@ -577,22 +578,24 @@ export async function fetchGranularDonationTransactions(
     const items: WareraTransaction[] = rawItems
       .filter((item) => {
         const rawType = (item.transactionType || item.type || item.action || '').toLowerCase();
-        // Discard non-donation operations: wages, cases, crafts, dismantles
-        if (rawType.includes('wage') || rawType.includes('salary') || rawType.includes('work')) return false;
-        if (rawType.includes('case') || rawType.includes('craft') || rawType.includes('dismantle')) return false;
+        // Discard non-donation operations: wages, cases, crafts, dismantles, market trades
+        if (rawType && !rawType.includes('donat')) return false;
+        // Exclude Military Unit donations from sovereign country leaderboard stream
+        if (item.sellerMuId) return false;
         // Commercial item trades with explicit items and seller/buyer are market trades, NOT treasury donations
-        if ((item.sellerId || item.buyerId) && (item.item || item.resourceType || item.commodity)) return false;
+        if (item.itemCode || item.item || item.resourceType || item.commodity) return false;
 
-        // Extract citizen identity
+        // Extract citizen identity (in WarEra TransactionListItem, buyerId is the donor)
         const { citizenId } = extractCitizenFromTransaction(item, countryId);
 
         // Sovereign country blacklist: a country can NEVER be a citizen donor
-        if (citizenId && (knownCountryIdsSet.has(citizenId) || citizenId === countryId)) {
+        if (!citizenId || knownCountryIdsSet.has(citizenId) || citizenId === countryId) {
           return false;
         }
 
-        // Recipient country check: if this transaction explicitly targets a foreign country, exclude
+        // Recipient country check: in WarEra TransactionListItem, sellerCountryId is the recipient country
         const targetCId =
+          item.sellerCountryId ||
           (typeof item.targetCountry === 'string' ? item.targetCountry : item.targetCountry?._id) ||
           item.targetCountryId ||
           item.recipientCountryId ||
@@ -619,7 +622,8 @@ export async function fetchGranularDonationTransactions(
           rawType.includes('bilateral') ||
           rawType.includes('foreign_aid') ||
           rawType.includes('state_transfer') ||
-          rawType.includes('national_transfer')
+          rawType.includes('national_transfer') ||
+          rawType.includes('countrymoneytransfer')
         ) {
           return false;
         }
@@ -644,7 +648,13 @@ export async function fetchGranularDonationTransactions(
           }
         }
 
-        const itemCountryId = item.countryId || item.targetCountryId || item.recipientCountryId || item.toCountryId;
+        const itemCountryId =
+          item.sellerCountryId ||
+          item.countryId ||
+          item.targetCountryId ||
+          item.recipientCountryId ||
+          item.toCountryId ||
+          countryId;
 
         const rawTimeMs = extractItemTimestampMs(item);
         const createdAtNorm = !isNaN(rawTimeMs)
@@ -658,12 +668,15 @@ export async function fetchGranularDonationTransactions(
           money: Number(item.money || item.amount || 0),
           amount: Number(item.money || item.amount || 0),
           userId: citizenId,
-          sellerId: item.sellerId || (tType === 'market' || tType === 'itemMarket' ? citizenId : undefined),
-          buyerId: item.buyerId,
+          sellerId: item.sellerId,
+          buyerId: item.buyerId || citizenId,
+          sellerCountryId: itemCountryId,
+          sellerMuId: item.sellerMuId,
           companyId: item.companyId || item.employerId || item.employer?._id,
-          item: extractItemString(item.item || item.commodity || item.resource || item.resourceType),
-          resourceType: extractItemString(item.resourceType || item.item),
-          countryId: itemCountryId || countryId,
+          item: extractItemString(item.itemCode || item.item || item.commodity || item.resource || item.resourceType),
+          itemCode: typeof item.itemCode === 'string' ? item.itemCode : undefined,
+          resourceType: extractItemString(item.itemCode || item.resourceType || item.item),
+          countryId: itemCountryId,
           createdAt: createdAtNorm,
           updatedAt: updatedAtNorm,
         };
@@ -681,7 +694,7 @@ export async function fetchGranularDonationTransactions(
     }
 
     cursor = result?.nextCursor;
-    hasMore = Boolean(cursor && rawItems.length > 0);
+    hasMore = Boolean(cursor && !String(cursor).includes('undefined') && rawItems.length > 0);
 
     if (hasMore) {
       await new Promise((r) => setTimeout(r, 60));
@@ -696,7 +709,23 @@ export async function fetchGranularDonationTransactions(
 
 /**
  * Fetch authenticated personal transactions for a specific user (Wages, Item Market, Trading, Tips, Donations).
- * Essential for verifying real in-game work salaries and commercial profits for audited citizens.
+ *
+ * ⚠️ CRITICAL ARCHITECTURAL INVARIANT (DO NOT REMOVE OR RE-INTRODUCE PAGE-1 BREAKS):
+ * 1. NEVER early-break pagination on `knownTxIds` / `hitKnownCachedTx`!
+ *    Previously, encountering a single cached donation ID on Page 1 triggered `if (hitKnownCachedTx) break;`,
+ *    aborting the stream on Page 1 and dropping all older market trades, itemMarket orders, and wages
+ *    within the 7D/30D window. Always paginate until `!cursor` or `oldestTime < effectiveCutoff`.
+ * 2. NEVER overwrite `userId` with `extractCitizenFromTransaction(item)`!
+ *    When citizen `userId` buys a commodity on `trading` or equipment on `itemMarket`, `item.sellerId` is
+ *    the counterparty seller. Calling `extractCitizenFromTransaction(item)` grabs `sellerId` first and
+ *    corrupts `userId` into the counterparty's ID. `userId` on every personal receipt MUST remain the
+ *    queried citizen `userId`.
+ * 3. OFFICIAL WARERA `TransactionListItem` SCHEMA (`https://api2.warera.io/openapi.json`):
+ *    - Input has `additionalProperties: false` (accepts ONLY `userId`, `limit: 100`, `cursor`, `transactionType`).
+ *    - `sellerId === userId` => INFLOW (Wage earned by worker, Commodity sold on `trading`, Gear sold on `itemMarket`, `articleTip` received).
+ *    - `buyerId === userId`  => OUTFLOW (Commodity bought on `trading`, Gear bought on `itemMarket`, Wage paid by employer, `donation` given, `articleTip` sent, `applicationFee`/`craftItem`/`dismantleItem`/`openCase`).
+ *    - `itemCode` holds the commodity code on `trading` orders (e.g. `"iron"`, `"steel"`, `"oil"`, `"bread"`).
+ *    - `sellerCountryId` holds the recipient country on `donation` transactions; `sellerMuId` holds the recipient Military Unit.
  */
 export async function fetchUserTransactions(
   userId: string,
@@ -704,7 +733,7 @@ export async function fetchUserTransactions(
   onProgress?: (loaded: number, page: number) => void,
   signal?: AbortSignal,
   daysLimit = 35,
-  knownTxIds?: Set<string>
+  _deprecatedKnownTxIds?: Set<string>
 ): Promise<WareraTransaction[]> {
   if (!apiKey || !apiKey.trim() || !userId) {
     return [];
@@ -715,12 +744,12 @@ export async function fetchUserTransactions(
   let cursor: string | undefined = undefined;
   let hasMore = true;
   let page = 0;
-  const maxPages = 20; // up to 2,000 transactions (at 100/page; stops early once date window or cached tx is reached)
+  const maxPages = 60; // up to 6,000 personal transactions (at 100/page; stops once effectiveCutoff date is reached)
   const effectiveCutoff = Date.now() - (daysLimit + 1) * 24 * 60 * 60 * 1000;
 
   while (hasMore && page < maxPages) {
     if (signal?.aborted) {
-      break;
+      throw new DOMException('Transaction stream aborted', 'AbortError');
     }
     page++;
     const queryInput: Record<string, any> = {
@@ -766,140 +795,139 @@ export async function fetchUserTransactions(
       const items: WareraTransaction[] = rawItems
         .filter((item) => {
           const rawTypeStr = (item.transactionType || item.type || item.action || '').toLowerCase();
-          const moneyVal = Number(item.money || item.amount || 0);
+          const moneyVal = Number(item.money ?? item.amount ?? 0);
           // Filter out zero-BTC non-monetary operations (e.g. dismantling items or crafting without BTC fee)
-          // so they do not choke the financial audit or swamp the transaction ledger
           if (moneyVal === 0 && (rawTypeStr.includes('dismantle') || rawTypeStr.includes('craft') || rawTypeStr.includes('upgrade'))) {
             return false;
           }
           return true;
         })
         .map((item) => {
-        const rawTypeStr = (item.transactionType || item.type || item.action || '').toLowerCase();
-        const tType = normalizeTransactionType(rawTypeStr);
-        const { citizenId, embeddedProfile } = extractCitizenFromTransaction(item);
-        const effectiveUserId = citizenId || userId;
+          const rawTypeStr = (item.transactionType || item.type || item.action || '').toLowerCase();
+          const tType = normalizeTransactionType(rawTypeStr);
 
-        const rawSellerId = extractIdStr(item.sellerId || item.seller);
-        const rawBuyerId = extractIdStr(item.buyerId || item.buyer);
-        const rawCompanyId = extractIdStr(item.companyId || item.employerId || item.employer || item.employer?._id);
-        const rawAuthorId = extractIdStr(item.authorId || item.author || item.creatorId || item.creator);
-        const rawSenderId = extractIdStr(item.senderId || item.sender || item.fromId || item.from);
-        const rawRecipientId = extractIdStr(item.recipientId || item.recipient || item.toId || item.to || item.workerId || item.employeeId);
+          const rawSellerId = extractIdStr(item.sellerId || item.seller);
+          const rawBuyerId = extractIdStr(item.buyerId || item.buyer);
+          const rawSellerCountryId = extractIdStr(item.sellerCountryId || item.countryId || item.targetCountryId);
+          const rawSellerMuId = extractIdStr(item.sellerMuId || item.muId);
+          const rawCompanyId = extractIdStr(item.companyId || item.employerId || item.employer || item.employer?._id);
+          const rawAuthorId = extractIdStr(item.authorId || item.author || item.creatorId || item.creator);
+          const rawSenderId = extractIdStr(item.senderId || item.sender || item.fromId || item.from);
+          const rawRecipientId = extractIdStr(item.recipientId || item.recipient || item.toId || item.to || item.workerId || item.employeeId);
 
-        // Strict role resolution across all 10 transaction types:
-        let resolvedSellerId: string | undefined = rawSellerId;
-        let resolvedBuyerId: string | undefined = rawBuyerId;
-        let resolvedCompanyId: string | undefined = rawCompanyId;
+          // In official WarEra TransactionListItem:
+          // - sellerId === userId for inflows (wages earned, trading sales, itemMarket sales, articleTip received)
+          // - buyerId === userId for outflows (trading purchases, itemMarket purchases, wages paid by employer, donations, fees)
+          let resolvedSellerId: string | undefined = rawSellerId || undefined;
+          let resolvedBuyerId: string | undefined = rawBuyerId || undefined;
+          const resolvedCompanyId: string | undefined = rawCompanyId || undefined;
 
-        if (tType === 'market' || tType === 'itemMarket' || tType === 'trading') {
-          // If citizen is explicitly buyer, do NOT make them seller
-          if (rawBuyerId === userId || rawBuyerId === effectiveUserId) {
-            resolvedBuyerId = userId;
-          } else if (rawSellerId === userId || rawSellerId === effectiveUserId) {
-            resolvedSellerId = userId;
-          } else if (item.action === 'buy' || rawTypeStr.includes('buy') || rawTypeStr.includes('purchase')) {
-            resolvedBuyerId = userId;
-          } else if (item.action === 'sell' || rawTypeStr.includes('sell')) {
-            resolvedSellerId = userId;
+          if (tType === 'market' || tType === 'itemMarket' || tType === 'trading') {
+            if (rawBuyerId === userId) {
+              resolvedBuyerId = userId;
+            } else if (rawSellerId === userId) {
+              resolvedSellerId = userId;
+            } else if (item.action === 'buy' || rawTypeStr.includes('buy') || rawTypeStr.includes('purchase')) {
+              resolvedBuyerId = userId;
+            } else if (item.action === 'sell' || rawTypeStr.includes('sell')) {
+              resolvedSellerId = userId;
+            }
+          } else if (tType === 'articleTip') {
+            if (rawSellerId === userId || rawAuthorId === userId || rawRecipientId === userId) {
+              resolvedSellerId = userId;
+            } else if (rawBuyerId === userId || rawSenderId === userId) {
+              resolvedBuyerId = userId;
+            }
+          } else if (tType === 'wage') {
+            if (rawSellerId === userId || rawRecipientId === userId || item.workerId === userId) {
+              resolvedSellerId = userId; // Worker receiving wage inflow
+              resolvedBuyerId = rawBuyerId || rawSenderId || rawCompanyId || undefined;
+            } else if (rawBuyerId === userId || rawSenderId === userId || item.employerId === userId) {
+              resolvedBuyerId = userId; // Employer paying wage outflow
+              resolvedSellerId = rawSellerId || rawRecipientId || undefined;
+            }
+          } else if (tType === 'donation') {
+            resolvedBuyerId = rawBuyerId || userId;
           }
-        } else if (tType === 'articleTip') {
-          // In article tips: author receives tips (beneficiary), reader is tipper (outflow)
-          if (rawAuthorId === userId || rawRecipientId === userId) {
-            resolvedSellerId = userId;
-          } else if (rawSenderId === userId || rawBuyerId === userId) {
-            resolvedBuyerId = userId;
-          }
-        } else if (tType === 'wage') {
-          // In wages: worker receives salary; company employer pays salary
-          if (rawRecipientId === userId || item.workerId === userId || (rawRecipientId && rawRecipientId === effectiveUserId)) {
-            resolvedSellerId = userId; // worker (earner)
-            resolvedBuyerId = rawSenderId || rawCompanyId || undefined;
-          } else if (rawSenderId === userId || rawBuyerId === userId || item.employerId === userId) {
-            resolvedBuyerId = userId; // employer (paying wages out)
-            resolvedSellerId = rawRecipientId || undefined;
-          } else if (rawCompanyId && (rawRecipientId === userId || effectiveUserId === userId)) {
-            resolvedSellerId = userId;
-            resolvedBuyerId = undefined;
-          }
-        }
 
-        if (effectiveUserId && embeddedProfile) {
-          if (!memoryUserCache[effectiveUserId] || !memoryUserCache[effectiveUserId].username) {
-            memoryUserCache[effectiveUserId] = {
-              ...(memoryUserCache[effectiveUserId] || {}),
-              _id: effectiveUserId,
-              username: embeddedProfile.username || `Citizen #${effectiveUserId.slice(-6)}`,
-              avatarUrl: embeddedProfile.avatarUrl,
-              country: embeddedProfile.country,
-              isActive: true,
-            };
-          }
-        }
+          const rawItemCode =
+            typeof item.itemCode === 'string' && item.itemCode.trim()
+              ? item.itemCode.trim()
+              : typeof item.item?.code === 'string'
+              ? item.item.code.trim()
+              : undefined;
+          const resolvedItemStr = extractItemString(
+            rawItemCode || item.item || item.commodity || item.resource || item.resourceType
+          );
+          const resolvedQuantity = Number(item.quantity ?? item.item?.quantity ?? 1);
 
-        const rawTimeMs = extractItemTimestampMs(item);
-        const createdAtNorm = !isNaN(rawTimeMs)
-          ? new Date(rawTimeMs).toISOString()
-          : normalizeTransactionTimestamp(item.createdAt || item.timestamp || item.date || item.updatedAt, new Date().toISOString());
-        const updatedAtNorm = item.updatedAt ? normalizeTransactionTimestamp(item.updatedAt, createdAtNorm) : createdAtNorm;
+          const rawTimeMs = extractItemTimestampMs(item);
+          const createdAtNorm = !isNaN(rawTimeMs)
+            ? new Date(rawTimeMs).toISOString()
+            : normalizeTransactionTimestamp(item.createdAt || item.timestamp || item.date || item.updatedAt, new Date().toISOString());
+          const updatedAtNorm = item.updatedAt ? normalizeTransactionTimestamp(item.updatedAt, createdAtNorm) : createdAtNorm;
 
-        return {
-          _id: item._id,
-          transactionType: tType,
-          money: Number(item.money || item.amount || 0),
-          amount: Number(item.money || item.amount || 0),
-          userId: effectiveUserId,
-          sellerId: resolvedSellerId,
-          buyerId: resolvedBuyerId,
-          companyId: resolvedCompanyId,
-          senderId: rawSenderId,
-          recipientId: rawRecipientId,
-          action: item.action || rawTypeStr,
-          item: extractItemString(item.item || item.commodity || item.resource || item.resourceType),
-          resourceType: extractItemString(item.resourceType || item.item),
-          countryId: item.countryId,
-          createdAt: createdAtNorm,
-          updatedAt: updatedAtNorm,
-        };
-      });
+          return {
+            _id: item._id,
+            transactionType: tType,
+            money: Number(item.money ?? item.amount ?? 0),
+            amount: Number(item.money ?? item.amount ?? 0),
+            userId, // Strictly preserve the queried citizen's userId
+            sellerId: resolvedSellerId,
+            buyerId: resolvedBuyerId,
+            sellerCountryId: rawSellerCountryId || undefined,
+            sellerMuId: rawSellerMuId || undefined,
+            companyId: resolvedCompanyId,
+            senderId: rawSenderId || undefined,
+            recipientId: rawRecipientId || undefined,
+            action: item.action || rawTypeStr,
+            item: resolvedItemStr,
+            itemCode: rawItemCode || (resolvedItemStr ? resolvedItemStr.toLowerCase() : undefined),
+            itemObj: typeof item.item === 'object' ? item.item : undefined,
+            quantity: !isNaN(resolvedQuantity) && resolvedQuantity > 0 ? resolvedQuantity : 1,
+            resourceType: resolvedItemStr,
+            countryId: rawSellerCountryId || undefined,
+            isPersonalReceipt: true,
+            createdAt: createdAtNorm,
+            updatedAt: updatedAtNorm,
+          };
+        });
 
-      let hitKnownCachedTx = false;
       for (const it of items) {
-        if (knownTxIds && it._id && knownTxIds.has(it._id)) {
-          hitKnownCachedTx = true;
-        }
-        if (!seenIds.has(it._id)) {
+        if (it._id && !seenIds.has(it._id)) {
           seenIds.add(it._id);
           allTransactions.push(it);
         }
       }
       onProgress?.(allTransactions.length, page);
 
-      // Incremental Delta Sync Short-Circuit:
-      // Since transactions are returned newest-first, encountering an already-cached transaction _id
-      // means all older history for this citizen is already stored locally.
-      if (hitKnownCachedTx) {
-        hasMore = false;
-        break;
+      const nextCursor: string | undefined = result?.nextCursor;
+      const oldestRaw = rawItems[rawItems.length - 1];
+      let oldestTime = extractItemTimestampMs(oldestRaw);
+      if (isNaN(oldestTime) && nextCursor && typeof nextCursor === 'string' && nextCursor.includes('|')) {
+        const cursorDateMs = new Date(nextCursor.split('|')[0]).getTime();
+        if (!isNaN(cursorDateMs)) {
+          oldestTime = cursorDateMs;
+        }
       }
 
-      const oldestRaw = rawItems[rawItems.length - 1];
-      const oldestTime = extractItemTimestampMs(oldestRaw);
-      // Stop paging only when the tail of the page is definitively past the analysis window
+      // Stop paging ONLY when the tail of the page is definitively older than the requested date window
       if (!isNaN(oldestTime) && oldestTime < effectiveCutoff) {
         hasMore = false;
         break;
       }
 
-      cursor = result?.nextCursor;
-      hasMore = Boolean(cursor && rawItems.length > 0);
+      cursor = nextCursor;
+      hasMore = Boolean(cursor && !String(cursor).includes('undefined') && rawItems.length > 0);
 
       if (hasMore) {
         await new Promise((r) => setTimeout(r, 35));
       }
     } catch (err: any) {
       if (signal?.aborted || err?.name === 'AbortError') {
-        break;
+        throw err?.name === 'AbortError'
+          ? err
+          : new DOMException('Transaction stream aborted', 'AbortError');
       }
       throw err;
     }

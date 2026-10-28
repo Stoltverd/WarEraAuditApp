@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { CitizenEconomicProfile, MinistryConfig, CountryEconomicBenchmark } from '../../types/ministry';
 import { WareraUserLite } from '../../types/warera';
 import { fetchUserTransactions } from '../../services/apiService';
-import { calculatePlayerCashflowSummary, evaluateLeechTier } from '../../services/ministryService';
+import { buildAuditedCitizenProfile } from '../../services/ministryService';
 import { storage } from '../../services/storage';
 import {
   X,
@@ -92,9 +92,15 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
   const salesCount = cashflow?.salesCount ?? 0;
   const purchasesVolume = cashflow?.purchasesVolumeBtc ?? 0;
   const purchasesCount = cashflow?.purchasesCount ?? 0;
-  const netTradeMargin = cashflow?.netTradeProfitBtc ?? Math.max(0, salesVolume - purchasesVolume);
-  const periodDonated = currentProfile.periodDonatedBtc ?? currentProfile.directDonatedBtc ?? 0;
-  const grossIncome = currentProfile.grossIncomeBtc ?? Math.max(wagesEarned + netTradeMargin + periodDonated, 20);
+  const netTradeMargin = cashflow?.netTradeProfitBtc ?? Math.round((salesVolume - purchasesVolume) * 100) / 100;
+  const periodDonated =
+    cashflow && typeof cashflow.donationsGivenBtc === 'number'
+      ? cashflow.donationsGivenBtc
+      : Number(currentProfile.periodDonatedBtc ?? currentProfile.directDonatedBtc ?? 0);
+  const grossIncome =
+    currentProfile.grossInflowBtc ??
+    currentProfile.grossIncomeBtc ??
+    Math.round((wagesEarned + salesVolume + (cashflow?.tipsReceivedBtc ?? 0)) * 100) / 100;
 
   const commoditySales = cashflow?.commoditySalesBtc ?? 0;
   const equipmentSales = cashflow?.equipmentSalesBtc ?? 0;
@@ -105,7 +111,11 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
   const dismantleExpenses = cashflow?.dismantleExpensesBtc ?? 0;
   const caseOpeningExpenses = cashflow?.caseOpeningExpensesBtc ?? 0;
   const applicationFees = cashflow?.applicationFeesBtc ?? 0;
-  const netDisposableIncome = cashflow?.netDisposableIncomeBtc ?? Math.max(0, wagesEarned + netTradeMargin + tipsReceived - wagesPaid - craftingExpenses - applicationFees);
+  const netDisposableIncome =
+    currentProfile.netCashflowBtc ??
+    cashflow?.netCashflowBtc ??
+    cashflow?.netDisposableIncomeBtc ??
+    Math.round((grossIncome - purchasesVolume - wagesPaid - craftingExpenses - dismantleExpenses - caseOpeningExpenses - applicationFees - periodDonated - (cashflow?.muDonationsBtc || 0)) * 100) / 100;
 
   const verdict = currentProfile.ministerialVerdict || cashflow?.ministerialVerdict || 'moderate-contributor';
   const verdictReason = currentProfile.ministerialVerdictReason || cashflow?.ministerialVerdictReason || 'Evaluated against national ministerial policy.';
@@ -129,80 +139,35 @@ export const GrossIncomeBreakdownModal: React.FC<GrossIncomeBreakdownModalProps>
     try {
       const personalTxs = await fetchUserTransactions(currentProfile.userId, apiKey);
       if (personalTxs.length === 0) {
+        const updatedProfile = buildAuditedCitizenProfile(
+          currentProfile,
+          [],
+          config,
+          countryBenchmark,
+          periodDays
+        );
+        setLocalProfile(updatedProfile);
+        onUpdateProfile?.(updatedProfile);
+        storage.saveAuditedProfile(updatedProfile);
         setSyncStatusMsg('Queried personal stream: 0 new receipts found for this period.');
       } else {
         // Persist verified receipts into IndexedDB
         await storage.saveUserPersonalTransactions(currentProfile.userId, personalTxs);
 
-        const reconstructedUser: Partial<WareraUserLite> = {
-          _id: currentProfile.userId,
-          username: currentProfile.username,
-          avatarUrl: currentProfile.avatarUrl,
-          country: currentProfile.countryId,
-          level: currentProfile.level,
-          money: currentProfile.liquidBtc,
-          stats: {
-            wealth: {
-              total: currentProfile.wealthBtc,
-              money: currentProfile.liquidBtc || 0,
-              companies: currentProfile.companiesCount ? currentProfile.companiesCount * 3000 : 0,
-            },
-          } as any,
-        };
-
-        const recalculated = calculatePlayerCashflowSummary(
-          currentProfile.userId,
-          reconstructedUser as any,
+        const updatedProfile = buildAuditedCitizenProfile(
+          currentProfile,
           personalTxs,
-          periodDays,
-          countryBenchmark
-        );
-        const newWages = recalculated.summary.wagesEarnedBtc;
-        const newTrade = recalculated.summary.netTradeProfitBtc;
-        const newTips = recalculated.summary.tipsReceivedBtc || 0;
-        const totalCashflowIn = newWages + newTrade + newTips;
-        const newGross = Math.max(Math.round((totalCashflowIn + periodDonated) * 100) / 100, periodDonated);
-
-        // Re-evaluate leech tier with verified gross income
-        const currentWealthBasis = currentProfile.wealthBtc + (currentProfile.resourceWealthBtc || 0);
-        const tierEval = evaluateLeechTier(
-          currentWealthBasis,
-          periodDonated,
           config,
-          newGross,
-          currentProfile.playstyle,
-          currentProfile.totalDonatedBtc,
-          currentProfile.resourceWealthBtc,
-          currentProfile.totalCombatDamage,
-          currentProfile.isHistoricalTopDonor,
-          currentProfile.historicalRank,
-          currentProfile.isNationalHeavyHitter,
-          currentProfile.heavyHitterRank,
           countryBenchmark,
-          currentProfile.liquidBtc
+          periodDays
         );
-
-        const updatedProfile: CitizenEconomicProfile = {
-          ...currentProfile,
-          playerCashflow: recalculated.summary,
-          grossIncomeBtc: newGross,
-          grossInflowBtc: recalculated.summary.grossInflowBtc,
-          netCashflowBtc: recalculated.summary.netCashflowBtc ?? recalculated.summary.netDisposableIncomeBtc,
-          contributionRatio: tierEval.ratio,
-          leechTier: tierEval.tier,
-          damageValueBtc: tierEval.damageValueBtc,
-          tierReasonBadge: tierEval.reason || currentProfile.tierReasonBadge,
-          ministerialVerdict: recalculated.summary.ministerialVerdict || currentProfile.ministerialVerdict,
-          ministerialVerdictReason: recalculated.summary.ministerialVerdictReason || currentProfile.ministerialVerdictReason,
-          companiesCount: recalculated.companiesCount,
-          activeCompaniesCount: recalculated.activeCompaniesCount,
-          auditBaselineStatus: 'audited',
-          auditMethodologyNote: `Verified via ${personalTxs.length} live in-game personal receipts.`,
-        };
 
         setLocalProfile(updatedProfile);
         onUpdateProfile?.(updatedProfile);
-        setSyncStatusMsg(`Successfully streamed ${personalTxs.length} personal receipts (${recalculated.summary.wagesCount} wage shifts, ${recalculated.summary.salesCount} market orders)!`);
+        storage.saveAuditedProfile(updatedProfile);
+        setSyncStatusMsg(
+          `Successfully streamed ${personalTxs.length} personal receipts (${updatedProfile.playerCashflow?.wagesCount || 0} wage shifts, ${updatedProfile.playerCashflow?.salesCount || 0} market orders)!`
+        );
       }
     } catch (err: any) {
       setSyncStatusMsg(`Sync notice: ${err.message || 'Failed to stream personal receipts'}`);

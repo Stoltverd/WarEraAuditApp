@@ -9,7 +9,7 @@
 import { CitizenEconomicProfile, MinistryConfig, CountryEconomicBenchmark } from '../types/ministry';
 import { fetchUserTransactions } from './apiService';
 import { buildAuditedCitizenProfile } from './ministryService';
-import { storage } from './storage';
+import { storage, AUDIT_PROFILE_SCHEMA_VERSION } from './storage';
 
 export const AUDIT_STALE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const LAST_AUDIT_BY_COUNTRY_KEY = 'warera_last_audit_completed_by_country_v1';
@@ -101,7 +101,11 @@ class AutoAuditStreamService {
     profile: CitizenEconomicProfile,
     ttlMs: number = AUDIT_STALE_TTL_MS
   ): boolean {
-    if (profile.auditBaselineStatus !== 'audited' || !profile.auditedAt) {
+    if (
+      profile.auditBaselineStatus !== 'audited' ||
+      profile.auditSchemaVersion !== AUDIT_PROFILE_SCHEMA_VERSION ||
+      !profile.auditedAt
+    ) {
       return true;
     }
     const auditedMs = new Date(profile.auditedAt).getTime();
@@ -295,12 +299,21 @@ class AutoAuditStreamService {
     // so unapplied buffered updates or stale parent props never cause a false re-audit of the country.
     const persistedMap = incomingCountryId ? storage.getAuditedProfiles(incomingCountryId) : {};
     const hydratedProfiles = profiles.map((p) => {
-      if (p.auditBaselineStatus === 'audited' && p.auditedAt) {
+      if (
+        p.auditBaselineStatus === 'audited' &&
+        p.auditSchemaVersion === AUDIT_PROFILE_SCHEMA_VERSION &&
+        p.auditedAt
+      ) {
         this.verifiedProfilesCache.set(p.userId, p);
         return p;
       }
       const cached = this.verifiedProfilesCache.get(p.userId) || persistedMap[p.userId];
-      if (cached && cached.auditBaselineStatus === 'audited' && cached.auditedAt) {
+      if (
+        cached &&
+        cached.auditBaselineStatus === 'audited' &&
+        cached.auditSchemaVersion === AUDIT_PROFILE_SCHEMA_VERSION &&
+        cached.auditedAt
+      ) {
         this.verifiedProfilesCache.set(p.userId, cached);
         return {
           ...p,
@@ -457,13 +470,35 @@ class AutoAuditStreamService {
         let attempt = 0;
         let citizenSucceeded = false;
 
-        // Pre-load already cached transactions for this citizen so fetchUserTransactions can delta-short-circuit
+        // ⚠️ CRITICAL ARCHITECTURAL INVARIANT:
+        // Load previously cached personal receipts from the dedicated 'personal_receipts' store
+        // to merge after streaming the full time window, NEVER to short-circuit Page 1!
         const storedTxs = await storage.getUserPersonalTransactions(citizen.userId);
         if (isStaleRun()) break;
 
         const knownTxIds = new Set<string>();
         for (const st of storedTxs) {
-          if (st._id) knownTxIds.add(st._id);
+          if (st._id && st.isPersonalReceipt) knownTxIds.add(st._id);
+        }
+
+        // If IndexedDB already holds cached personal receipts for this citizen (e.g., 2,993 receipts for N3V1T5)
+        // while their displayed profile has 0 receipts, immediately hydrate and emit their cached audit profile
+        // before streaming fresh delta pages so they never appear empty even while paging!
+        if (storedTxs.length > 0 && (citizen.receiptCount || 0) === 0) {
+          const preHydrated = buildAuditedCitizenProfile(
+            citizen,
+            storedTxs,
+            config,
+            countryBenchmark,
+            windowDays
+          );
+          this.verifiedProfilesCache.set(preHydrated.userId, preHydrated);
+          storage.saveAuditedProfile(preHydrated);
+          if (this.onProfileAuditedCallback) {
+            this.onProfileAuditedCallback(preHydrated);
+          } else {
+            onProfileAudited(preHydrated);
+          }
         }
 
         while (attempt < MAX_CITIZEN_ATTEMPTS && !citizenSucceeded && !isStaleRun()) {
@@ -495,7 +530,7 @@ class AutoAuditStreamService {
                   workerIndex,
                   userId: citizen.userId,
                   username: citizen.username,
-                  receiptCount: loadedCount + knownTxIds.size,
+                  receiptCount: Math.max(loadedCount, knownTxIds.size),
                   retryAttempt: attempt > 1 ? attempt : undefined,
                 });
                 syncWorkerSlotsToState();
@@ -512,7 +547,7 @@ class AutoAuditStreamService {
             for (const t of txs) if (t._id) mergedMap.set(t._id, t);
             const allUserTxs = Array.from(mergedMap.values());
 
-            if (txs.length > 0 && allUserTxs.length > 0) {
+            if (allUserTxs.length > 0) {
               await storage.saveUserPersonalTransactions(citizen.userId, allUserTxs);
             }
 

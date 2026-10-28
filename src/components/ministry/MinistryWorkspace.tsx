@@ -179,7 +179,7 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
 
   // Authoritative Active Census Calculation
   const authoritativeActiveCount = totalActiveCitizens && totalActiveCitizens > 0 ? totalActiveCitizens : profiles.length;
-  const isCensusAuditing = Boolean(isSyncing) || (totalActiveCitizens !== undefined && totalActiveCitizens > 0 && profiles.length < totalActiveCitizens);
+  const isCensusAuditing = Boolean(isSyncing);
   const censusPct = authoritativeActiveCount > 0 ? Math.min(100, Math.round((profiles.length / authoritativeActiveCount) * 100)) : 100;
 
   const handleStartSnapshotCapture = async () => {

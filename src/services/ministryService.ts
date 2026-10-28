@@ -1,5 +1,6 @@
 import { WareraUserLite, WareraCountry, WareraTransaction } from '../types/warera';
 import { extractItemTimestampMs, compareTransactionsNewestFirst } from './apiService';
+import { AUDIT_PROFILE_SCHEMA_VERSION } from './storage';
 import {
   CANONICAL_24_COMMODITIES,
   generateFallbackMarketTrends,
@@ -102,6 +103,8 @@ export function calculatePlayerCashflowSummary(
   let caseOpeningExpensesBtc = 0;
   let donationsGivenBtc = 0;
   let donationTransfersCount = 0;
+  let muDonationsBtc = 0;
+  let muDonationsCount = 0;
 
   let primaryTradedResource: 'oil' | 'iron' | 'food' | 'munitions' | 'general' = 'general';
   const resourceCounts: Record<string, number> = {};
@@ -114,12 +117,31 @@ export function calculatePlayerCashflowSummary(
   let concreteLimestonePurchasesBtc = 0;
   let concreteLimestoneSalesBtc = 0;
 
+  const targetCountryId =
+    countryBenchmark?.countryId ||
+    (typeof user?.country === 'string' ? user.country : (user as any)?.countryId) ||
+    '';
+
   if (periodTransactions && periodTransactions.length > 0) {
     const now = Date.now();
     const windowMs = Math.max(1, periodDays) * 24 * 60 * 60 * 1000;
     const cutoffTime = now - windowMs;
 
+    // ⚠️ CRITICAL ARCHITECTURAL INVARIANT:
+    // 1. Deduplicate transactions by `_id` before summing so overlapping national + personal streams never double-count.
+    // 2. Country Treasury Donations (`sellerCountryId === targetCountryId` and `!sellerMuId`) count toward
+    //    `donationsGivenBtc` (Period Treasury Contribution, Leaderboard, and Citizen Classification).
+    // 3. Military Unit Donations (`sellerMuId` present) count toward `muDonationsBtc`. They are deducted from
+    //    `netCashflowBtc` (`totalOutflowsBtc`) because the citizen spent that BTC, but NEVER count toward
+    //    Country Treasury Contribution or Citizen Classification.
+    const seenIds = new Set<string>();
+
     for (const t of periodTransactions) {
+      if (t._id) {
+        if (seenIds.has(t._id)) continue;
+        seenIds.add(t._id);
+      }
+
       // Enforce observation window (7D vs 30D)
       if (t.createdAt) {
         const txTime = new Date(t.createdAt).getTime();
@@ -147,7 +169,7 @@ export function calculatePlayerCashflowSummary(
         if (isEmployerPaying) {
           wagesPaidBtc += amt;
           wagesPaidCount++;
-        } else {
+        } else if (isSeller || isActor) {
           wagesEarnedBtc += amt;
           wagesCount++;
         }
@@ -166,7 +188,7 @@ export function calculatePlayerCashflowSummary(
       }
       // 3. Commodity / Resource Trading transactions (Trading tab - All raw & manufactured goods)
       else if (tType === 'trading' || tType === 'trade' || tType === 'market') {
-        const itemCode = String(t.item || t.resourceType || '').toLowerCase().trim();
+        const itemCode = String(t.itemCode || t.item || t.resourceType || '').toLowerCase().trim();
         const isIronOrSteel = itemCode === 'iron' || itemCode === 'steel' || itemCode.includes('iron') || itemCode.includes('steel');
         const isConcreteOrLimestone =
           itemCode === 'concrete' ||
@@ -210,27 +232,37 @@ export function calculatePlayerCashflowSummary(
       else if (tType === 'articletip' || tType === 'tip') {
         if (isSeller || (isActor && amt > 0 && !isBuyer)) {
           tipsReceivedBtc += amt;
-        } else {
+        } else if (isBuyer || isActor) {
           tipsSentBtc += amt;
         }
       }
       // 5. Application Fees (Party, Corporate roles)
       else if (tType === 'applicationfee' || tType === 'fee') {
-        applicationFeesBtc += amt;
+        if (isBuyer || isActor) {
+          applicationFeesBtc += amt;
+        }
       }
       // 6. Crafting, Dismantling, Case Openings
       else if (tType === 'craftitem') {
-        craftingExpensesBtc += amt;
+        if (isBuyer || isActor) craftingExpensesBtc += amt;
       } else if (tType === 'dismantleitem') {
-        dismantleExpensesBtc += amt;
+        if (isBuyer || isActor) dismantleExpensesBtc += amt;
       } else if (tType === 'opencase') {
-        caseOpeningExpensesBtc += amt;
+        if (isBuyer || isActor) caseOpeningExpensesBtc += amt;
       }
-      // 7. Treasury Donations
+      // 7. Donations: Separate Country Treasury Donations from Military Unit Donations
       else if (tType === 'donation' || tType.includes('donat')) {
-        if (isActor || isBuyer) {
-          donationsGivenBtc += amt;
-          donationTransfersCount++;
+        if (isBuyer || isActor) {
+          const isMuDonation =
+            Boolean(t.sellerMuId) ||
+            Boolean(t.sellerCountryId && targetCountryId && t.sellerCountryId !== targetCountryId);
+          if (isMuDonation) {
+            muDonationsBtc += amt;
+            muDonationsCount++;
+          } else {
+            donationsGivenBtc += amt;
+            donationTransfersCount++;
+          }
         }
       }
     }
@@ -255,12 +287,13 @@ export function calculatePlayerCashflowSummary(
   const grossInflowBtc = Math.round((wagesEarnedBtc + salesVolumeBtc + tipsReceivedBtc) * 100) / 100;
   const totalTradingCOGSBtc = Math.round(purchasesVolumeBtc * 100) / 100;
   const operatingOutflowsBtc = Math.round((craftingExpensesBtc + dismantleExpensesBtc + caseOpeningExpensesBtc + applicationFeesBtc) * 100) / 100;
-  const totalOutflowsBtc = Math.round((purchasesVolumeBtc + wagesPaidBtc + operatingOutflowsBtc + tipsSentBtc + donationsGivenBtc) * 100) / 100;
-  // Net Disposable Cashflow: Inflows (Wages + Sales + Tips) minus Outflows (Purchases + Employer Wages Paid + Gear/Fees)
-  const netDisposableIncomeBtc = Math.round((grossInflowBtc - purchasesVolumeBtc - wagesPaidBtc - operatingOutflowsBtc) * 100) / 100;
-
+  // Total Outflows includes purchases, payroll, crafting/fees, tips sent, Country donations, AND Military Unit donations
+  const totalOutflowsBtc = Math.round(
+    (purchasesVolumeBtc + wagesPaidBtc + operatingOutflowsBtc + tipsSentBtc + donationsGivenBtc + muDonationsBtc) * 100
+  ) / 100;
   // Real net cashflow across all in-game transaction streams (Gross Inflows minus Total Outflows)
   const netCashflowBtc = Math.round((grossInflowBtc - totalOutflowsBtc) * 100) / 100;
+  const netDisposableIncomeBtc = netCashflowBtc;
 
   // Dynamic country-relative solvency assessment (comparing against citizen peers)
   const liquidBtc = typeof user?.stats?.wealth === 'object' && user.stats.wealth.money !== undefined
@@ -373,6 +406,8 @@ export function calculatePlayerCashflowSummary(
       caseOpeningExpensesBtc: Math.round(caseOpeningExpensesBtc * 100) / 100,
       donationsGivenBtc: Math.round(donationsGivenBtc * 100) / 100,
       donationTransfersCount,
+      muDonationsBtc: Math.round(muDonationsBtc * 100) / 100,
+      muDonationsCount,
       grossInflowBtc,
       totalTradingCOGSBtc,
       operatingOutflowsBtc,
@@ -442,12 +477,19 @@ export function buildAuditedCitizenProfile(
   );
 
   const verifiedGrossInflow = recalculated.summary.grossInflowBtc;
-  const verifiedNetCashflow = recalculated.summary.netCashflowBtc ?? recalculated.summary.netDisposableIncomeBtc;
-  const periodDonated = Math.max(
-    recalculated.summary.donationsGivenBtc || 0,
-    profile.periodDonatedBtc ?? profile.directDonatedBtc ?? 0
-  );
-  const newGross = Math.max(verifiedGrossInflow, periodDonated);
+  const verifiedNetCashflow = recalculated.summary.netCashflowBtc;
+  // ⚠️ CRITICAL ARCHITECTURAL INVARIANT:
+  // 1. `periodDonated` strictly represents verified Country Treasury Donations (`sellerCountryId === countryId`).
+  //    Never allow Military Unit donations or stale 30D totals to overwrite `recalculated.summary.donationsGivenBtc`
+  //    when personal receipts have been streamed.
+  // 2. `newGross` MUST strictly equal `verifiedGrossInflow` (wages + market sales + tips received).
+  //    NEVER artificially inflate Gross Cash Inflow with `Math.max(verifiedGrossInflow, periodDonated)`,
+  //    which previously caused citizens with 0 inflow and 230 BTC donations to display +230 BTC Gross Inflow and -230 BTC Net Cashflow!
+  const periodDonated =
+    personalTxs.length > 0
+      ? recalculated.summary.donationsGivenBtc
+      : Number(profile.periodDonatedBtc ?? profile.directDonatedBtc ?? 0);
+  const newGross = verifiedGrossInflow;
   const verifiedRatio = newGross > 0 ? Math.round((periodDonated / newGross) * 1000) / 10 : 0;
 
   const currentWealthBasis =
@@ -562,6 +604,7 @@ export function buildAuditedCitizenProfile(
     netCashflowBtc: verifiedNetCashflow,
     periodDonatedBtc: periodDonated,
     directDonatedBtc: periodDonated,
+    muDonationsBtc: recalculated.summary.muDonationsBtc,
     contributionRatio: tierEval.ratio > 0 ? tierEval.ratio : verifiedRatio,
     leechTier: tierEval.tier,
     economicStanding: newStanding,
@@ -572,6 +615,7 @@ export function buildAuditedCitizenProfile(
     companiesCount: recalculated.companiesCount,
     activeCompaniesCount: recalculated.activeCompaniesCount,
     auditBaselineStatus: 'audited',
+    auditSchemaVersion: AUDIT_PROFILE_SCHEMA_VERSION,
     auditedAt: new Date().toISOString(),
     receiptCount: personalTxs.length,
     auditMethodologyNote: `Verified via ${personalTxs.length} live in-game personal receipts (${windowDays}D window).`,
@@ -1216,8 +1260,15 @@ export async function auditCitizensIncomeGrowth(
 
     const userTxList = [...personalTxs, ...nationalDonations];
 
-    // STRICT IMMUTABILITY: If profile was already verified via the live API stream (including 0-receipt citizens), preserve it intact
-    if (p.auditBaselineStatus === 'audited' && p.auditedAt && (p.grossIncomeBtc !== undefined || p.playerCashflow || typeof p.receiptCount === 'number')) {
+    // STRICT IMMUTABILITY: If profile was already verified via the live API stream under the current schema version
+    // (and isn't an empty 0-receipt record when IndexedDB actually holds cached personal receipts), preserve it intact
+    if (
+      p.auditBaselineStatus === 'audited' &&
+      p.auditSchemaVersion === AUDIT_PROFILE_SCHEMA_VERSION &&
+      p.auditedAt &&
+      ((p.receiptCount || 0) > 0 || personalTxs.length === 0) &&
+      (p.grossIncomeBtc !== undefined || p.playerCashflow || typeof p.receiptCount === 'number')
+    ) {
       auditedProfiles.push({
         ...p,
         grossInflowBtc: p.grossInflowBtc ?? p.grossIncomeBtc ?? 0,
@@ -1234,23 +1285,40 @@ export async function auditCitizensIncomeGrowth(
     const historicalSnapshot = await getClosestSnapshot(p.userId, targetTimestamp);
     const pastWealth = historicalSnapshot ? historicalSnapshot.wealthBtc : currentWealthBasis;
 
-    // Period donations strictly within the active audit window (7D or 30D).
+    // Period donations strictly within the active audit window (7D or 30D) and strictly to the Country Treasury (excluding Military Units).
     let dynamicPeriodDonations = 0;
     if (userTxList && userTxList.length > 0) {
       const cutoffTime = now - (periodDays * 24 * 60 * 60 * 1000);
+      const seenDonationIds = new Set<string>();
       dynamicPeriodDonations = userTxList
         .filter((t: any) => {
+          if (t._id) {
+            if (seenDonationIds.has(t._id)) return false;
+            seenDonationIds.add(t._id);
+          }
           const typeStr = String(t.transactionType || t.type || '').toLowerCase();
           const isDonation = typeStr.includes('donat');
+          if (!isDonation) return false;
+          // Exclude Military Unit donations and foreign donations
+          if (t.sellerMuId) return false;
+          if (t.sellerCountryId && p.countryId && t.sellerCountryId !== p.countryId) return false;
           const tTime = extractItemTimestampMs(t);
-          return isDonation && !isNaN(tTime) && tTime >= cutoffTime;
+          return !isNaN(tTime) && tTime >= cutoffTime;
         })
         .reduce((sum: number, t: any) => sum + Number(t.money || t.amount || 0), 0);
     }
-    const periodDonated = dynamicPeriodDonations > 0 ? dynamicPeriodDonations : Number(p.periodDonatedBtc ?? p.directDonatedBtc ?? 0);
 
-    // Qualify as audited if actual personal receipts were stored or if the profile has already been live-audited
-    const hasLivePersonalReceipts = personalTxs.length > 0 || (p.auditBaselineStatus === 'audited' && Boolean(p.auditedAt));
+    // Qualify as audited ONLY if genuine personal receipts were stored or if the profile has already been live-audited under schema v2
+    const hasLivePersonalReceipts =
+      personalTxs.some((t) => t.isPersonalReceipt) ||
+      (p.auditBaselineStatus === 'audited' &&
+        Boolean(p.auditedAt) &&
+        p.auditSchemaVersion === AUDIT_PROFILE_SCHEMA_VERSION);
+    const periodDonated = hasLivePersonalReceipts
+      ? cashflow.summary.donationsGivenBtc
+      : dynamicPeriodDonations > 0
+      ? dynamicPeriodDonations
+      : Number(p.periodDonatedBtc ?? p.directDonatedBtc ?? 0);
     let grossIncome = 0;
     let grossInflow: number | undefined = undefined;
     let netCashflow: number | undefined = undefined;
@@ -1259,10 +1327,10 @@ export async function auditCitizensIncomeGrowth(
     let auditedAtTimestamp: string | undefined = undefined;
 
     if (hasLivePersonalReceipts) {
-      // 100% TRUTH-BASED: Derived strictly from streamed receipts
+      // 100% TRUTH-BASED: Derived strictly from streamed personal receipts (never inflated by Math.max with donations)
       grossInflow = cashflow.summary.grossInflowBtc;
       netCashflow = cashflow.summary.netCashflowBtc;
-      grossIncome = Math.max(grossInflow, periodDonated);
+      grossIncome = grossInflow;
       auditStatus = 'audited';
       auditedAtTimestamp = p.auditedAt || new Date().toISOString();
       auditMethodologyNote = `Verified via ${personalTxs.length} live in-game personal receipts (${periodDays}D window).`;
@@ -1360,11 +1428,14 @@ export async function auditCitizensIncomeGrowth(
       grossInflowBtc: hasLivePersonalReceipts && grossInflow !== undefined ? parseFloat(grossInflow.toFixed(2)) : undefined,
       netCashflowBtc: hasLivePersonalReceipts && netCashflow !== undefined ? parseFloat(netCashflow.toFixed(2)) : undefined,
       periodDonatedBtc: periodDonated,
+      directDonatedBtc: periodDonated,
+      muDonationsBtc: hasLivePersonalReceipts ? cashflow.summary.muDonationsBtc : undefined,
       contributionRatio: hasLivePersonalReceipts ? ratio : 0,
       leechTier: hasLivePersonalReceipts ? tier : p.leechTier,
       damageValueBtc: damageValueBtc !== undefined ? damageValueBtc : p.damageValueBtc,
       tierReasonBadge: hasLivePersonalReceipts ? (reason || p.tierReasonBadge) : (p.tierReasonBadge || 'Pending personal audit'),
       auditBaselineStatus: auditStatus,
+      auditSchemaVersion: hasLivePersonalReceipts ? AUDIT_PROFILE_SCHEMA_VERSION : undefined,
       auditedAt: auditedAtTimestamp,
       receiptCount: hasLivePersonalReceipts ? personalTxs.length : undefined,
       auditMethodologyNote,

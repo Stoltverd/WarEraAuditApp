@@ -1,6 +1,6 @@
 {
-  "summary":  "Comprehensive plan to fix the I18n DOM observer text-node corruption (which caused leaderboard rank/amount desyncs, zeroed KPI stats, stuck Spanish header text, and theme label resets), restyle the Period Share column for Spanish readability, and add Citizen Level + Build Role badges next to usernames in the Leaderboard.",
-  "updatedAt":  "2026-10-28T17:37:15.067056411Z",
+  "summary":  "Implementation plan to resolve the 3 National Census and Background Audit lifecycle issues: (1) background audit starting mid-census before citizen hydration completes, (2) the National Census getting stuck permanently at 95/98 (97%) due to server-side countryActivePopulation vs Level 10+ cohort filtering, and (3) audited citizens like N3V1T5 showing 0.0 BTC / 0 receipts despite having 2,993 cached personal receipts due to stripped auditSchemaVersion in App.tsx, swallowed AbortErrors in fetchUserTransactions, and unawaited IndexedDB cache reads in CitizenAuditModal.",
+  "updatedAt":  "2026-10-28T21:17:17.541691763Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

@@ -127,19 +127,25 @@ export type WareraTransactionType =
 export interface WareraTransaction {
   _id: string;
   transactionType: WareraTransactionType;
-  money?: number;     // Amount of BTC involved in transaction
-  amount?: number;    // Normalized amount
-  userId?: string;    // Citizen ID (employee, actor, donor, etc.)
-  sellerId?: string;  // Seller user ID (for market/trade sales)
-  buyerId?: string;   // Buyer user ID (for market/trade purchases)
-  companyId?: string; // Employer or company ID (for wage/production)
-  senderId?: string;  // Payer / sender ID
-  recipientId?: string; // Beneficiary / recipient ID
-  action?: string;    // Action verb if present (work, buy, sell, etc.)
-  item?: string;      // Canonical resource / item traded (Oil, Iron, Food, Munitions)
+  money?: number;           // Amount of BTC involved in transaction
+  amount?: number;          // Normalized amount
+  userId?: string;          // Audited / primary citizen ID
+  sellerId?: string;        // Seller user ID (inflow earner for wage, trading, itemMarket, articleTip)
+  buyerId?: string;         // Buyer user ID (outflow spender for trading, itemMarket, wage employer, donation donor, fees)
+  sellerCountryId?: string; // Recipient Country ID for country donations / national market transactions
+  sellerMuId?: string;      // Recipient Military Unit ID for MU donations
+  companyId?: string;       // Employer or company ID (for wage/production)
+  senderId?: string;        // Payer / sender ID
+  recipientId?: string;     // Beneficiary / recipient ID
+  action?: string;          // Action verb if present (work, buy, sell, etc.)
+  item?: string;            // Canonical resource / item traded
+  itemCode?: string;        // Official WarEra commodity code (e.g. 'iron', 'steel', 'oil', 'bread')
+  itemObj?: any;            // Populated equipment/item object from itemMarket
+  quantity?: number;        // Quantity of items/commodities in order
   resourceType?: string;
-  countryId?: string; // Recipient/Origin country ID
-  createdAt: string;  // Exact timestamp of this transaction
+  countryId?: string;       // Recipient/Origin country ID
+  isPersonalReceipt?: boolean; // True when fetched from userId personal transaction stream
+  createdAt: string;        // Exact timestamp of this transaction
   updatedAt?: string;
 }
 

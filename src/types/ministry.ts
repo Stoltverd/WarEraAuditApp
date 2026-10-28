@@ -53,15 +53,17 @@ export interface PlayerTransactionSummary {
   craftingExpensesBtc?: number;
   dismantleExpensesBtc?: number;
   caseOpeningExpensesBtc?: number;
-  // 5. Treasury Donations (Donation transactions)
-  donationsGivenBtc: number; // Direct treasury donations
-  donationTransfersCount?: number; // Number of distinct donation events in period
+  // 5. Treasury & Military Unit Donations (Donation transactions)
+  donationsGivenBtc: number; // Direct sovereign country treasury donations (sellerCountryId === auditedCountryId)
+  donationTransfersCount?: number; // Number of distinct country donation events in period
+  muDonationsBtc?: number; // Donations to Military Units (sellerMuId present) — affects Net Cashflow ONLY, never Leaderboard/Standing
+  muDonationsCount?: number; // Number of distinct Military Unit donation events in period
   // 6. Aggregate Cashflow Metrics
   grossInflowBtc: number; // Total gross money coming into citizen wallet (Wages + All Sales + Tips Received)
   totalTradingCOGSBtc: number; // Cost of commodities & equipment bought
   operatingOutflowsBtc: number; // Fees, crafting, dismantling, crate openings
-  totalOutflowsBtc?: number; // Total real period outflows (Purchases + Wages Paid + Operating Outflows + Tips Sent + Donations)
-  netDisposableIncomeBtc: number; // Wages + Net Trade Profit + Tips - Operating Outflows
+  totalOutflowsBtc?: number; // Total real period outflows (Purchases + Wages Paid + Operating Outflows + Tips Sent + Country Donations + MU Donations)
+  netDisposableIncomeBtc: number; // Real Net Cashflow (Gross Inflow - Total Outflows)
   // 7. Aggregate Real Cashflow & Metadata
   salariesEarnedBtc: number; // Alias for wagesEarnedBtc for backwards compatibility
   netCashflowBtc?: number; // Total real period inflow minus outflows
@@ -172,8 +174,10 @@ export interface CitizenEconomicProfile {
   isOnWatch?: boolean;
   watchReason?: string;
   auditBaselineStatus?: 'audited' | 'pending-audit' | 'baseline-today';
+  auditSchemaVersion?: number; // Schema version guard (v2+ enforces strict personal_receipts isolation & MU vs Country split)
   auditedAt?: string; // ISO timestamp of when live personal receipts were verified
   receiptCount?: number; // Total verified in-game receipts in citizen ledger
+  muDonationsBtc?: number; // Military Unit donations in active window (cashflow outflow only)
   auditDeltaAlert?: {
     previousGrossInflowBtc: number;
     differenceBtc: number;
