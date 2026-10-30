@@ -1149,8 +1149,8 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
 
         {/* Interactive Audit Header Tags & Dormant Pillar Explainer Panel */}
         {showHeaderTagsExplainer && (
-          <div className="shrink-0 mt-2.5 p-4 rounded-2xl bg-slate-950/95 border border-cyan-500/40 shadow-xl space-y-3 text-xs animate-in fade-in duration-150">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+          <div className="shrink-0 mt-2.5 p-4 rounded-2xl theme-popover-surface border-2 shadow-xl space-y-3 text-xs animate-in fade-in duration-150">
+            <div className="flex items-center justify-between border-b border-slate-700/80 pb-2">
               <div className="flex items-center gap-2">
                 <HelpCircle className="w-4 h-4 text-cyan-400 shrink-0" />
                 <span className="font-black text-white uppercase tracking-wider text-xs">
@@ -1171,7 +1171,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
               {/* Card 1: Master Standing */}
-              <div className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 space-y-1.5">
+              <div className="p-3 rounded-xl bg-slate-950/75 border border-slate-700/80 space-y-1.5">
                 <div className="text-[10px] font-mono uppercase text-cyan-400 font-bold">
                   {tx('1. Master Fiscal Standing', '1. Clasificación Fiscal Principal')}
                 </div>
@@ -1193,7 +1193,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
               </div>
 
               {/* Card 2: Dormant Historical Pillar Explanation */}
-              <div className="p-3 rounded-xl bg-amber-950/25 border border-amber-500/35 space-y-1.5">
+              <div className="p-3 rounded-xl bg-amber-950/35 border border-amber-500/45 space-y-1.5">
                 <div className="text-[10px] font-mono uppercase text-amber-300 font-bold">
                   {tx('2. Dormant Pillar Tag (🏛️ + ⚠️)', '2. Etiqueta Pilar Inactivo (🏛️ + ⚠️)')}
                 </div>
@@ -1213,7 +1213,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
               </div>
 
               {/* Card 3: Special Context & Median-Based Protections */}
-              <div className="p-3 rounded-xl bg-indigo-950/25 border border-indigo-500/35 space-y-1.5">
+              <div className="p-3 rounded-xl bg-indigo-950/35 border border-indigo-500/45 space-y-1.5">
                 <div className="text-[10px] font-mono uppercase text-indigo-300 font-bold">
                   {tx('3. Special Context & Median Shield', '3. Contexto Especial y Escudo por Mediana')}
                 </div>
@@ -1237,7 +1237,7 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
               </div>
 
               {/* Card 4: Build Mode & Respec Tenure */}
-              <div className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 space-y-1.5">
+              <div className="p-3 rounded-xl bg-slate-950/75 border border-slate-700/80 space-y-1.5">
                 <div className="text-[10px] font-mono uppercase text-emerald-400 font-bold">
                   {tx('4. Build Mode & Policy Quotas', '4. Modo de Build y Cuotas')}
                 </div>

@@ -1,6 +1,7 @@
 import React from 'react';
 import { DonorRankingItem } from '../types/warera';
 import { Crown, Medal, Award, ExternalLink, Trophy } from 'lucide-react';
+import { useI18n } from '../i18n/I18nContext';
 
 interface PodiumProps {
   topDonors: DonorRankingItem[];
@@ -9,6 +10,7 @@ interface PodiumProps {
 }
 
 export const Podium: React.FC<PodiumProps> = ({ topDonors, onSelectDonor, timeframePhrase }) => {
+  const { tx } = useI18n();
   if (!topDonors || topDonors.length === 0) return null;
 
   const first = topDonors[0];
@@ -30,7 +32,7 @@ export const Podium: React.FC<PodiumProps> = ({ topDonors, onSelectDonor, timefr
       return (
         <div className="w-full flex-1 flex flex-col items-center justify-end opacity-30">
           <div className="w-16 h-16 rounded-2xl border-2 border-dashed border-slate-700 mb-2 flex items-center justify-center text-slate-600 text-xs font-mono">
-            Empty
+            {tx('Empty', 'Vacío')}
           </div>
           <div className="w-full h-16 bg-slate-800/40 rounded-t-2xl border border-slate-700/40" />
         </div>
@@ -41,32 +43,44 @@ export const Podium: React.FC<PodiumProps> = ({ topDonors, onSelectDonor, timefr
       first: {
         border: 'border-amber-400/80 ring-4 ring-amber-400/20 shadow-amber-500/30',
         badgeBg: 'bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950',
-        pedestalBg: 'bg-gradient-to-t from-slate-900 via-amber-950/40 to-amber-900/40 border-amber-500/50',
+        pedestalBg:
+          'bg-gradient-to-t from-slate-900 via-amber-500/15 to-amber-500/30 border-amber-500/60',
         pedestalHeight: 'h-28 sm:h-36',
         icon: <Crown className="w-6 h-6 text-amber-400 animate-pulse" />,
         avatarSize: 'w-20 h-20 sm:w-24 sm:h-24',
         nameColor: 'text-amber-300',
         rankNumber: '1',
+        rankNumberColor: 'text-amber-400/75',
+        placeLabelColor: 'text-amber-300',
+        placeLabel: tx('FIRST', 'PRIMERO'),
       },
       second: {
         border: 'border-slate-300/70 ring-2 ring-slate-300/20 shadow-slate-300/10',
         badgeBg: 'bg-gradient-to-r from-slate-200 to-slate-400 text-slate-950',
-        pedestalBg: 'bg-gradient-to-t from-slate-900 via-slate-800/60 to-slate-700/40 border-slate-600/50',
+        pedestalBg:
+          'bg-gradient-to-t from-slate-900 via-slate-400/15 to-slate-400/30 border-slate-500/60',
         pedestalHeight: 'h-20 sm:h-28',
         icon: <Medal className="w-5 h-5 text-slate-300" />,
         avatarSize: 'w-16 h-16 sm:w-20 sm:h-20',
         nameColor: 'text-slate-200',
         rankNumber: '2',
+        rankNumberColor: 'text-slate-400/80',
+        placeLabelColor: 'text-slate-300',
+        placeLabel: tx('SECOND', 'SEGUNDO'),
       },
       third: {
-        border: 'border-amber-700/70 ring-2 ring-amber-700/20 shadow-amber-700/10',
-        badgeBg: 'bg-gradient-to-r from-amber-700 to-amber-600 text-white',
-        pedestalBg: 'bg-gradient-to-t from-slate-900 via-stone-800/60 to-stone-700/40 border-amber-800/50',
+        border: 'border-amber-600/80 ring-2 ring-amber-600/20 shadow-amber-700/15',
+        badgeBg: 'bg-gradient-to-r from-amber-700 to-orange-600 text-white',
+        pedestalBg:
+          'bg-gradient-to-t from-slate-900 via-orange-500/15 to-amber-600/30 border-amber-600/60',
         pedestalHeight: 'h-14 sm:h-20',
-        icon: <Award className="w-5 h-5 text-amber-600" />,
+        icon: <Award className="w-5 h-5 text-amber-500" />,
         avatarSize: 'w-14 h-14 sm:w-16 sm:h-16',
-        nameColor: 'text-amber-500',
+        nameColor: 'text-amber-400',
         rankNumber: '3',
+        rankNumberColor: 'text-amber-500/75',
+        placeLabelColor: 'text-amber-300',
+        placeLabel: tx('THIRD', 'TERCERO'),
       },
     };
 
@@ -129,13 +143,13 @@ export const Podium: React.FC<PodiumProps> = ({ topDonors, onSelectDonor, timefr
 
         {/* Pedestal Box */}
         <div
-          className={`w-full ${cfg.pedestalHeight} ${cfg.pedestalBg} rounded-t-2xl border-t border-x flex flex-col items-center justify-center shadow-2xl relative overflow-hidden`}
+          className={`w-full ${cfg.pedestalHeight} ${cfg.pedestalBg} rounded-t-2xl border-t-2 border-x flex flex-col items-center justify-center shadow-xl relative overflow-hidden`}
         >
-          <span className="text-3xl sm:text-4xl font-black font-mono text-white/10 select-none">
+          <span className={`text-2xl sm:text-4xl font-black font-mono ${cfg.rankNumberColor} leading-none select-none`}>
             #{cfg.rankNumber}
           </span>
-          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-            {place.toUpperCase()}
+          <span className={`text-[10px] sm:text-[11px] font-extrabold ${cfg.placeLabelColor} uppercase tracking-wider mt-0.5`}>
+            {cfg.placeLabel}
           </span>
         </div>
       </div>

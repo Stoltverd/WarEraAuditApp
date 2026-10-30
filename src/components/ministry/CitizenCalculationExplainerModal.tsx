@@ -370,7 +370,7 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
                     </div>
                   </div>
                   {activeTooltip === 'liquid' && (
-                    <div className="p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-[11px] text-slate-300 absolute z-20 left-2 right-2 top-12 shadow-xl">
+                    <div className="p-2.5 theme-popover-surface border-2 rounded-xl text-[11px] text-slate-200 absolute z-20 left-2 right-2 top-12 shadow-2xl">
                       <strong>Liquid BTC</strong> is money readily available in wallet. <strong>Total Net Worth</strong> includes immovable factory real estate and item inventory.
                     </div>
                   )}
@@ -413,7 +413,7 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
                     {profile.auditMethodologyNote || (profile.auditBaselineStatus === 'audited' ? 'Verified from live receipts' : 'Queued for live ledger streaming')}
                   </div>
                   {activeTooltip === 'growth' && (
-                    <div className="p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-[11px] text-slate-300 absolute z-20 left-2 right-2 top-12 shadow-xl">
+                    <div className="p-2.5 theme-popover-surface border-2 rounded-xl text-[11px] text-slate-200 absolute z-20 left-2 right-2 top-12 shadow-2xl">
                       Real 7-day revenue generated from commercial trading, company turnover, and net wealth deltas.
                     </div>
                   )}
@@ -444,7 +444,7 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
                     </span>
                   </div>
                   {activeTooltip === 'donations' && (
-                    <div className="p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-[11px] text-slate-300 absolute z-20 left-2 right-2 top-12 shadow-xl">
+                    <div className="p-2.5 theme-popover-surface border-2 rounded-xl text-[11px] text-slate-200 absolute z-20 left-2 right-2 top-12 shadow-2xl">
                       Direct BTC transfers made to {countryName}&apos;s national treasury over the {periodDays}-day window. Lifetime donations are preserved for Historical Pillar charter standing.
                     </div>
                   )}
@@ -472,7 +472,7 @@ export const CitizenCalculationExplainerModal: React.FC<CitizenCalculationExplai
                     Targets: Patriot &ge;{patriotPct}% | Moderate &ge;{moderatePct}% | Low &ge;{lowPct}%
                   </div>
                   {activeTooltip === 'ratio' && (
-                    <div className="p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-[11px] text-slate-300 absolute z-20 left-2 right-2 top-12 shadow-xl">
+                    <div className="p-2.5 theme-popover-surface border-2 rounded-xl text-[11px] text-slate-200 absolute z-20 left-2 right-2 top-12 shadow-2xl">
                       Contribution ratio equals (7D Donations &divide; 7D Gross Income) &times; 100%.
                     </div>
                   )}

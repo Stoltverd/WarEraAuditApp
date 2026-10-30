@@ -1727,9 +1727,9 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                       {standingExplainUserId === c.userId && (
                         <div
                           onClick={(e) => e.stopPropagation()}
-                          className="mt-2 p-3.5 rounded-2xl bg-slate-950/98 border border-cyan-500/50 shadow-2xl text-left text-xs space-y-2.5 z-40 relative max-w-[330px] mx-auto animate-in fade-in duration-150"
+                          className="mt-2 p-3.5 rounded-2xl theme-popover-surface border-2 shadow-2xl text-left text-xs space-y-2.5 z-40 relative max-w-[330px] mx-auto animate-in fade-in duration-150"
                         >
-                          <div className="flex items-start justify-between gap-2 border-b border-slate-800 pb-2">
+                          <div className="flex items-start justify-between gap-2 border-b border-slate-700/80 pb-2">
                             <div>
                               <div className="text-[10px] font-mono uppercase tracking-wider text-cyan-400 font-bold">
                                 {tx('Fiscal Standing Explainer', 'Explicación de Clasificación Fiscal')}
@@ -1791,7 +1791,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                           </div>
 
                           {/* 2. Why this citizen is classified like this (exact numbers) */}
-                          <div className="space-y-1 p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
+                          <div className="space-y-1 p-2.5 rounded-xl bg-slate-950/80 border border-slate-700/80">
                             <div className="text-[10px] font-mono uppercase text-amber-300 font-bold">
                               {tx('2. Why Classified This Way (Live Metrics)', '2. Por Qué Está Clasificado Así (Métricas)')}
                             </div>
@@ -1823,7 +1823,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                               </div>
                             </div>
                             {(c.specialContextReason || c.tierReasonBadge) && (
-                              <p className="text-[11px] text-slate-300 leading-relaxed pt-1.5 border-t border-slate-800/80 font-sans">
+                              <p className="text-[11px] text-slate-300 leading-relaxed pt-1.5 border-t border-slate-700/80 font-sans">
                                 {lang === 'es'
                                   ? translateRawStringEs((c.specialContextReason || c.tierReasonBadge)!)
                                   : (c.specialContextReason || c.tierReasonBadge)}

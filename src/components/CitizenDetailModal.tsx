@@ -128,7 +128,7 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
         </div>
 
         {/* Timeframe Scope Clarification Banner */}
-        <div className="mt-3.5 p-3.5 sm:p-4 rounded-2xl bg-cyan-950/35 border border-cyan-500/35 text-xs sm:text-sm text-cyan-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+        <div className="mt-3.5 p-3.5 sm:p-4 rounded-2xl bg-cyan-950/40 border border-cyan-500/45 text-xs sm:text-sm text-cyan-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
           <div className="flex items-start gap-2.5">
             <Info className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
             <div className="leading-relaxed">
@@ -166,7 +166,7 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
               )}
             </div>
           </div>
-          <span className="px-2.5 py-1 rounded-xl bg-cyan-500/20 border border-cyan-400/40 text-cyan-200 font-mono font-bold text-xs shrink-0 self-start sm:self-center">
+          <span className="px-2.5 py-1 rounded-xl bg-cyan-500/20 border border-cyan-500/45 text-cyan-200 font-mono font-bold text-xs shrink-0 self-start sm:self-center">
             {tx(`Window: ${timeframeLabel}`, `Ventana: ${timeframeLabelEs}`)}
           </span>
         </div>
@@ -238,7 +238,7 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
 
           {/* 1b. All-Time Lifetime Confirmed Country Total Reference Card (shown whenever viewing a timed window) */}
           {timeframe !== 'all' && (
-            <div className="bg-cyan-950/25 border border-cyan-500/35 rounded-2xl p-4 sm:p-5">
+            <div className="bg-cyan-950/35 border border-cyan-500/45 rounded-2xl p-4 sm:p-5">
               <div className="text-xs sm:text-sm font-bold text-cyan-300 uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
                 <Calendar className="w-4 h-4 text-cyan-400" /> {tx('All-Time Country Total', 'Total Histórico del País')}
               </div>
@@ -246,7 +246,7 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
                 {formatBtc(allTimeCountryBtc)}{' '}
                 <span className="text-sm sm:text-base font-bold text-cyan-400">BTC</span>
               </div>
-              <div className="text-xs text-cyan-200/80 mt-1 font-mono">
+              <div className="text-xs text-cyan-200 mt-1 font-mono">
                 {donor.allTimeRank
                   ? tx(
                       `Lifetime Rank #${donor.allTimeRank} in ${countryName}`,
