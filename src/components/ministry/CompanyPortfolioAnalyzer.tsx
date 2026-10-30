@@ -734,7 +734,7 @@ export const CompanyPortfolioAnalyzer: React.FC<CompanyPortfolioAnalyzerProps> =
   const [statusMessage, setStatusMessage] = useState<string>('');
   const [statusError, setStatusError] = useState<boolean>(false);
 
-  // Open/collapsed company card IDs (first 3 open by default for immediate visibility)
+  // Open/collapsed company card IDs (all company cards start closed by default)
   const [openCompanyIds, setOpenCompanyIds] = useState<Set<string>>(new Set());
   // Open "What If..." drawer company IDs
   const [openSimCompanyIds, setOpenSimCompanyIds] = useState<Set<string>>(new Set());
@@ -815,11 +815,16 @@ export const CompanyPortfolioAnalyzer: React.FC<CompanyPortfolioAnalyzerProps> =
       setBundle(res);
       setCompaniesState(res.companies);
 
-      // Initialize default open cards (first 2 cards open) and simulator form defaults
-      const initialOpen = new Set<string>(
-        res.companies.slice(0, 2).map((c) => c.company._id)
-      );
-      setOpenCompanyIds(initialOpen);
+      // Start all company cards closed by default when opening a player audit;
+      // if manually refreshing telemetry for the exact same player, preserve currently expanded cards
+      const isSamePlayerRefresh = Boolean(forceRefresh && bundle?.user?._id && bundle.user._id === res.user._id);
+      if (isSamePlayerRefresh) {
+        const validIds = new Set(res.companies.map((c) => c.company._id));
+        setOpenCompanyIds((prev) => new Set(Array.from(prev).filter((id) => validIds.has(id))));
+      } else {
+        setOpenCompanyIds(new Set());
+        setOpenSimCompanyIds(new Set());
+      }
 
       const nextForms: Record<
         string,
@@ -1604,6 +1609,60 @@ export const CompanyPortfolioAnalyzer: React.FC<CompanyPortfolioAnalyzerProps> =
 
           {/* Expandable Company Cards List */}
           <div className="space-y-4">
+            <div className="flex items-center justify-between gap-3 px-1 flex-wrap">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-sm sm:text-base font-black text-white uppercase tracking-wider flex items-center gap-2">
+                  <Building2 className="w-4 h-4 text-amber-400" />
+                  <span>
+                    {tx(
+                      `Company Portfolio (${companiesState.length})`,
+                      `Portafolio de Empresas (${companiesState.length})`
+                    )}
+                  </span>
+                </h3>
+                <span className="text-xs text-slate-400">
+                  {tx(
+                    '· Click any company card to expand 14-day logs & bot roster',
+                    '· Haz clic en cualquier empresa para expandir registros de 14 días y plantilla de bots'
+                  )}
+                </span>
+              </div>
+
+              {companiesState.length > 0 && (() => {
+                const areAllExpanded = companiesState.every((c) => openCompanyIds.has(c.company._id));
+                return (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (areAllExpanded) {
+                        setOpenCompanyIds(new Set());
+                      } else {
+                        setOpenCompanyIds(new Set(companiesState.map((c) => c.company._id)));
+                      }
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 hover:text-white border border-slate-700 text-xs font-bold flex items-center gap-1.5 transition shadow-sm cursor-pointer"
+                  >
+                    {areAllExpanded ? (
+                      <>
+                        <ChevronUp className="w-3.5 h-3.5 text-amber-400" />
+                        <span>{tx('Collapse All', 'Contraer Todas')}</span>
+                      </>
+                    ) : (
+                      <>
+                        <ChevronDown className="w-3.5 h-3.5 text-amber-400" />
+                        <span>
+                          {tx(
+                            `Expand All (${companiesState.length})`,
+                            `Expandir Todas (${companiesState.length})`
+                          )}
+                        </span>
+                      </>
+                    )}
+                  </button>
+                );
+              })()}
+            </div>
+
             {companiesState.map((c, compIdx) => {
               const compId = c.company._id;
               const isOpen = openCompanyIds.has(compId);

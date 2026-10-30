@@ -23,9 +23,10 @@ import {
   CommendationArchetype,
   OverDonationWarningArchetype,
 } from '../../types/ministry';
-import { WareraCountry, SyncProgress } from '../../types/warera';
+import { WareraCountry, SyncProgress, WareraUserLite } from '../../types/warera';
 import { formatDateDDMMYYYY } from '../../utils/dateUtils';
-import { compareTransactionsNewestFirst } from '../../services/apiService';
+import { compareTransactionsNewestFirst, fetchUserLite } from '../../services/apiService';
+import { WareraCountryFlag } from '../common/WareraCountryFlag';
 import {
   Shield,
   Coins,
@@ -243,10 +244,60 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
     });
   };
 
+  const [liveWatchedUsers, setLiveWatchedUsers] = useState<Record<string, WareraUserLite>>({});
+
+  // Live-fetch fresh usernames, avatars, and countries for Watched Citizens & Respec Alerts
+  useEffect(() => {
+    const idsToResolve = Array.from(
+      new Set([
+        ...watchedCitizens.map((w) => w.userId),
+        ...alerts.map((a) => a.userId),
+      ].filter(Boolean))
+    );
+    if (idsToResolve.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const resolvedMap: Record<string, WareraUserLite> = {};
+      const chunkSize = 8;
+      for (let i = 0; i < idsToResolve.length; i += chunkSize) {
+        if (cancelled) break;
+        const chunk = idsToResolve.slice(i, i + chunkSize);
+        const results = await Promise.all(chunk.map((uid) => fetchUserLite(uid, true)));
+        results.forEach((u, idx) => {
+          if (u) resolvedMap[chunk[idx]] = u;
+        });
+      }
+      if (!cancelled && Object.keys(resolvedMap).length > 0) {
+        setLiveWatchedUsers((prev) => {
+          let changed = false;
+          for (const [id, u] of Object.entries(resolvedMap)) {
+            const ex = prev[id];
+            if (!ex || ex.username !== u.username || ex.avatarUrl !== u.avatarUrl || ex.country !== u.country) {
+              changed = true;
+              break;
+            }
+          }
+          return changed ? { ...prev, ...resolvedMap } : prev;
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [watchedCitizens.length, alerts.length, activeTab]);
+
   const filteredWatched = watchedCitizens.filter((w) => {
     if (!watchSearch.trim()) return true;
     const q = watchSearch.toLowerCase();
-    return w.username.toLowerCase().includes(q) || w.reasonNote.toLowerCase().includes(q) || w.userId.toLowerCase().includes(q);
+    const matchedProfile = profiles.find((p) => p.userId === w.userId);
+    const liveU = liveWatchedUsers[w.userId];
+    const currentName = (matchedProfile?.username || liveU?.username || w.username || '').toLowerCase();
+    return (
+      currentName.includes(q) ||
+      w.username.toLowerCase().includes(q) ||
+      w.reasonNote.toLowerCase().includes(q) ||
+      w.userId.toLowerCase().includes(q)
+    );
   });
 
   const handleExportBackup = async () => {
@@ -711,19 +762,48 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                 ) : (
                   filteredWatched.map((w) => {
                     const matchedProfile = profiles.find((p) => p.userId === w.userId);
+                    const liveU = liveWatchedUsers[w.userId];
+                    const liveName = matchedProfile?.username || liveU?.username || w.username;
+                    const liveAvatar = matchedProfile?.avatarUrl || liveU?.avatarUrl || liveU?.avatar || w.avatarUrl;
+                    const liveCountryId =
+                      matchedProfile?.countryId ||
+                      (typeof liveU?.country === 'string' ? liveU.country : liveU?.countryId) ||
+                      countryId;
+                    const liveCountryObj = countries.find((c) => c._id === liveCountryId);
+                    const liveCountryLabel = liveCountryObj?.name || matchedProfile?.countryName || countryName;
+                    const liveWealth =
+                      matchedProfile?.wealthBtc ??
+                      (typeof liveU?.stats?.wealth === 'object' ? liveU.stats.wealth?.total : liveU?.stats?.wealth) ??
+                      w.wealthBtc;
+                    const liveDonated = matchedProfile?.totalDonatedBtc ?? w.totalDonatedBtc;
+                    const liveStyle = matchedProfile?.playstyle || w.playstyle;
                     return (
                       <tr key={w.userId} className="hover:bg-slate-800/40 transition">
                         <td className="py-3.5 px-4 font-sans font-bold text-white">
                           <div className="flex items-center gap-2.5">
-                            <div className="w-7 h-7 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-xs font-bold text-slate-300">
-                              {w.avatarUrl ? (
-                                <img src={w.avatarUrl} alt={w.username} className="w-full h-full object-cover rounded-lg" />
+                            <div className="w-7 h-7 rounded-lg bg-slate-800 border border-slate-700 overflow-hidden shrink-0 flex items-center justify-center text-xs font-bold text-slate-300">
+                              {liveAvatar ? (
+                                <img
+                                  src={liveAvatar}
+                                  alt={liveName}
+                                  className="w-full h-full object-cover rounded-lg"
+                                  onError={(e) => {
+                                    (e.currentTarget as HTMLElement).style.display = 'none';
+                                  }}
+                                />
                               ) : (
-                                w.username.slice(0, 2).toUpperCase()
+                                (liveName || 'CZ').slice(0, 2).toUpperCase()
                               )}
                             </div>
                             <div>
-                              <div className="text-white text-xs font-bold">{w.username}</div>
+                              <div className="text-white text-xs font-bold flex items-center gap-1.5">
+                                <span>{liveName}</span>
+                                <WareraCountryFlag
+                                  countryName={liveCountryLabel}
+                                  countryCode={liveCountryObj?.code}
+                                  size="xs"
+                                />
+                              </div>
                               <div className="text-[10px] text-slate-500 font-mono">ID: {w.userId}</div>
                             </div>
                           </div>
@@ -736,15 +816,15 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                         </td>
 
                         <td className="py-3.5 px-4 text-right font-bold text-slate-200">
-                          {formatBtc(w.wealthBtc)} BTC
+                          {formatBtc(Number(liveWealth || 0))} BTC
                         </td>
 
                         <td className="py-3.5 px-4 text-right font-bold text-amber-400">
-                          {formatBtc(w.totalDonatedBtc)} BTC
+                          {formatBtc(Number(liveDonated || 0))} BTC
                         </td>
 
                         <td className="py-3.5 px-4 text-center font-sans capitalize text-slate-300">
-                          {w.playstyle.replace('-', ' ')}
+                          {liveStyle.replace('-', ' ')}
                         </td>
 
                         <td className="py-3.5 px-4 text-center font-sans text-slate-400 text-[11px]">
@@ -797,7 +877,18 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
               </div>
 
               <div className="space-y-2">
-                {[...alerts].sort(compareTransactionsNewestFirst).map((alert) => (
+                {[...alerts].sort(compareTransactionsNewestFirst).map((alert) => {
+                  const matchedAlertProf = profiles.find((p) => p.userId === alert.userId);
+                  const liveAlertU = liveWatchedUsers[alert.userId];
+                  const liveAlertName = matchedAlertProf?.username || liveAlertU?.username || alert.username;
+                  const liveAlertAvatar = matchedAlertProf?.avatarUrl || liveAlertU?.avatarUrl || liveAlertU?.avatar;
+                  const liveAlertCountryId =
+                    matchedAlertProf?.countryId ||
+                    (typeof liveAlertU?.country === 'string' ? liveAlertU.country : liveAlertU?.countryId) ||
+                    countryId;
+                  const liveAlertCountryObj = countries.find((c) => c._id === liveAlertCountryId);
+                  const liveAlertCountryLabel = liveAlertCountryObj?.name || matchedAlertProf?.countryName || countryName;
+                  return (
                   <div
                     key={alert.id}
                     className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
@@ -806,13 +897,35 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                         : 'bg-amber-500/10 border-amber-500/30 text-slate-200'
                     }`}
                   >
-                    <div className="space-y-0.5">
-                      <div className="font-bold text-white">
-                        <span className="text-amber-400">{alert.username}</span> shifted build: {alert.previousMode.toUpperCase()} ➔ {alert.newMode.toUpperCase()}
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-slate-800 border border-slate-700 overflow-hidden shrink-0 flex items-center justify-center text-[10px] font-bold text-slate-300">
+                        {liveAlertAvatar ? (
+                          <img
+                            src={liveAlertAvatar}
+                            alt={liveAlertName}
+                            className="w-full h-full object-cover rounded-lg"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLElement).style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          (liveAlertName || 'CZ').slice(0, 2).toUpperCase()
+                        )}
                       </div>
-                      <div className="text-slate-400 font-mono text-[10px]">
-                        {alert.ecoPoints} Eco · {alert.warPoints} War · {formatDateDDMMYYYY(alert.timestamp)}
-                        {alert.triggerReason ? ` · ${alert.triggerReason}` : ''}
+                      <div className="space-y-0.5">
+                        <div className="font-bold text-white flex items-center gap-1.5 flex-wrap">
+                          <span className="text-amber-400">{liveAlertName}</span>
+                          <WareraCountryFlag
+                            countryName={liveAlertCountryLabel}
+                            countryCode={liveAlertCountryObj?.code}
+                            size="xs"
+                          />
+                          <span>shifted build: {alert.previousMode.toUpperCase()} ➔ {alert.newMode.toUpperCase()}</span>
+                        </div>
+                        <div className="text-slate-400 font-mono text-[10px]">
+                          {alert.ecoPoints} Eco · {alert.warPoints} War · {formatDateDDMMYYYY(alert.timestamp)}
+                          {alert.triggerReason ? ` · ${alert.triggerReason}` : ''}
+                        </div>
                       </div>
                     </div>
 
@@ -820,16 +933,16 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                       <button
                         type="button"
                         onClick={() => {
-                          const matched = profiles.find((p) => p.userId === alert.userId);
-                          if (matched) {
-                            setActiveNudgeProfile(matched);
+                          if (matchedAlertProf) {
+                            setActiveNudgeProfile(matchedAlertProf);
                           } else {
                             setActiveNudgeProfile({
                               userId: alert.userId,
-                              username: alert.username,
-                              countryId,
-                              countryName,
-                              level: 1,
+                              username: liveAlertName,
+                              avatarUrl: liveAlertAvatar,
+                              countryId: liveAlertCountryId,
+                              countryName: liveAlertCountryLabel,
+                              level: liveAlertU?.level || 1,
                               wealthBtc: 0,
                               totalDonatedBtc: 0,
                               directDonatedBtc: 0,
@@ -863,7 +976,8 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                       )}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}

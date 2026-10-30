@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
-import { DonorRankingItem, RankingTimeframe } from '../types/warera';
+import React, { useState, useEffect } from 'react';
+import { DonorRankingItem, RankingTimeframe, WareraUserLite, WareraCountry } from '../types/warera';
 import { Coins, Clock, X, Shield, Calendar, Check, Copy, Info, Swords, ShieldCheck } from 'lucide-react';
 import { formatDateDDMMYYYY } from '../utils/dateUtils';
-import { compareTransactionsNewestFirst } from '../services/apiService';
+import { compareTransactionsNewestFirst, fetchUserLite, getCountries } from '../services/apiService';
+import { storage } from '../services/storage';
+import { WareraCountryFlag } from './common/WareraCountryFlag';
 import { useI18n } from '../i18n/I18nContext';
 
 interface CitizenDetailModalProps {
@@ -22,8 +24,41 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
 }) => {
   const { tx } = useI18n();
   const [copied, setCopied] = useState(false);
+  const [liveUser, setLiveUser] = useState<WareraUserLite | null>(null);
+  const [liveCountryObj, setLiveCountryObj] = useState<WareraCountry | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLiveUser(null);
+    setLiveCountryObj(null);
+    if (!donor?.userId) return;
+
+    Promise.all([
+      fetchUserLite(donor.userId, true),
+      storage.getCountries().then((list) => (list && list.length > 0 ? list : getCountries().catch(() => []))),
+    ]).then(([u, countries]) => {
+      if (cancelled) return;
+      if (u) {
+        setLiveUser(u);
+        const cId = typeof u.country === 'string' ? u.country : u.countryId;
+        if (cId && Array.isArray(countries)) {
+          const found = countries.find((c) => c._id === cId);
+          if (found) setLiveCountryObj(found);
+        }
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [donor?.userId]);
 
   if (!donor) return null;
+
+  const displayUsername = liveUser?.username || donor.username || `Citizen #${donor.userId.slice(-6)}`;
+  const displayAvatarUrl = liveUser?.avatarUrl || liveUser?.avatar || donor.avatarUrl;
+  const displayCountryName = liveCountryObj?.name || countryName;
+  const displayCountryCode = liveCountryObj?.code;
 
   const handleCopyId = () => {
     navigator.clipboard?.writeText(donor.userId);
@@ -71,25 +106,29 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
         <div className="flex items-start justify-between pb-4 sm:pb-5 border-b border-slate-800">
           <div className="flex items-center gap-4 sm:gap-5">
             <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-amber-500/20 border-2 border-amber-400/50 overflow-hidden shrink-0 flex items-center justify-center font-black text-amber-300 text-xl sm:text-2xl shadow-xl ring-2 ring-amber-400/20">
-              {donor.avatarUrl ? (
+              {displayAvatarUrl ? (
                 <img
-                  src={donor.avatarUrl}
-                  alt={donor.username || 'Citizen'}
+                  src={displayAvatarUrl}
+                  alt={displayUsername}
                   className="w-full h-full object-cover"
                   onError={(e) => {
                     (e.currentTarget as HTMLElement).style.display = 'none';
                   }}
                 />
               ) : (
-                (donor.username || donor.userId || 'CZ').slice(0, 2).toUpperCase()
+                (displayUsername || donor.userId || 'CZ').slice(0, 2).toUpperCase()
               )}
             </div>
 
             <div>
               <div className="flex items-center gap-2.5 flex-wrap">
                 <h3 className="text-2xl sm:text-3xl lg:text-4xl font-black text-white tracking-tight">
-                  {donor.username || `Citizen #${donor.userId.slice(-6)}`}
+                  {displayUsername}
                 </h3>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold shadow-sm">
+                  <WareraCountryFlag countryName={displayCountryName} countryCode={displayCountryCode} size="xs" />
+                  <span>{displayCountryName}</span>
+                </span>
                 <span className="px-3 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs sm:text-sm font-mono font-black shadow-sm">
                   Rank #{donor.rank}
                 </span>

@@ -1,6 +1,6 @@
 {
-  "summary":  "Updated implementation plan for the 9-theme readability, contrast, tooltip, podium, and hover overhaul, explicitly guaranteeing English (EN) as the primary default language and Spanish (ES) as the translation across all components.",
-  "updatedAt":  "2026-10-30T01:41:24.071991076Z",
+  "summary":  "Implementation plan to initialize all company cards in a collapsed state across both the Audit Modal (Companies & Bot Workforce tab) and the standalone Workforce Advisor tab, and add a bilingual (EN/ES) Expand All / Collapse All control above the company cards list.",
+  "updatedAt":  "2026-10-30T03:17:33.194043207Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

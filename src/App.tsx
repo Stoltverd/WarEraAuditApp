@@ -1164,10 +1164,15 @@ export default function App() {
             (a.auditBaselineStatus !== 'audited' ||
               ((existing.receiptCount || 0) > 0 && (a.receiptCount || 0) === 0))
           ) {
-            // Preserve live background-audited profile instead of overwriting with pending-audit or empty profile
+            // Preserve live background-audited profile instead of overwriting with pending-audit or empty profile,
+            // while strictly keeping the citizen's live username, avatarUrl, and country up-to-date
             next[a.userId] = {
               ...a,
               ...existing,
+              username: a.username || existing.username,
+              avatarUrl: a.avatarUrl || existing.avatarUrl,
+              countryId: a.countryId || existing.countryId,
+              countryName: a.countryName || existing.countryName,
               wealthBtc: a.wealthBtc,
               level: a.level,
               ecoSkillPoints: a.ecoSkillPoints,
@@ -1183,6 +1188,44 @@ export default function App() {
         storage.saveAuditedProfilesMap(selectedCountry?._id, next);
         return next;
       });
+
+      // Keep watchedCitizens synchronized with live usernames, avatars, wealth, donations, and playstyle
+      if (watchedCitizens.length > 0) {
+        const auditedById = new Map(audited.map((a) => [a.userId, a]));
+        let watchUpdated = false;
+        const nextWatched = watchedCitizens.map((w) => {
+          const liveProf = auditedById.get(w.userId);
+          const liveU = usersMap[w.userId];
+          if (!liveProf && !liveU) return w;
+          const freshName = liveProf?.username || liveU?.username || w.username;
+          const freshAvatar = liveProf?.avatarUrl || liveU?.avatarUrl || liveU?.avatar || w.avatarUrl;
+          const freshWealth = liveProf ? liveProf.wealthBtc : w.wealthBtc;
+          const freshDonated = liveProf ? liveProf.totalDonatedBtc : w.totalDonatedBtc;
+          const freshStyle = liveProf ? liveProf.playstyle : w.playstyle;
+          if (
+            freshName !== w.username ||
+            freshAvatar !== w.avatarUrl ||
+            freshWealth !== w.wealthBtc ||
+            freshDonated !== w.totalDonatedBtc ||
+            freshStyle !== w.playstyle
+          ) {
+            watchUpdated = true;
+            return {
+              ...w,
+              username: freshName,
+              avatarUrl: freshAvatar,
+              wealthBtc: freshWealth,
+              totalDonatedBtc: freshDonated,
+              playstyle: freshStyle,
+            };
+          }
+          return w;
+        });
+        if (watchUpdated) {
+          setWatchedCitizens(nextWatched);
+          nextWatched.forEach((w) => storage.saveWatchedCitizen(w));
+        }
+      }
 
       // Phase 4: Detect playstyle respecs and register alerts
       const priorPlaystyles = storage.getCitizenPlaystyles();

@@ -7,8 +7,17 @@ import {
   CountryEconomicBenchmark,
   CommodityTrend,
 } from '../../types/ministry';
-import { WareraCompany, WareraTransaction, WareraBotEmployee, EmployeeTraitId } from '../../types/warera';
-import { fetchUserCompanies, fetchUserTransactions, extractItemTimestampMs, compareTransactionsNewestFirst, isNonMonetaryInventoryNoise } from '../../services/apiService';
+import { WareraCompany, WareraTransaction, WareraBotEmployee, EmployeeTraitId, LiveCounterpartyProfile } from '../../types/warera';
+import {
+  fetchUserCompanies,
+  fetchUserTransactions,
+  fetchUserLite,
+  getCountries,
+  resolveLiveCounterpartiesBatch,
+  extractItemTimestampMs,
+  compareTransactionsNewestFirst,
+  isNonMonetaryInventoryNoise,
+} from '../../services/apiService';
 import { storage, AUDIT_PROFILE_SCHEMA_VERSION } from '../../services/storage';
 import {
   buildAuditedCitizenProfile,
@@ -28,6 +37,7 @@ import {
 } from '../../services/workforceService';
 import { formatDateDDMMYYYY, formatDateTimeDDMMYYYY } from '../../utils/dateUtils';
 import { WareraItemIcon } from '../common/WareraItemIcon';
+import { WareraCountryFlag } from '../common/WareraCountryFlag';
 import { CompanyPortfolioAnalyzer } from './CompanyPortfolioAnalyzer';
 import { useI18n, translateRawStringEs } from '../../i18n/I18nContext';
 import {
@@ -64,6 +74,8 @@ import {
   StopCircle,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
   Send,
 } from 'lucide-react';
 
@@ -118,7 +130,14 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
   const [streamProgress, setStreamProgress] = useState<{ loaded: number; page: number } | null>(null);
   const [txSearch, setTxSearch] = useState('');
   const [txTypeFilter, setTxTypeFilter] = useState<'all' | 'wage' | 'market' | 'trading' | 'donation' | 'other'>('all');
+  const [txPage, setTxPage] = useState<number>(1);
+  const [txPageSize, setTxPageSize] = useState<100 | 250 | 500>(100);
+  const [counterpartyMap, setCounterpartyMap] = useState<Record<string, LiveCounterpartyProfile>>({});
+  const [isResolvingCounterparties, setIsResolvingCounterparties] = useState<boolean>(false);
+  const [copiedCounterpartyKey, setCopiedCounterpartyKey] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const requestedCounterpartyIdsRef = useRef<Set<string>>(new Set());
+  const liveIdentityRefreshedUserIdRef = useRef<string | null>(null);
 
   // Snapshots state for honest historical damage verification
   const [snapshots, setSnapshots] = useState<WealthSnapshot[]>([]);
@@ -253,6 +272,50 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
         }
       });
 
+      // Live-refresh the audited citizen's own identity (username, avatarUrl, country, level) once per modal open
+      if (liveIdentityRefreshedUserIdRef.current !== profile.userId) {
+        liveIdentityRefreshedUserIdRef.current = profile.userId;
+        Promise.all([
+          fetchUserLite(profile.userId, true),
+          storage.getCountries().then((list) => (list && list.length > 0 ? list : getCountries().catch(() => []))),
+        ]).then(([liveUser, countries]) => {
+          if (isCancelled || !liveUser) return;
+          const liveCountryId =
+            typeof liveUser.country === 'string' && liveUser.country
+              ? liveUser.country
+              : liveUser.countryId || profile.countryId;
+          const matchedCountry = Array.isArray(countries)
+            ? countries.find((c) => c._id === liveCountryId)
+            : undefined;
+          const updatedUsername = liveUser.username || profile.username;
+          const updatedAvatar = liveUser.avatarUrl || liveUser.avatar || profile.avatarUrl;
+          const updatedCountryName = matchedCountry?.name || profile.countryName;
+          const updatedLevel = liveUser.level !== undefined && liveUser.level > 0 ? liveUser.level : profile.level;
+
+          if (
+            updatedUsername !== profile.username ||
+            updatedAvatar !== profile.avatarUrl ||
+            liveCountryId !== profile.countryId ||
+            updatedCountryName !== profile.countryName ||
+            updatedLevel !== profile.level
+          ) {
+            setLocalProfile((prev) => {
+              if (!prev || prev.userId !== profile.userId) return prev;
+              const refreshed: CitizenEconomicProfile = {
+                ...prev,
+                username: updatedUsername,
+                avatarUrl: updatedAvatar,
+                countryId: liveCountryId,
+                countryName: updatedCountryName,
+                level: updatedLevel,
+              };
+              storage.saveAuditedProfile(refreshed);
+              return refreshed;
+            });
+          }
+        });
+      }
+
       // Load damage and wealth snapshots for honest 30-day combat calculations
       storage.getCitizenSnapshots(profile.userId).then((list) => {
         if (!isCancelled) {
@@ -266,11 +329,11 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
     }
   }, [profile?.userId]);
 
-  // Load companies when modal opens or companies tab active
+  // Load companies live when modal opens so company names and manager identities are always fresh
   useEffect(() => {
     if (localProfile?.userId) {
       setIsLoadingCompanies(true);
-      fetchUserCompanies(localProfile.userId)
+      fetchUserCompanies(localProfile.userId, true)
         .then((res) => {
           setLiveCompanies(res);
         })
@@ -750,22 +813,215 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
       }
 
       if (txSearch.trim()) {
-        const q = txSearch.toLowerCase();
-        const itemStr = safelyExtractItemString(tx.item || tx.resourceType).toLowerCase();
-        const compStr = safelyExtractIdString(tx.companyId).toLowerCase();
-        const sellerStr = safelyExtractIdString(tx.sellerId).toLowerCase();
-        const buyerStr = safelyExtractIdString(tx.buyerId).toLowerCase();
+        const q = txSearch.toLowerCase().trim();
+        const rawItemStr = safelyExtractItemString(tx.itemCode || tx.item || tx.resourceType);
+        const itemStr = rawItemStr.toLowerCase();
+        const translatedItemStr = rawItemStr ? translateCommodity(rawItemStr).toLowerCase() : '';
+        const compStr = safelyExtractIdString(tx.companyId);
+        const sellerStr = safelyExtractIdString(tx.sellerId);
+        const buyerStr = safelyExtractIdString(tx.buyerId);
+        const recipientStr = safelyExtractIdString(tx.recipientId);
+        const senderStr = safelyExtractIdString(tx.senderId);
+        const countryTargetStr = safelyExtractIdString(tx.sellerCountryId || tx.buyerCountryId || tx.countryId);
+
+        const sellerProf = sellerStr ? counterpartyMap[sellerStr] : undefined;
+        const buyerProf = buyerStr ? counterpartyMap[buyerStr] : undefined;
+        const recipientProf = recipientStr ? counterpartyMap[recipientStr] : undefined;
+        const senderProf = senderStr ? counterpartyMap[senderStr] : undefined;
+        const compProf = compStr ? counterpartyMap[compStr] : undefined;
+        const countryProf = countryTargetStr ? counterpartyMap[countryTargetStr] : undefined;
+
+        const resolvedNamesBlob = [
+          sellerProf?.username,
+          sellerProf?.companyName,
+          sellerProf?.countryName,
+          buyerProf?.username,
+          buyerProf?.companyName,
+          buyerProf?.countryName,
+          recipientProf?.username,
+          recipientProf?.companyName,
+          senderProf?.username,
+          compProf?.username,
+          compProf?.companyName,
+          compProf?.countryName,
+          countryProf?.countryName,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+
         return (
           itemStr.includes(q) ||
-          compStr.includes(q) ||
-          sellerStr.includes(q) ||
-          buyerStr.includes(q) ||
-          txType.includes(q)
+          translatedItemStr.includes(q) ||
+          compStr.toLowerCase().includes(q) ||
+          sellerStr.toLowerCase().includes(q) ||
+          buyerStr.toLowerCase().includes(q) ||
+          recipientStr.toLowerCase().includes(q) ||
+          txType.includes(q) ||
+          resolvedNamesBlob.includes(q)
         );
       }
       return true;
     }).sort(compareTransactionsNewestFirst);
-  }, [timeframeTransactions, txTypeFilter, txSearch]);
+  }, [timeframeTransactions, txTypeFilter, txSearch, counterpartyMap, translateCommodity]);
+
+  // Reset pagination to page 1 when filters or search change
+  useEffect(() => {
+    setTxPage(1);
+  }, [txTypeFilter, txSearch, auditPeriodDays, currentProfile.userId, txPageSize]);
+
+  // Reset requested counterparty ID tracker when switching audited citizen
+  useEffect(() => {
+    requestedCounterpartyIdsRef.current.clear();
+  }, [currentProfile.userId]);
+
+  const totalTxPages = Math.max(1, Math.ceil(filteredTransactions.length / txPageSize));
+  const safeTxPage = Math.min(txPage, totalTxPages);
+  const paginatedTransactions = useMemo(() => {
+    const startIdx = (safeTxPage - 1) * txPageSize;
+    return filteredTransactions.slice(startIdx, startIdx + txPageSize);
+  }, [filteredTransactions, safeTxPage, txPageSize]);
+
+  // Deterministic string signature of the visible page's counterparty & company IDs (prevents object-reference render loops)
+  const visibleCounterpartySignature = useMemo(() => {
+    const ids = new Set<string>();
+    for (const tx of paginatedTransactions) {
+      if (!tx) continue;
+      const sId = safelyExtractIdString(tx.sellerId);
+      const bId = safelyExtractIdString(tx.buyerId);
+      const rId = safelyExtractIdString(tx.recipientId);
+      const sndId = safelyExtractIdString(tx.senderId);
+      const cId = safelyExtractIdString(tx.companyId);
+      const scId = safelyExtractIdString(tx.sellerCountryId || tx.countryId);
+      const bcId = safelyExtractIdString(tx.buyerCountryId);
+      if (sId && sId !== currentProfile.userId) ids.add(`a:${sId}`);
+      if (bId && bId !== currentProfile.userId) ids.add(`a:${bId}`);
+      if (rId && rId !== currentProfile.userId) ids.add(`a:${rId}`);
+      if (sndId && sndId !== currentProfile.userId) ids.add(`a:${sndId}`);
+      if (scId) ids.add(`a:${scId}`);
+      if (bcId) ids.add(`a:${bcId}`);
+      if (cId) ids.add(`c:${cId}`);
+    }
+    return Array.from(ids).sort().join('|');
+  }, [paginatedTransactions, currentProfile.userId]);
+
+  // Reference-stable state merger: returns exact `prev` reference if all incoming profiles are already identical in state
+  const mergeCounterpartyBatchStable = (
+    prev: Record<string, LiveCounterpartyProfile>,
+    incoming: Record<string, LiveCounterpartyProfile>
+  ): Record<string, LiveCounterpartyProfile> => {
+    const entries = Object.entries(incoming);
+    if (entries.length === 0) return prev;
+    let hasChanges = false;
+    for (const [id, prof] of entries) {
+      const existing = prev[id];
+      if (
+        !existing ||
+        existing.username !== prof.username ||
+        existing.avatarUrl !== prof.avatarUrl ||
+        existing.companyName !== prof.companyName ||
+        existing.countryName !== prof.countryName ||
+        existing.countryCode !== prof.countryCode
+      ) {
+        hasChanges = true;
+        break;
+      }
+    }
+    if (!hasChanges) return prev;
+    return { ...prev, ...incoming };
+  };
+
+  // Viewport-first live counterparty & company owner resolution + background hydration for full-ledger search
+  useEffect(() => {
+    if (timeframeTransactions.length === 0) return;
+    const controller = new AbortController();
+
+    const extractUnrequestedIdsFromTxList = (list: WareraTransaction[]) => {
+      const actorIds = new Set<string>();
+      const companyIds = new Set<string>();
+      for (const tx of list) {
+        if (!tx) continue;
+        const sId = safelyExtractIdString(tx.sellerId);
+        const bId = safelyExtractIdString(tx.buyerId);
+        const rId = safelyExtractIdString(tx.recipientId);
+        const sndId = safelyExtractIdString(tx.senderId);
+        const cId = safelyExtractIdString(tx.companyId);
+        const scId = safelyExtractIdString(tx.sellerCountryId || tx.countryId);
+        const bcId = safelyExtractIdString(tx.buyerCountryId);
+
+        if (sId && sId !== currentProfile.userId && !requestedCounterpartyIdsRef.current.has(`a:${sId}`)) actorIds.add(sId);
+        if (bId && bId !== currentProfile.userId && !requestedCounterpartyIdsRef.current.has(`a:${bId}`)) actorIds.add(bId);
+        if (rId && rId !== currentProfile.userId && !requestedCounterpartyIdsRef.current.has(`a:${rId}`)) actorIds.add(rId);
+        if (sndId && sndId !== currentProfile.userId && !requestedCounterpartyIdsRef.current.has(`a:${sndId}`)) actorIds.add(sndId);
+        if (scId && !requestedCounterpartyIdsRef.current.has(`a:${scId}`)) actorIds.add(scId);
+        if (bcId && !requestedCounterpartyIdsRef.current.has(`a:${bcId}`)) actorIds.add(bcId);
+        if (cId && !requestedCounterpartyIdsRef.current.has(`c:${cId}`)) companyIds.add(cId);
+      }
+      return {
+        actorIds: Array.from(actorIds),
+        companyIds: Array.from(companyIds),
+      };
+    };
+
+    const runResolution = async () => {
+      // 1. Immediately resolve the currently visible page's unique counterparties & companies
+      const visible = extractUnrequestedIdsFromTxList(paginatedTransactions);
+      if (visible.actorIds.length > 0 || visible.companyIds.length > 0) {
+        visible.actorIds.forEach((id) => requestedCounterpartyIdsRef.current.add(`a:${id}`));
+        visible.companyIds.forEach((id) => requestedCounterpartyIdsRef.current.add(`c:${id}`));
+        setIsResolvingCounterparties(true);
+        try {
+          const resolvedVisible = await resolveLiveCounterpartiesBatch(
+            visible.actorIds,
+            visible.companyIds,
+            controller.signal
+          );
+          if (!controller.signal.aborted && Object.keys(resolvedVisible).length > 0) {
+            setCounterpartyMap((prev) => mergeCounterpartyBatchStable(prev, resolvedVisible));
+          }
+        } finally {
+          if (!controller.signal.aborted) {
+            setIsResolvingCounterparties(false);
+          }
+        }
+      }
+
+      if (controller.signal.aborted || activeTab !== 'transactions') return;
+
+      // 2. Background-hydrate remaining counterparties in chunks so full-ledger name search works seamlessly
+      const remaining = extractUnrequestedIdsFromTxList(timeframeTransactions);
+      if (remaining.actorIds.length === 0 && remaining.companyIds.length === 0) return;
+
+      const bgChunkSize = 24;
+      const maxLen = Math.max(remaining.actorIds.length, remaining.companyIds.length);
+      for (let i = 0; i < maxLen; i += bgChunkSize) {
+        if (controller.signal.aborted) break;
+        const aChunk = remaining.actorIds.slice(i, i + bgChunkSize);
+        const cChunk = remaining.companyIds.slice(i, i + bgChunkSize);
+        aChunk.forEach((id) => requestedCounterpartyIdsRef.current.add(`a:${id}`));
+        cChunk.forEach((id) => requestedCounterpartyIdsRef.current.add(`c:${id}`));
+        const resolvedBg = await resolveLiveCounterpartiesBatch(aChunk, cChunk, controller.signal);
+        if (!controller.signal.aborted && Object.keys(resolvedBg).length > 0) {
+          setCounterpartyMap((prev) => mergeCounterpartyBatchStable(prev, resolvedBg));
+        }
+      }
+    };
+
+    runResolution();
+
+    return () => {
+      controller.abort();
+    };
+  }, [visibleCounterpartySignature, timeframeTransactions, currentProfile.userId, activeTab]);
+
+  const handleCopyCounterpartyId = (idToCopy: string, uniqueRowKey: string) => {
+    if (!idToCopy) return;
+    navigator.clipboard?.writeText(idToCopy);
+    setCopiedCounterpartyKey(uniqueRowKey);
+    setTimeout(() => {
+      setCopiedCounterpartyKey((prev) => (prev === uniqueRowKey ? null : prev));
+    }, 1800);
+  };
 
   // Authentic Live-API-Only Multi-Company Aggregation for Industrial Tab (Zero Fake Fallback Companies)
   const companiesToRender = useMemo(() => {
@@ -1849,13 +2105,13 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                     </div>
                   )}
 
-                  <div className="relative w-44 sm:w-56">
+                  <div className="relative w-48 sm:w-64">
                     <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
                     <input
                       type="text"
                       value={txSearch}
                       onChange={(e) => setTxSearch(e.target.value)}
-                      placeholder="Search item, ID..."
+                      placeholder={tx('Search player, company, item, ID...', 'Buscar jugador, empresa, ítem, ID...')}
                       className="w-full pl-8 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
                     />
                   </div>
@@ -1881,41 +2137,83 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                 </div>
               )}
 
-              {/* Color Representation Legend */}
-              <div className="flex items-center gap-3 text-[11px] font-mono bg-slate-950/90 border border-slate-800 rounded-xl px-3 py-2 flex-wrap">
-                <span className="text-slate-400 font-sans font-bold flex items-center gap-1">
-                  <Info className="w-3.5 h-3.5 text-slate-400" /> Color Guide:
-                </span>
-                <span className="inline-flex items-center gap-1.5 text-emerald-300">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                  + Inflow (Wages, Sales, Tips)
-                </span>
-                <span className="inline-flex items-center gap-1.5 text-rose-300">
-                  <span className="w-2 h-2 rounded-full bg-rose-400"></span>
-                  - Outflow (Purchases, Payroll, Fees)
-                </span>
-                <span className="inline-flex items-center gap-1.5 text-amber-300">
-                  <span className="w-2 h-2 rounded-full bg-amber-400"></span>
-                  Tithes (Treasury / Military Donations)
-                </span>
-                <span className="inline-flex items-center gap-1.5 text-slate-400">
-                  <span className="w-2 h-2 rounded-full bg-slate-500"></span>
-                  Neutral / Admin
-                </span>
+              {/* Color Representation Legend & Viewport Pagination Controls */}
+              <div className="flex items-center justify-between gap-3 text-[11px] font-mono bg-slate-950/90 border border-slate-800 rounded-xl px-3 py-2 flex-wrap">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="text-slate-400 font-sans font-bold flex items-center gap-1">
+                    <Info className="w-3.5 h-3.5 text-slate-400" /> {tx('Color Guide:', 'Guía de Color:')}
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 text-emerald-300">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                    {tx('+ Inflow (Wages, Sales, Tips)', '+ Ingreso (Salarios, Ventas, Propinas)')}
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 text-rose-300">
+                    <span className="w-2 h-2 rounded-full bg-rose-400"></span>
+                    {tx('- Outflow (Purchases, Payroll, Fees)', '- Egreso (Compras, Nómina, Tarifas)')}
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 text-amber-300">
+                    <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                    {tx('Tithes (Treasury / Military Donations)', 'Diezmos (Donaciones Tesorería / UM)')}
+                  </span>
+                </div>
+
+                {filteredTransactions.length > 0 && (
+                  <div className="flex items-center gap-2 ml-auto font-sans">
+                    {isResolvingCounterparties && (
+                      <span className="inline-flex items-center gap-1 text-[10px] text-cyan-400 font-mono">
+                        <RefreshCw className="w-3 h-3 animate-spin" />
+                        {tx('Live-resolving counterparties...', 'Resolviendo contrapartes en vivo...')}
+                      </span>
+                    )}
+                    <select
+                      value={txPageSize}
+                      onChange={(e) => setTxPageSize(Number(e.target.value) as 100 | 250 | 500)}
+                      className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-cyan-500"
+                      title={tx('Receipts per page', 'Recibos por página')}
+                    >
+                      <option value={100}>{tx('100 / page', '100 / pág')}</option>
+                      <option value={250}>{tx('250 / page', '250 / pág')}</option>
+                      <option value={500}>{tx('500 / page', '500 / pág')}</option>
+                    </select>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setTxPage((p) => Math.max(1, p - 1))}
+                        disabled={safeTxPage <= 1}
+                        className="p-1 rounded-lg bg-slate-900 border border-slate-700 text-slate-300 hover:text-white disabled:opacity-40 transition"
+                        title={tx('Previous page', 'Página anterior')}
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                      </button>
+                      <span className="text-[11px] font-mono text-slate-300 px-1.5">
+                        {safeTxPage} / {totalTxPages}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setTxPage((p) => Math.min(totalTxPages, p + 1))}
+                        disabled={safeTxPage >= totalTxPages}
+                        className="p-1 rounded-lg bg-slate-900 border border-slate-700 text-slate-300 hover:text-white disabled:opacity-40 transition"
+                        title={tx('Next page', 'Página siguiente')}
+                      >
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Transactions Table */}
               <div className="bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden">
-                <div className="overflow-x-auto max-h-96">
+                <div className="overflow-x-auto max-h-[28rem]">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-slate-900/90 text-slate-400 text-[10px] uppercase font-mono sticky top-0 z-10 border-b border-slate-800">
                       <tr>
-                        <th className="py-2.5 px-3">Date / Time</th>
-                        <th className="py-2.5 px-3">Type</th>
-                        <th className="py-2.5 px-3">Role</th>
-                        <th className="py-2.5 px-3">Item / Resource</th>
-                        <th className="py-2.5 px-3 text-right">Amount (BTC)</th>
-                        <th className="py-2.5 px-3">Counterparty / Details</th>
+                        <th className="py-2.5 px-3">{tx('Date / Time', 'Fecha / Hora')}</th>
+                        <th className="py-2.5 px-3">{tx('Type', 'Tipo')}</th>
+                        <th className="py-2.5 px-3">{tx('Role', 'Rol')}</th>
+                        <th className="py-2.5 px-3">{tx('Item / Resource', 'Artículo / Recurso')}</th>
+                        <th className="py-2.5 px-3 text-right">{tx('Amount (BTC)', 'Monto (BTC)')}</th>
+                        <th className="py-2.5 px-3">{tx('Counterparty / Details', 'Contraparte / Detalles')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60 font-mono text-slate-300">
@@ -1924,7 +2222,12 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                           <td colSpan={6} className="py-2.5 px-3 text-center">
                             <span className="inline-flex items-center gap-2">
                               <RefreshCw className="w-3 h-3 animate-spin text-cyan-400" />
-                              <span>Live streaming and verifying in-game receipts ({timeframeTransactions.length} receipts verified for {auditPeriodDays}D window)...</span>
+                              <span>
+                                {tx(
+                                  `Live streaming and verifying in-game receipts (${timeframeTransactions.length} receipts verified for ${auditPeriodDays}D window)...`,
+                                  `Transmitiendo y verificando recibos del juego en vivo (${timeframeTransactions.length} recibos verificados para ventana de ${auditPeriodDays}D)...`
+                                )}
+                              </span>
                             </span>
                           </td>
                         </tr>
@@ -1933,30 +2236,36 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                         <tr>
                           <td colSpan={6} className="py-12 text-center text-slate-500 text-xs font-sans">
                             {timeframeTransactions.length === 0
-                              ? `No receipts found within the active ${auditPeriodDays}-day timeframe. Click "Stream Live In-Game Receipts" to refresh history.`
-                              : 'No transactions match the selected filter criteria.'}
+                              ? tx(
+                                  `No receipts found within the active ${auditPeriodDays}-day timeframe. Click "Stream Receipts" to refresh history.`,
+                                  `No se encontraron recibos dentro de la ventana activa de ${auditPeriodDays} días. Haz clic en "Transmitir Recibos" para actualizar el historial.`
+                                )
+                              : tx(
+                                  'No transactions match the selected filter criteria.',
+                                  'Ninguna transacción coincide con los criterios de filtro seleccionados.'
+                                )}
                           </td>
                         </tr>
                       ) : (
-                        filteredTransactions.map((tx, idx) => {
-                          if (!tx) return null;
-                          const amt = isNaN(Number(tx.money || tx.amount || 0)) ? 0 : Number(tx.money || tx.amount || 0);
-                          const rawType = String(tx.transactionType || '');
+                        paginatedTransactions.map((txItem, idx) => {
+                          if (!txItem) return null;
+                          const amt = isNaN(Number(txItem.money || txItem.amount || 0)) ? 0 : Number(txItem.money || txItem.amount || 0);
+                          const rawType = String(txItem.transactionType || '');
                           const typeLower = rawType.toLowerCase();
                           const isWage = typeLower.includes('wage') || typeLower.includes('salary');
 
-                          const sellerStr = safelyExtractIdString(tx.sellerId);
-                          const buyerStr = safelyExtractIdString(tx.buyerId);
-                          const recipientStr = safelyExtractIdString(tx.recipientId);
-                          const senderStr = safelyExtractIdString(tx.senderId);
-                          const companyStr = safelyExtractIdString(tx.companyId);
+                          const sellerStr = safelyExtractIdString(txItem.sellerId);
+                          const buyerStr = safelyExtractIdString(txItem.buyerId);
+                          const recipientStr = safelyExtractIdString(txItem.recipientId);
+                          const senderStr = safelyExtractIdString(txItem.senderId);
+                          const companyStr = safelyExtractIdString(txItem.companyId);
 
                           const isSeller = sellerStr === currentProfile.userId;
                           const isBuyer = buyerStr === currentProfile.userId;
                           const isDonation = typeLower.includes('donat');
-                          const isMuDonation = isDonation && Boolean(tx.sellerMuId);
-                          const dateStr = tx.createdAt
-                            ? formatDateTimeDDMMYYYY(tx.createdAt, 'Recent')
+                          const isMuDonation = isDonation && Boolean(txItem.sellerMuId);
+                          const dateStr = txItem.createdAt
+                            ? formatDateTimeDDMMYYYY(txItem.createdAt, 'Recent')
                             : 'Recent';
 
                           // Accurately determine if wage was earned as worker or paid out as employer
@@ -1967,23 +2276,95 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                           const isNegativeOutflow = isBuyer || isEmployerWage || isDonation || typeLower.includes('craft') || typeLower.includes('dismantle') || typeLower.includes('case');
 
                           const roleLabel = isEmployerWage
-                            ? 'Employer (Wage Outflow)'
+                            ? tx('Employer (Wage Outflow)', 'Empleador (Pago de Salario)')
                             : isWorkerWage
-                            ? 'Worker (Wage Inflow)'
+                            ? tx('Worker (Wage Inflow)', 'Trabajador (Cobro de Salario)')
                             : isDonation
                             ? isMuDonation
-                              ? 'Donor (Military Unit)'
-                              : 'Donor (Treasury Transfer)'
+                              ? tx('Donor (Military Unit)', 'Donante (Unidad Militar)')
+                              : tx('Donor (Treasury Transfer)', 'Donante (Transferencia al Tesoro)')
                             : isSeller
-                            ? 'Seller (Market Inflow)'
+                            ? tx('Seller (Market Sale)', 'Vendedor (Venta de Mercado)')
                             : isBuyer
-                            ? 'Buyer (Market Outflow)'
-                            : 'Participant';
+                            ? tx('Buyer (Market Purchase)', 'Comprador (Compra de Mercado)')
+                            : tx('Participant', 'Participante');
 
-                          const itemStr = safelyExtractItemString(tx.itemCode || tx.item || tx.resourceType);
+                          const itemStr = safelyExtractItemString(txItem.itemCode || txItem.item || txItem.resourceType);
+
+                          // Determine counterparty role & IDs for live profile display
+                          let counterpartyRolePrefix = '';
+                          let primaryActorId = '';
+                          if (isEmployerWage) {
+                            counterpartyRolePrefix = tx('Worker:', 'Trabajador:');
+                            primaryActorId =
+                              (recipientStr && recipientStr !== currentProfile.userId ? recipientStr : '') ||
+                              (sellerStr && sellerStr !== currentProfile.userId ? sellerStr : '');
+                          } else if (isWorkerWage) {
+                            counterpartyRolePrefix = tx('Employer:', 'Empleador:');
+                            primaryActorId =
+                              (buyerStr && buyerStr !== currentProfile.userId ? buyerStr : '') ||
+                              (senderStr && senderStr !== currentProfile.userId ? senderStr : '') ||
+                              companyStr;
+                          } else if (isSeller) {
+                            counterpartyRolePrefix = tx('Buyer:', 'Comprador:');
+                            primaryActorId =
+                              (buyerStr && buyerStr !== currentProfile.userId ? buyerStr : '') ||
+                              (recipientStr && recipientStr !== currentProfile.userId ? recipientStr : '') ||
+                              safelyExtractIdString(txItem.buyerCountryId);
+                          } else if (isBuyer) {
+                            counterpartyRolePrefix = tx('Seller:', 'Vendedor:');
+                            primaryActorId =
+                              (sellerStr && sellerStr !== currentProfile.userId ? sellerStr : '') ||
+                              (senderStr && senderStr !== currentProfile.userId ? senderStr : '') ||
+                              safelyExtractIdString(txItem.sellerCountryId);
+                          } else {
+                            if (sellerStr && sellerStr !== currentProfile.userId) {
+                              counterpartyRolePrefix = tx('Seller:', 'Vendedor:');
+                              primaryActorId = sellerStr;
+                            } else if (buyerStr && buyerStr !== currentProfile.userId) {
+                              counterpartyRolePrefix = tx('Buyer:', 'Comprador:');
+                              primaryActorId = buyerStr;
+                            } else if (companyStr) {
+                              counterpartyRolePrefix = tx('Employer:', 'Empleador:');
+                              primaryActorId = companyStr;
+                            }
+                          }
+
+                          const actorProfile = primaryActorId ? counterpartyMap[primaryActorId] : undefined;
+                          const explicitCompanyProfile = companyStr ? counterpartyMap[companyStr] : undefined;
+
+                          const resolvedPlayerName =
+                            actorProfile?.username ||
+                            explicitCompanyProfile?.username ||
+                            (primaryActorId ? `Citizen #${primaryActorId.slice(-6)}` : '');
+                          const resolvedPlayerAvatar =
+                            actorProfile?.avatarUrl || explicitCompanyProfile?.avatarUrl;
+                          const resolvedCountryName =
+                            actorProfile?.countryName || explicitCompanyProfile?.countryName;
+                          const resolvedCountryCode =
+                            actorProfile?.countryCode || explicitCompanyProfile?.countryCode;
+                          const resolvedCompanyName =
+                            explicitCompanyProfile?.companyName || actorProfile?.companyName;
+                          const resolvedCopyableId =
+                            actorProfile?.userId ||
+                            explicitCompanyProfile?.userId ||
+                            primaryActorId ||
+                            companyStr;
+                          const rowCopyKey = `${txItem._id || idx}-${resolvedCopyableId}`;
+                          const isRowCopied = copiedCounterpartyKey === rowCopyKey;
+
+                          const donationTargetCountryId = safelyExtractIdString(
+                            txItem.sellerCountryId || txItem.countryId || currentProfile.countryId
+                          );
+                          const donationCountryProf = donationTargetCountryId
+                            ? counterpartyMap[donationTargetCountryId]
+                            : undefined;
+                          const donationCountryName =
+                            donationCountryProf?.countryName || currentProfile.countryName || countryName;
+                          const donationCountryCode = donationCountryProf?.countryCode;
 
                           return (
-                            <tr key={tx._id || `tx-${idx}`} className="hover:bg-slate-900/50 transition">
+                            <tr key={txItem._id || `tx-${idx}`} className="hover:bg-slate-900/50 transition">
                               <td className="py-2.5 px-3 text-slate-400 whitespace-nowrap">{dateStr}</td>
                               <td className="py-2.5 px-3 font-bold font-sans">
                                 <span className={`px-2 py-0.5 rounded text-[10px] ${
@@ -2007,13 +2388,13 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                                 {itemStr ? (
                                   <span className="capitalize font-bold text-white flex items-center gap-1.5">
                                     <WareraItemIcon itemCode={itemStr} size="xs" />
-                                    <span>{itemStr.replace(/_/g, ' ')}</span>
+                                    <span>{translateCommodity(itemStr.replace(/_/g, ' '))}</span>
                                   </span>
                                 ) : (
                                   <span className="text-slate-500">—</span>
                                 )}
                               </td>
-                              <td className={`py-2.5 px-3 text-right font-black ${
+                              <td className={`py-2.5 px-3 text-right font-black whitespace-nowrap ${
                                 isPositiveInflow
                                   ? 'text-emerald-400'
                                   : isNegativeOutflow
@@ -2022,20 +2403,115 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                               }`}>
                                 {isPositiveInflow ? '+' : isNegativeOutflow ? '-' : ''}{formatBtc(amt)} BTC
                               </td>
-                              <td className="py-2.5 px-3 text-slate-400 text-[11px] truncate max-w-xs font-sans">
-                                {isMuDonation && tx.sellerMuId
-                                  ? `Military Unit: ${String(tx.sellerMuId).slice(-6)}`
-                                  : isDonation
-                                  ? 'Domestic sovereign ledger'
-                                  : isEmployerWage && recipientStr
-                                  ? `Worker: ${recipientStr.slice(-6)}`
-                                  : companyStr
-                                  ? `Company: ${companyStr.slice(-6)}`
-                                  : sellerStr && sellerStr !== currentProfile.userId
-                                  ? `Seller: ${sellerStr.slice(-6)}`
-                                  : buyerStr && buyerStr !== currentProfile.userId
-                                  ? `Buyer: ${buyerStr.slice(-6)}`
-                                  : 'Domestic sovereign ledger'}
+                              <td className="py-2.5 px-3 text-slate-300 text-[11px] font-sans">
+                                {isMuDonation && txItem.sellerMuId ? (
+                                  <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[11px] font-semibold">
+                                    <Shield className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                    <span>{tx('Military Unit:', 'Unidad Militar:')}</span>
+                                    <span className="font-mono">{String(txItem.sellerMuId).slice(-6)}</span>
+                                  </div>
+                                ) : isDonation ? (
+                                  <div className="inline-flex items-center gap-1.5 flex-wrap">
+                                    <WareraCountryFlag
+                                      countryName={donationCountryName}
+                                      countryCode={donationCountryCode}
+                                      size="xs"
+                                    />
+                                    <span className="font-bold text-white">{donationCountryName}</span>
+                                    <span className="px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/35 text-amber-300 text-[10px] font-semibold">
+                                      🏛️ {tx('National Treasury', 'Tesorería Nacional')}
+                                    </span>
+                                  </div>
+                                ) : actorProfile?.kind === 'country' ? (
+                                  <div className="inline-flex items-center gap-1.5 flex-wrap">
+                                    {counterpartyRolePrefix && (
+                                      <span className="text-slate-400 text-[10px] font-semibold">
+                                        {counterpartyRolePrefix}
+                                      </span>
+                                    )}
+                                    <WareraCountryFlag
+                                      countryName={actorProfile.countryName || actorProfile.username}
+                                      countryCode={actorProfile.countryCode}
+                                      size="xs"
+                                    />
+                                    <span className="font-bold text-white">
+                                      {actorProfile.countryName || actorProfile.username}
+                                    </span>
+                                    <span className="px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/35 text-amber-300 text-[10px] font-semibold">
+                                      🏛️ {tx('Treasury', 'Tesorería')}
+                                    </span>
+                                  </div>
+                                ) : primaryActorId || companyStr ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopyCounterpartyId(resolvedCopyableId, rowCopyKey)}
+                                    title={tx(
+                                      `Click to copy Player ID: ${resolvedCopyableId}`,
+                                      `Clic para copiar ID de Jugador: ${resolvedCopyableId}`
+                                    )}
+                                    className="group inline-flex items-center gap-1.5 text-left hover:bg-slate-800/80 px-1.5 py-1 -mx-1.5 -my-1 rounded-lg transition max-w-full"
+                                  >
+                                    {counterpartyRolePrefix && (
+                                      <span className="text-slate-400 text-[10px] font-semibold shrink-0">
+                                        {counterpartyRolePrefix}
+                                      </span>
+                                    )}
+
+                                    {/* Live Counterparty Avatar */}
+                                    <span className="w-5 h-5 rounded-md bg-slate-800 border border-slate-700 overflow-hidden shrink-0 inline-flex items-center justify-center text-[9px] font-bold text-cyan-300">
+                                      {resolvedPlayerAvatar ? (
+                                        <img
+                                          src={resolvedPlayerAvatar}
+                                          alt={resolvedPlayerName}
+                                          className="w-full h-full object-cover"
+                                          onError={(e) => {
+                                            (e.currentTarget as HTMLElement).style.display = 'none';
+                                          }}
+                                        />
+                                      ) : !actorProfile && !explicitCompanyProfile && isResolvingCounterparties ? (
+                                        <span className="w-full h-full bg-slate-700 animate-pulse" />
+                                      ) : (
+                                        (resolvedPlayerName || 'CZ').slice(0, 2).toUpperCase()
+                                      )}
+                                    </span>
+
+                                    {/* Live Counterparty Username */}
+                                    <span className="font-bold text-white group-hover:text-cyan-300 transition truncate max-w-[130px] sm:max-w-[170px]">
+                                      {resolvedPlayerName}
+                                    </span>
+
+                                    {/* Live Counterparty Country Flag */}
+                                    {resolvedCountryName && (
+                                      <WareraCountryFlag
+                                        countryName={resolvedCountryName}
+                                        countryCode={resolvedCountryCode}
+                                        size="xs"
+                                      />
+                                    )}
+
+                                    {/* Company Badge when transaction involves a Company */}
+                                    {resolvedCompanyName && (
+                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 text-[10px] font-semibold truncate max-w-[130px]">
+                                        <Building2 className="w-2.5 h-2.5 shrink-0" />
+                                        <span className="truncate">{resolvedCompanyName}</span>
+                                      </span>
+                                    )}
+
+                                    {/* Copy Player ID feedback */}
+                                    {isRowCopied ? (
+                                      <span className="inline-flex items-center gap-0.5 text-[10px] font-mono font-bold text-emerald-400 shrink-0">
+                                        <Check className="w-3 h-3" />
+                                        <span>{tx('Copied ID!', '¡ID Copiado!')}</span>
+                                      </span>
+                                    ) : (
+                                      <Copy className="w-3 h-3 text-slate-500 opacity-0 group-hover:opacity-100 transition shrink-0" />
+                                    )}
+                                  </button>
+                                ) : (
+                                  <span className="text-slate-500">
+                                    {tx('Domestic sovereign ledger', 'Libro soberano nacional')}
+                                  </span>
+                                )}
                               </td>
                             </tr>
                           );

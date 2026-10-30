@@ -9,6 +9,7 @@ import {
   WareraCumulativeDonation,
   WareraUserLite,
   WareraCompany,
+  LiveCounterpartyProfile,
 } from '../types/warera';
 import { NationalTransaction } from '../types/ministry';
 
@@ -705,7 +706,9 @@ export async function fetchGranularDonationTransactions(
           sellerId: item.sellerId,
           buyerId: item.buyerId || citizenId,
           sellerCountryId: itemCountryId,
+          buyerCountryId: item.buyerCountryId || (typeof item.buyerCountry === 'object' ? item.buyerCountry?._id : item.buyerCountry),
           sellerMuId: item.sellerMuId,
+          buyerMuId: item.buyerMuId || (typeof item.buyerMu === 'object' ? item.buyerMu?._id : item.buyerMu),
           companyId: item.companyId || item.employerId || item.employer?._id,
           item: extractItemString(item.itemCode || item.item || item.commodity || item.resource || item.resourceType),
           itemCode: typeof item.itemCode === 'string' ? item.itemCode : undefined,
@@ -810,11 +813,43 @@ export async function fetchUserTransactions(
         item.toCountryId ||
         item.countryId
     );
+    const rawBuyerCountryId = extractIdStr(
+      item.buyerCountryId ||
+        item.buyerCountry ||
+        item.sourceCountry ||
+        item.sourceCountryId ||
+        item.fromCountryId
+    );
     const rawSellerMuId = extractIdStr(item.sellerMuId || item.muId);
+    const rawBuyerMuId = extractIdStr(item.buyerMuId || item.buyerMu);
     const rawCompanyId = extractIdStr(item.companyId || item.employerId || item.employer || item.employer?._id);
     const rawAuthorId = extractIdStr(item.authorId || item.author || item.creatorId || item.creator);
     const rawSenderId = extractIdStr(item.senderId || item.sender || item.fromId || item.from);
     const rawRecipientId = extractIdStr(item.recipientId || item.recipient || item.toId || item.to || item.workerId || item.employeeId);
+
+    // Harvest any embedded user profile objects on the raw transaction item if not already live-resolved
+    const harvestEmbeddedActor = (actorObj: any, fallbackId?: string) => {
+      if (!actorObj || typeof actorObj !== 'object') return;
+      const actorId = extractIdStr(actorObj) || fallbackId;
+      if (!actorId || knownCountryIdsSet.has(actorId)) return;
+      const actorName = actorObj.username || actorObj.name;
+      const actorAvatar = actorObj.avatarUrl || actorObj.avatar;
+      const actorCountry = extractIdStr(actorObj.country || actorObj.countryId);
+      if (actorName && !memoryUserCache[actorId]?.skillsUpdatedAt) {
+        memoryUserCache[actorId] = {
+          ...(memoryUserCache[actorId] || { _id: actorId, isActive: true }),
+          _id: actorId,
+          username: actorName,
+          avatarUrl: actorAvatar || memoryUserCache[actorId]?.avatarUrl,
+          country: actorCountry || memoryUserCache[actorId]?.country,
+          countryId: actorCountry || memoryUserCache[actorId]?.countryId,
+        };
+      }
+    };
+    harvestEmbeddedActor(item.seller, rawSellerId);
+    harvestEmbeddedActor(item.buyer, rawBuyerId);
+    harvestEmbeddedActor(item.recipient, rawRecipientId);
+    harvestEmbeddedActor(item.sender, rawSenderId);
 
     // In official WarEra TransactionListItem:
     // - sellerId === userId for inflows (wages earned, trading sales, itemMarket sales, articleTip received)
@@ -877,7 +912,9 @@ export async function fetchUserTransactions(
       sellerId: resolvedSellerId,
       buyerId: resolvedBuyerId,
       sellerCountryId: rawSellerCountryId || undefined,
+      buyerCountryId: rawBuyerCountryId || undefined,
       sellerMuId: rawSellerMuId || undefined,
+      buyerMuId: rawBuyerMuId || undefined,
       companyId: resolvedCompanyId,
       senderId: rawSenderId || undefined,
       recipientId: rawRecipientId || undefined,
@@ -1061,27 +1098,41 @@ export async function fetchPublicCumulativeDonations(
       break;
     }
 
-    // Proactively harvest embedded user profiles from cumulative items so patrons resolve with 0 latency
+    // Proactively harvest embedded user profiles from cumulative items ONLY as fallback when no live profile exists
     const harvestedUsers: WareraUserLite[] = [];
     rawItems.forEach((it) => {
       const uObj = typeof it.user === 'object' ? it.user : (typeof it.donor === 'object' ? it.donor : null);
       const uid = it.userId || (uObj ? uObj._id : null) || it.donorId;
       if (uid && (uObj || it.username)) {
+        const existingLive = memoryUserCache[uid];
+        // Never overwrite a live-fetched user profile (which has skillsUpdatedAt) with a historical donation snapshot
+        if (existingLive && existingLive.skillsUpdatedAt && existingLive.username && !existingLive.username.startsWith('Citizen #')) {
+          return;
+        }
         const uName = uObj?.username || it.username || it.donorUsername;
         const uAvatar = uObj?.avatarUrl || uObj?.avatar || it.avatarUrl || it.avatar;
+        const uCountry =
+          typeof uObj?.country === 'string'
+            ? uObj.country
+            : typeof uObj?.country === 'object' && uObj?.country?._id
+            ? uObj.country._id
+            : existingLive?.country || countryId;
         const uUser: WareraUserLite = {
           _id: uid,
-          username: uName || `Citizen #${uid.slice(-6)}`,
-          avatarUrl: uAvatar,
-          country: countryId,
+          username: existingLive?.username && !existingLive.username.startsWith('Citizen #')
+            ? existingLive.username
+            : (uName || `Citizen #${uid.slice(-6)}`),
+          avatarUrl: existingLive?.avatarUrl || uAvatar,
+          country: uCountry,
+          countryId: uCountry,
           isActive: uObj?.isActive !== undefined ? Boolean(uObj.isActive) : true,
-          leveling: uObj?.leveling,
-          level: Number(uObj?.leveling?.level ?? uObj?.level ?? 0),
-          militaryRank: uObj?.militaryRank,
-          rankings: uObj?.rankings,
-          stats: uObj?.stats,
+          leveling: uObj?.leveling || existingLive?.leveling,
+          level: Number(uObj?.leveling?.level ?? uObj?.level ?? existingLive?.level ?? 0),
+          militaryRank: uObj?.militaryRank ?? existingLive?.militaryRank,
+          rankings: uObj?.rankings || existingLive?.rankings,
+          stats: uObj?.stats || existingLive?.stats,
         };
-        memoryUserCache[uid] = { ...(memoryUserCache[uid] || {}), ...uUser };
+        memoryUserCache[uid] = { ...(existingLive || {}), ...uUser };
         harvestedUsers.push(uUser);
       }
     });
@@ -1184,11 +1235,17 @@ export async function batchResolveUsers(
   countryId?: string
 ): Promise<Record<string, WareraUserLite>> {
   const existingMap = await storage.getAllUsers();
-  Object.assign(memoryUserCache, existingMap);
+  // Merge persisted users into memoryUserCache without overwriting fresher in-memory live profiles
+  for (const [id, persistedUser] of Object.entries(existingMap)) {
+    const inMem = memoryUserCache[id];
+    if (!inMem || (persistedUser.skillsUpdatedAt || 0) > (inMem.skillsUpdatedAt || 0)) {
+      memoryUserCache[id] = persistedUser;
+    }
+  }
 
   const liveCensusSet = countryId ? liveCountryCensusMap[countryId] : undefined;
   const nowMs = Date.now();
-  const SKILLS_TTL_MS = 15 * 60 * 1000; // Refresh cached skill trees & reset dates every 15 minutes
+  const SKILLS_TTL_MS = 10 * 60 * 1000; // Refresh cached identities, avatars, countries & skill trees every 10 minutes
 
   // Filter missing: query users who have no record, unresolved level, missing deep skills/rankings, or stale skillsUpdatedAt
   const missingIds = userIds.filter((id) => {
@@ -1209,7 +1266,8 @@ export async function batchResolveUsers(
   const chunkSize = 16; // High-throughput concurrency chunk
   for (let i = 0; i < missingIds.length; i += chunkSize) {
     const chunk = missingIds.slice(i, i + chunkSize);
-    const results = await Promise.all(chunk.map((uid) => fetchUserLite(uid, false)));
+    // CRITICAL: Pass forceRefresh = true so expired/stale cached users actually re-fetch live from api2.warera.io!
+    const results = await Promise.all(chunk.map((uid) => fetchUserLite(uid, true)));
     const chunkUsers: WareraUserLite[] = [];
     results.forEach((u, idx) => {
       const uid = chunk[idx];
@@ -1453,7 +1511,13 @@ export async function fetchUserCompanies(userId: string, forceRefresh = false): 
 
             const managerObj = liveManager || (typeof d.manager === 'object' && d.manager ? d.manager : null);
             const managerId = managerObj?.user || managerObj?._id || (typeof d.manager === 'string' ? d.manager : d.managerId);
-            const managerName = managerObj?.username || managerObj?.name || d.managerName;
+            let managerName = managerObj?.username || managerObj?.name || d.managerName;
+            if (managerId && (!managerName || String(managerName).startsWith('Citizen #'))) {
+              const mgrUser = await fetchUserLite(String(managerId), false);
+              if (mgrUser?.username) {
+                managerName = mgrUser.username;
+              }
+            }
 
             companies.push({
               _id: d._id,
@@ -1497,6 +1561,248 @@ export async function fetchUserCompanies(userId: string, forceRefresh = false): 
     console.warn('Failed to fetch user companies:', err);
     return memoryCompanyCache[userId] || [];
   }
+}
+
+// =========================================================================
+// Live Counterparty & Company Owner Resolution for Audit Receipt View
+// =========================================================================
+const liveCounterpartyCache: Record<string, LiveCounterpartyProfile> = {};
+const COUNTERPARTY_TTL_MS = 5 * 60 * 1000; // 5-minute session TTL for live audit inspections
+
+let cachedCountriesLookupMap: Record<string, WareraCountry> | null = null;
+async function ensureCountriesLookupMap(): Promise<Record<string, WareraCountry>> {
+  if (cachedCountriesLookupMap && Object.keys(cachedCountriesLookupMap).length > 0) {
+    return cachedCountriesLookupMap;
+  }
+  const map: Record<string, WareraCountry> = {};
+  try {
+    let list = await storage.getCountries();
+    if (!list || list.length === 0) {
+      list = await getCountries();
+    }
+    for (const c of list) {
+      if (c?._id) map[c._id.trim()] = c;
+    }
+  } catch {
+    // ignore
+  }
+  cachedCountriesLookupMap = map;
+  return map;
+}
+
+/**
+ * Resolves a single Company ID via company.getById and live-fetches the company owner's player profile.
+ */
+async function resolveLiveCompanyAndOwner(
+  companyId: string,
+  countriesMap: Record<string, WareraCountry>,
+  signal?: AbortSignal
+): Promise<LiveCounterpartyProfile | null> {
+  try {
+    const enc = encodeURIComponent(JSON.stringify({ companyId }));
+    const res = await rateLimitedFetch(`${WARERA_TRPC_BASE}/company.getById?input=${enc}`, {
+      headers: { Accept: 'application/json' },
+      signal,
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    const d = json?.result?.data;
+    if (!d || !d._id) return null;
+
+    const companyName = String(d.name || 'Factory');
+    const ownerId =
+      typeof d.user === 'string'
+        ? d.user.trim()
+        : typeof d.user === 'object' && d.user?._id
+        ? String(d.user._id).trim()
+        : typeof d.owner === 'string'
+        ? d.owner.trim()
+        : '';
+
+    if (ownerId) {
+      const ownerUser = await fetchUserLite(ownerId, true);
+      if (ownerUser) {
+        const cId = extractCachedUserCountryId(ownerUser);
+        const countryObj = cId ? countriesMap[cId] : undefined;
+        const resolved: LiveCounterpartyProfile = {
+          id: companyId,
+          kind: 'company',
+          userId: ownerUser._id,
+          username: ownerUser.username || `Citizen #${ownerUser._id.slice(-6)}`,
+          avatarUrl: ownerUser.avatarUrl || ownerUser.avatar,
+          countryId: cId || undefined,
+          countryName: countryObj?.name,
+          countryCode: countryObj?.code,
+          companyId: d._id,
+          companyName,
+          resolvedAt: Date.now(),
+        };
+        liveCounterpartyCache[companyId] = resolved;
+        // Also populate the owner's direct player entry in liveCounterpartyCache
+        liveCounterpartyCache[ownerUser._id] = {
+          id: ownerUser._id,
+          kind: 'player',
+          userId: ownerUser._id,
+          username: resolved.username,
+          avatarUrl: resolved.avatarUrl,
+          countryId: resolved.countryId,
+          countryName: resolved.countryName,
+          countryCode: resolved.countryCode,
+          resolvedAt: Date.now(),
+        };
+        return resolved;
+      }
+    }
+
+    const fallbackCompany: LiveCounterpartyProfile = {
+      id: companyId,
+      kind: 'company',
+      userId: ownerId || undefined,
+      username: companyName,
+      companyId: d._id,
+      companyName,
+      resolvedAt: Date.now(),
+    };
+    liveCounterpartyCache[companyId] = fallbackCompany;
+    return fallbackCompany;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolves a batch of counterparty IDs (Players, Companies + Owners, Country Treasuries, or Military Units)
+ * with live data from api2.warera.io so receipt views always display current usernames, avatars, and flags.
+ */
+export async function resolveLiveCounterpartiesBatch(
+  counterpartyIds: string[],
+  companyIds: string[] = [],
+  signal?: AbortSignal
+): Promise<Record<string, LiveCounterpartyProfile>> {
+  const now = Date.now();
+  const countriesMap = await ensureCountriesLookupMap();
+  const result: Record<string, LiveCounterpartyProfile> = {};
+
+  const uniqueCompanyIds = Array.from(
+    new Set(companyIds.map((id) => (id || '').trim()).filter((id) => id.length >= 12))
+  );
+  const companyIdSet = new Set<string>(uniqueCompanyIds);
+
+  const uniqueCounterpartyIds = Array.from(
+    new Set(counterpartyIds.map((id) => (id || '').trim()).filter((id) => id.length >= 12))
+  );
+
+  // 1. Immediately resolve any known Country IDs or fresh session cache hits
+  const pendingCompanyIds: string[] = [];
+  const pendingActorIds: string[] = [];
+
+  for (const cid of uniqueCompanyIds) {
+    const cached = liveCounterpartyCache[cid];
+    if (cached && now - cached.resolvedAt < COUNTERPARTY_TTL_MS) {
+      result[cid] = cached;
+    } else {
+      pendingCompanyIds.push(cid);
+    }
+  }
+
+  for (const id of uniqueCounterpartyIds) {
+    if (countriesMap[id] || knownCountryIdsSet.has(id)) {
+      const c = countriesMap[id];
+      const countryProfile: LiveCounterpartyProfile = {
+        id,
+        kind: 'country',
+        username: c?.name || 'National Treasury',
+        countryId: id,
+        countryName: c?.name || 'National Treasury',
+        countryCode: c?.code,
+        resolvedAt: now,
+      };
+      liveCounterpartyCache[id] = countryProfile;
+      result[id] = countryProfile;
+      continue;
+    }
+
+    const cached = liveCounterpartyCache[id];
+    if (cached && now - cached.resolvedAt < COUNTERPARTY_TTL_MS) {
+      result[id] = cached;
+      continue;
+    }
+
+    if (!companyIdSet.has(id)) {
+      pendingActorIds.push(id);
+    }
+  }
+
+  // 2. Resolve explicit Company IDs (and their live Owner Player profiles) in chunks of 6
+  const compChunkSize = 6;
+  for (let i = 0; i < pendingCompanyIds.length; i += compChunkSize) {
+    if (signal?.aborted) break;
+    const chunk = pendingCompanyIds.slice(i, i + compChunkSize);
+    const resolvedChunk = await Promise.all(
+      chunk.map((cid) => resolveLiveCompanyAndOwner(cid, countriesMap, signal))
+    );
+    resolvedChunk.forEach((prof, idx) => {
+      const cid = chunk[idx];
+      if (prof) {
+        result[cid] = prof;
+        if (prof.userId && liveCounterpartyCache[prof.userId]) {
+          result[prof.userId] = liveCounterpartyCache[prof.userId];
+        }
+      }
+    });
+  }
+
+  // 3. Resolve Player IDs live via fetchUserLite(id, true), with fallback to company.getById if an ID is actually a Company
+  const actorChunkSize = 8;
+  for (let i = 0; i < pendingActorIds.length; i += actorChunkSize) {
+    if (signal?.aborted) break;
+    const chunk = pendingActorIds.slice(i, i + actorChunkSize);
+    const resolvedChunk = await Promise.all(
+      chunk.map(async (actorId): Promise<LiveCounterpartyProfile | null> => {
+        // Check if already resolved as a company owner in step 2
+        const alreadyCached = liveCounterpartyCache[actorId];
+        if (alreadyCached && Date.now() - alreadyCached.resolvedAt < COUNTERPARTY_TTL_MS) {
+          return alreadyCached;
+        }
+
+        const liveUser = await fetchUserLite(actorId, true);
+        if (liveUser && liveUser._id) {
+          const cId = extractCachedUserCountryId(liveUser);
+          const countryObj = cId ? countriesMap[cId] : undefined;
+          const profile: LiveCounterpartyProfile = {
+            id: actorId,
+            kind: 'player',
+            userId: liveUser._id,
+            username: liveUser.username || `Citizen #${actorId.slice(-6)}`,
+            avatarUrl: liveUser.avatarUrl || liveUser.avatar,
+            countryId: cId || undefined,
+            countryName: countryObj?.name,
+            countryCode: countryObj?.code,
+            resolvedAt: Date.now(),
+          };
+          liveCounterpartyCache[actorId] = profile;
+          return profile;
+        }
+
+        // Fallback: If not a user, check if it's a Company ID (e.g. wage buyerId/sellerId set to companyId)
+        const companyProfile = await resolveLiveCompanyAndOwner(actorId, countriesMap, signal);
+        if (companyProfile) {
+          return companyProfile;
+        }
+
+        return null;
+      })
+    );
+
+    resolvedChunk.forEach((prof, idx) => {
+      const actorId = chunk[idx];
+      if (prof) {
+        result[actorId] = prof;
+      }
+    });
+  }
+
+  return result;
 }
 
 // Authoritative live citizen IDs per country from user.getUsersByCountry

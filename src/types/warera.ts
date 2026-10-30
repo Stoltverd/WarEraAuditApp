@@ -134,7 +134,9 @@ export interface WareraTransaction {
   sellerId?: string;        // Seller user ID (inflow earner for wage, trading, itemMarket, articleTip)
   buyerId?: string;         // Buyer user ID (outflow spender for trading, itemMarket, wage employer, donation donor, fees)
   sellerCountryId?: string; // Recipient Country ID for country donations / national market transactions
+  buyerCountryId?: string;  // Buyer Country ID for national treasury purchases/transfers
   sellerMuId?: string;      // Recipient Military Unit ID for MU donations
+  buyerMuId?: string;       // Buyer Military Unit ID
   companyId?: string;       // Employer or company ID (for wage/production)
   senderId?: string;        // Payer / sender ID
   recipientId?: string;     // Beneficiary / recipient ID
@@ -148,6 +150,23 @@ export interface WareraTransaction {
   isPersonalReceipt?: boolean; // True when fetched from userId personal transaction stream
   createdAt: string;        // Exact timestamp of this transaction
   updatedAt?: string;
+}
+
+/**
+ * Live-resolved counterparty profile for forensic receipt auditing (Player, Company + Owner, Country Treasury, or Military Unit)
+ */
+export interface LiveCounterpartyProfile {
+  id: string;
+  kind: 'player' | 'company' | 'country' | 'mu';
+  userId?: string;
+  username: string;
+  avatarUrl?: string;
+  countryId?: string;
+  countryName?: string;
+  countryCode?: string;
+  companyId?: string;
+  companyName?: string;
+  resolvedAt: number;
 }
 
 /**
