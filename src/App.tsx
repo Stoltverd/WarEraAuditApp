@@ -874,19 +874,31 @@ export default function App() {
       const warPoints = calculateWarSkillPoints(user);
       const ecoPoints = calculateEcoSkillPoints(user);
       const playstyle = evaluatePlaystyle(warPoints, ecoPoints);
+      const audited = auditedProfilesMap[user._id];
+      const activeCompsCap = audited?.activeCompaniesCount ?? Number(user.skills?.companies?.value ?? 2);
       const {
         daysInBuild,
         buildDurationSource,
+        daysSinceSkillReset,
+        recentResetType,
+        previousPlaystyleBeforeReset,
         switchedFromWarRecently,
       } = resolveCitizenBuildTenure(
         user,
         playstyle,
         weeklyCombatDamage,
         priorPlaystylesMap[user._id],
-        respecAlerts
+        respecAlerts,
+        {
+          worksCount: Number(user.stats?.worksCount || audited?.worksCount || 0),
+          companiesCount: audited?.companiesCount ?? activeCompsCap,
+          companiesWealthBtc: companiesWealth,
+          resourceWealthBtc: resourceWealth,
+          lifetimeCombatDamage,
+          auditedReceiptCount: audited?.receiptCount,
+          wagesCount: audited?.playerCashflow?.wagesCount,
+        }
       );
-      const audited = auditedProfilesMap[user._id];
-      const activeCompsCap = audited?.activeCompaniesCount ?? Number(user.skills?.companies?.value ?? 2);
       const skillBreakdown = extractCitizenSkillBreakdown(user);
       const buildEvaluation = evaluateCitizenSkillBuild(level, playstyle, skillBreakdown, activeCompsCap);
       const isAuditedValid = Boolean(
@@ -1045,6 +1057,10 @@ export default function App() {
         isActive: true,
         daysInBuild,
         buildDurationSource,
+        daysSinceSkillReset,
+        recentResetType,
+        previousPlaystyleBeforeReset,
+        switchedFromWarRecently,
         daysSinceLastDonation,
         isInactiveDonor,
         isOnWatch: Boolean(watchedItem),
@@ -1178,6 +1194,21 @@ export default function App() {
               ecoSkillPoints: a.ecoSkillPoints,
               warSkillPoints: a.warSkillPoints,
               playstyle: a.playstyle,
+              daysInBuild: a.daysInBuild,
+              buildDurationSource: a.buildDurationSource,
+              daysSinceSkillReset: a.daysSinceSkillReset,
+              recentResetType: a.recentResetType,
+              previousPlaystyleBeforeReset: a.previousPlaystyleBeforeReset,
+              switchedFromWarRecently: a.switchedFromWarRecently,
+              specialContextTag: a.specialContextTag,
+              specialContextBadge: a.specialContextBadge,
+              specialContextReason: a.specialContextReason,
+              isDormantPillar: a.isDormantPillar,
+              dormantWarningBadge: a.dormantWarningBadge,
+              leechTier: a.leechTier,
+              economicStanding: a.economicStanding,
+              ministerialVerdict: a.ministerialVerdict,
+              ministerialVerdictReason: a.ministerialVerdictReason,
               skillBreakdown: a.skillBreakdown ?? existing.skillBreakdown,
               buildEvaluation: a.buildEvaluation ?? existing.buildEvaluation,
             };

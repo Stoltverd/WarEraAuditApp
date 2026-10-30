@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan to initialize all company cards in a collapsed state across both the Audit Modal (Companies & Bot Workforce tab) and the standalone Workforce Advisor tab, and add a bilingual (EN/ES) Expand All / Collapse All control above the company cards list.",
-  "updatedAt":  "2026-10-30T03:17:33.194043207Z",
+  "summary":  "Implementation plan for distinguishing same-build skill point redistributions (Eco ↻ Eco, War ↻ War) from cross-build switches (War → Eco, Eco → War), tracking both build archetype tenure and last skill reset timer using local history plus combat/economic footprint verification.",
+  "updatedAt":  "2026-10-30T17:31:34.791730886Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

@@ -587,6 +587,14 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
       donationCount: currentProfile.donationCount,
       daysSinceLastDonation: currentProfile.daysSinceLastDonation,
       daysInBuild: currentProfile.daysInBuild,
+      switchedFromWarRecently:
+        currentProfile.recentResetType === 'same-build-reset'
+          ? false
+          : Boolean(
+              currentProfile.switchedFromWarRecently ||
+                currentProfile.buildDurationSource === 'weekly-combat-bound' ||
+                (currentProfile.playstyle !== 'pure-war' && activeCombatDamage > 0)
+            ),
     }
   );
 
@@ -605,6 +613,54 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
     currentProfile.isHistoricalTopDonor,
     currentProfile.isNationalHeavyHitter
   );
+
+  // Keep audited profile standing & special context synchronized between Audit Modal and Overview
+  useEffect(() => {
+    if (
+      !localProfile ||
+      localProfile.auditBaselineStatus !== 'audited' ||
+      auditPeriodDays !== (config.analysisPeriodDays || 7)
+    ) {
+      return;
+    }
+    if (
+      localProfile.leechTier !== liveTierEval.tier ||
+      localProfile.economicStanding !== standing ||
+      localProfile.ministerialVerdict !== liveVerdictEval.ministerialVerdict ||
+      localProfile.specialContextTag !== liveTierEval.specialContextTag ||
+      localProfile.specialContextBadge !== liveTierEval.specialContextBadge
+    ) {
+      const syncedProfile: CitizenEconomicProfile = {
+        ...localProfile,
+        leechTier: liveTierEval.tier,
+        economicStanding: standing,
+        ministerialVerdict: liveVerdictEval.ministerialVerdict,
+        ministerialVerdictReason: liveVerdictEval.ministerialVerdictReason,
+        tierReasonBadge: liveTierEval.tierReasonBadge,
+        isDormantPillar: liveTierEval.isDormantPillar,
+        dormantWarningBadge: liveTierEval.dormantWarningBadge,
+        specialContextTag: liveTierEval.specialContextTag,
+        specialContextBadge: liveTierEval.specialContextBadge,
+        specialContextReason: liveTierEval.specialContextReason,
+      };
+      setLocalProfile(syncedProfile);
+      onUpdateProfile?.(syncedProfile);
+      storage.saveAuditedProfile(syncedProfile);
+    }
+  }, [
+    localProfile,
+    auditPeriodDays,
+    config.analysisPeriodDays,
+    liveTierEval.tier,
+    liveTierEval.specialContextTag,
+    liveTierEval.specialContextBadge,
+    liveTierEval.tierReasonBadge,
+    liveTierEval.isDormantPillar,
+    liveTierEval.dormantWarningBadge,
+    liveVerdictEval.ministerialVerdict,
+    liveVerdictEval.ministerialVerdictReason,
+    standing,
+  ]);
 
   // On-demand fetch of citizen's live personal transaction ledger (Wages, Item Market, etc.)
   const handleStopStreaming = () => {
@@ -1319,22 +1375,81 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                 </span>
                 <span>·</span>
                 <span className="text-cyan-400">
-                  {`${
-                    currentProfile.playstyle === 'pure-eco'
-                      ? tx('🌾 Eco Build', '🌾 Build Eco')
-                      : currentProfile.playstyle === 'pure-war'
-                      ? tx('⚔️ War Build', '⚔️ Build Guerra')
-                      : tx('⚖️ Hybrid Build', '⚖️ Build Híbrida')
-                  } · ${
-                    typeof currentProfile.daysInBuild === 'number'
-                      ? tx(
-                          `Active for ${currentProfile.daysInBuild}d${currentProfile.daysInBuild >= 7 ? ' (Cooldown cleared)' : ''}`,
-                          `Activa por ${currentProfile.daysInBuild}d${currentProfile.daysInBuild >= 7 ? ' (Enfriamiento finalizado)' : ''}`
-                        )
-                      : currentProfile.buildDurationSource === 'weekly-combat-bound'
-                      ? tx('≤ 7d (Recent Switch)', '≤ 7d (Cambio Reciente)')
-                      : tx('Reset date unverified', 'Reinicio no verificado')
-                  }`}
+                  {(() => {
+                    const modeShort =
+                      currentProfile.playstyle === 'pure-eco'
+                        ? 'Eco'
+                        : currentProfile.playstyle === 'pure-war'
+                        ? 'War'
+                        : 'Hybrid';
+                    const modeHeader =
+                      currentProfile.playstyle === 'pure-eco'
+                        ? tx('🌾 Eco Build', '🌾 Build Eco')
+                        : currentProfile.playstyle === 'pure-war'
+                        ? tx('⚔️ War Build', '⚔️ Build Guerra')
+                        : tx('⚖️ Hybrid Build', '⚖️ Build Híbrida');
+
+                    if (currentProfile.recentResetType === 'same-build-reset') {
+                      const tenureText =
+                        typeof currentProfile.daysInBuild === 'number'
+                          ? tx(
+                              `Continued ${modeShort} (Active ${currentProfile.daysInBuild}d+)`,
+                              `${modeShort} Continuo (Activa ${currentProfile.daysInBuild}d+)`
+                            )
+                          : tx(`Continued ${modeShort}`, `${modeShort} Continuo`);
+                      const resetText =
+                        typeof currentProfile.daysSinceSkillReset === 'number'
+                          ? tx(
+                              `🔄 Reset ${currentProfile.daysSinceSkillReset}d ago (${modeShort} ↻ ${modeShort})`,
+                              `🔄 Reinicio hace ${currentProfile.daysSinceSkillReset}d (${modeShort} ↻ ${modeShort})`
+                            )
+                          : tx(`🔄 Point Redistribution (${modeShort} ↻ ${modeShort})`, `🔄 Redistribución (${modeShort} ↻ ${modeShort})`);
+                      return `${modeHeader} · ${tenureText} · ${resetText}`;
+                    }
+
+                    if (
+                      currentProfile.recentResetType === 'build-switch' ||
+                      currentProfile.buildDurationSource === 'weekly-combat-bound'
+                    ) {
+                      const prevShort =
+                        currentProfile.previousPlaystyleBeforeReset === 'pure-war'
+                          ? 'War'
+                          : currentProfile.previousPlaystyleBeforeReset === 'pure-eco'
+                          ? 'Eco'
+                          : currentProfile.previousPlaystyleBeforeReset === 'hybrid'
+                          ? 'Hybrid'
+                          : currentProfile.playstyle !== 'pure-war'
+                          ? 'War'
+                          : 'Eco';
+                      const tenureText =
+                        typeof currentProfile.daysInBuild === 'number'
+                          ? tx(`Active for ${currentProfile.daysInBuild}d`, `Activa por ${currentProfile.daysInBuild}d`)
+                          : tx('Active ≤ 7d', 'Activa ≤ 7d');
+                      const resetText =
+                        typeof currentProfile.daysSinceSkillReset === 'number'
+                          ? tx(
+                              `🔄 Switched ${currentProfile.daysSinceSkillReset}d ago (${prevShort} → ${modeShort})`,
+                              `🔄 Cambio hace ${currentProfile.daysSinceSkillReset}d (${prevShort} → ${modeShort})`
+                            )
+                          : tx(`🔄 Recent Switch (${prevShort} → ${modeShort})`, `🔄 Cambio Reciente (${prevShort} → ${modeShort})`);
+                      return `${modeHeader} · ${tenureText} · ${resetText}`;
+                    }
+
+                    if (typeof currentProfile.daysInBuild === 'number') {
+                      const tenureText = tx(
+                        `Active for ${currentProfile.daysInBuild}d${currentProfile.daysInBuild >= 7 ? ' (Cooldown cleared)' : ''}`,
+                        `Activa por ${currentProfile.daysInBuild}d${currentProfile.daysInBuild >= 7 ? ' (Enfriamiento finalizado)' : ''}`
+                      );
+                      const resetSuffix =
+                        typeof currentProfile.daysSinceSkillReset === 'number' &&
+                        currentProfile.daysSinceSkillReset !== currentProfile.daysInBuild
+                          ? ` · ${tx(`Last reset ${currentProfile.daysSinceSkillReset}d ago`, `Últ. reinicio hace ${currentProfile.daysSinceSkillReset}d`)}`
+                          : '';
+                      return `${modeHeader} · ${tenureText}${resetSuffix}`;
+                    }
+
+                    return `${modeHeader} · ${tx('Reset date unverified', 'Reinicio no verificado')}`;
+                  })()}
                 </span>
                 <span>·</span>
                 <span>
@@ -1503,14 +1618,18 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                 <p className="text-[11px] text-slate-300 leading-relaxed">
                   {tx(
                     `Detected from v0.27.3 skill allocation (${currentProfile.ecoSkillPoints} Eco SP / ${currentProfile.warSkillPoints} War SP${
-                      typeof currentProfile.daysInBuild === 'number'
+                      currentProfile.recentResetType === 'same-build-reset'
+                        ? `, continued ${currentProfile.playstyle === 'pure-eco' ? 'Eco' : currentProfile.playstyle === 'pure-war' ? 'War' : 'Hybrid'} build${typeof currentProfile.daysInBuild === 'number' ? ` (${currentProfile.daysInBuild}d+)` : ''} with in-place point redistribution ${currentProfile.daysSinceSkillReset ?? 0}d ago`
+                        : typeof currentProfile.daysInBuild === 'number'
                         ? `, active ${currentProfile.daysInBuild}d`
                         : currentProfile.buildDurationSource === 'weekly-combat-bound'
                         ? ', switched ≤7d ago'
                         : ', reset date unverified'
                     }). Sets this citizen's standard quota to ${targetQuotaPct}% and Model Patriot quota to ${targetPatriotPct}% of verified ${auditPeriodDays}D gross cashflow.`,
                     `Detectado por puntos de habilidad v0.27.3 (${currentProfile.ecoSkillPoints} Eco SP / ${currentProfile.warSkillPoints} War SP${
-                      typeof currentProfile.daysInBuild === 'number'
+                      currentProfile.recentResetType === 'same-build-reset'
+                        ? `, build ${currentProfile.playstyle === 'pure-eco' ? 'Eco' : currentProfile.playstyle === 'pure-war' ? 'War' : 'Hybrid'} continua${typeof currentProfile.daysInBuild === 'number' ? ` (${currentProfile.daysInBuild}d+)` : ''} con redistribución de puntos hace ${currentProfile.daysSinceSkillReset ?? 0}d`
+                        : typeof currentProfile.daysInBuild === 'number'
                         ? `, activo por ${currentProfile.daysInBuild}d`
                         : currentProfile.buildDurationSource === 'weekly-combat-bound'
                         ? ', cambio reciente ≤7d'

@@ -524,6 +524,11 @@ export function buildAuditedCitizenProfile(
       donationCount: profile.donationCount,
       daysSinceLastDonation: profile.daysSinceLastDonation,
       daysInBuild: profile.daysInBuild,
+      switchedFromWarRecently: Boolean(
+        profile.switchedFromWarRecently ||
+          profile.buildDurationSource === 'weekly-combat-bound' ||
+          (profile.playstyle !== 'pure-war' && (profile.totalCombatDamage || 0) > 0)
+      ),
     }
   );
 
@@ -885,100 +890,242 @@ export function calculateEcoSkillPoints(user: WareraUserLite): number {
 }
 
 /**
- * Multi-Signal Build Tenure Resolver (Universal for all citizens).
- * NEVER falls back to `user.createdAt` (account creation date), preventing false 200+ day Eco timers
- * when a free respec or recent build switch occurred without updating `dates.lastSkillsResetAt`.
+ * Multi-Signal Build Tenure & Skill Reset Resolver (Universal for all citizens).
+ * Distinguishes between:
+ *  - Cross-build switches (e.g. War -> Eco, Eco -> War) where build tenure restarts
+ *  - Same-build skill point redistributions (e.g. Eco ↻ Eco, War ↻ War) where the citizen
+ *    continues their existing build archetype while recording a recent skill reset timer.
+ * Combines local playstyle/alert history with combat and economic footprint verification
+ * so resets that occurred prior to local tracking are accurately classified.
  */
 export function resolveCitizenBuildTenure(
   user: WareraUserLite,
   playstyle: PlaystyleMode,
   weeklyCombatDamage = 0,
   playstyleRecord?: import('../types/ministry').CitizenPlaystyleRecord,
-  respecAlerts?: RespecAlert[]
+  respecAlerts?: RespecAlert[],
+  footprintContext?: {
+    worksCount?: number;
+    companiesCount?: number;
+    companiesWealthBtc?: number;
+    resourceWealthBtc?: number;
+    lifetimeCombatDamage?: number;
+    auditedReceiptCount?: number;
+    wagesCount?: number;
+  }
 ): {
   daysInBuild?: number;
   buildDurationSource: 'api-reset' | 'respec-detected' | 'weekly-combat-bound' | 'unverified';
+  daysSinceSkillReset?: number;
+  recentResetType: 'same-build-reset' | 'build-switch' | 'none';
+  previousPlaystyleBeforeReset?: PlaystyleMode;
   switchedFromWarRecently: boolean;
 } {
-  const candidateTimestamps: { ms: number; source: 'api-reset' | 'respec-detected' }[] = [];
+  const nowMs = Date.now();
+  const resetCandidates: { ms: number; source: 'api-reset' | 'respec-detected' }[] = [];
 
-  // Signal 1: Explicit API lastSkillsResetAt (when present and valid)
+  // Signal 1: Explicit API lastSkillsResetAt (when present and distinct from account creation)
+  const createdMs = user.createdAt ? new Date(user.createdAt).getTime() : 0;
   if (user.dates?.lastSkillsResetAt) {
     const apiResetMs = new Date(user.dates.lastSkillsResetAt).getTime();
-    // Guard against API returning createdAt as lastSkillsResetAt
-    const createdMs = user.createdAt ? new Date(user.createdAt).getTime() : 0;
     if (!isNaN(apiResetMs) && apiResetMs > 0 && Math.abs(apiResetMs - createdMs) > 60 * 1000) {
-      candidateTimestamps.push({ ms: apiResetMs, source: 'api-reset' });
+      resetCandidates.push({ ms: apiResetMs, source: 'api-reset' });
     }
   }
 
-  // Signal 2: Local playstyle fingerprint transition timestamp
+  // Signal 2: Local playstyle record lastSkillsResetAt or buildStartedAt
+  if (playstyleRecord?.lastSkillsResetAt) {
+    const recResetMs = new Date(playstyleRecord.lastSkillsResetAt).getTime();
+    if (!isNaN(recResetMs) && recResetMs > 0 && Math.abs(recResetMs - createdMs) > 60 * 1000) {
+      resetCandidates.push({ ms: recResetMs, source: 'respec-detected' });
+    }
+  }
   if (playstyleRecord?.buildStartedAt) {
     const localMs = new Date(playstyleRecord.buildStartedAt).getTime();
     if (!isNaN(localMs) && localMs > 0) {
-      candidateTimestamps.push({ ms: localMs, source: 'respec-detected' });
+      resetCandidates.push({ ms: localMs, source: 'respec-detected' });
     }
   }
 
-  // Signal 3: Non-deletable RespecAlert history for this citizen
-  if (respecAlerts && respecAlerts.length > 0) {
-    for (const alert of respecAlerts) {
-      if (alert.userId === user._id && alert.newMode === playstyle && alert.timestamp) {
-        const alertMs = new Date(alert.timestamp).getTime();
-        if (!isNaN(alertMs) && alertMs > 0) {
-          candidateTimestamps.push({ ms: alertMs, source: 'respec-detected' });
-        }
+  // Signal 3: Citizen's RespecAlert history (newest first)
+  const citizenAlerts = (respecAlerts || [])
+    .filter((a) => a.userId === user._id && a.timestamp)
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+  for (const alert of citizenAlerts) {
+    const alertMs = new Date(alert.timestamp).getTime();
+    if (!isNaN(alertMs) && alertMs > 0) {
+      resetCandidates.push({ ms: alertMs, source: 'respec-detected' });
+    }
+  }
+
+  resetCandidates.sort((a, b) => b.ms - a.ms);
+  const newestReset = resetCandidates[0];
+  const daysSinceSkillReset = newestReset
+    ? Math.max(0, Math.floor((nowMs - newestReset.ms) / (1000 * 60 * 60 * 24)))
+    : undefined;
+
+  let recentResetType: 'same-build-reset' | 'build-switch' | 'none' = 'none';
+  let previousPlaystyleBeforeReset: PlaystyleMode | undefined = undefined;
+
+  // Step A: Check deterministic local history & RespecAlert records
+  const latestAlert = citizenAlerts[0];
+  if (latestAlert && latestAlert.newMode === playstyle) {
+    const alertAgeDays = Math.max(0, Math.floor((nowMs - new Date(latestAlert.timestamp).getTime()) / (1000 * 60 * 60 * 24)));
+    if (alertAgeDays <= 14) {
+      if (latestAlert.previousMode === playstyle) {
+        recentResetType = 'same-build-reset';
+        previousPlaystyleBeforeReset = playstyle;
+      } else {
+        recentResetType = 'build-switch';
+        previousPlaystyleBeforeReset = latestAlert.previousMode;
       }
     }
   }
 
-  const switchedFromWarRecently = Boolean(
-    playstyle !== 'pure-war' &&
-      (playstyleRecord?.previousPlaystyle === 'pure-war' ||
-        weeklyCombatDamage > 0 ||
-        respecAlerts?.some(
-          (a) =>
-            a.userId === user._id &&
-            a.previousMode === 'pure-war' &&
-            Date.now() - new Date(a.timestamp).getTime() <= 21 * 24 * 60 * 60 * 1000
-        ))
-  );
-
-  if (candidateTimestamps.length > 0) {
-    // Pick the most recent verified reset/transition timestamp
-    candidateTimestamps.sort((a, b) => b.ms - a.ms);
-    const newest = candidateTimestamps[0];
-    const days = Math.max(0, Math.floor((Date.now() - newest.ms) / (1000 * 60 * 60 * 24)));
-
-    // If citizen is in Eco build and has active 7-day combat damage, their Eco switch cannot be older than 7 days
-    if (playstyle === 'pure-eco' && weeklyCombatDamage > 0 && days > 7) {
-      return {
-        daysInBuild: undefined,
-        buildDurationSource: 'weekly-combat-bound',
-        switchedFromWarRecently: true,
-      };
+  if (recentResetType === 'none' && playstyleRecord && playstyleRecord.playstyle === playstyle) {
+    if (playstyleRecord.recentResetType === 'same-build-reset' && typeof daysSinceSkillReset === 'number' && daysSinceSkillReset <= 14) {
+      recentResetType = 'same-build-reset';
+      previousPlaystyleBeforeReset = playstyle;
+    } else if (
+      playstyleRecord.recentResetType === 'build-switch' &&
+      playstyleRecord.previousPlaystyle &&
+      playstyleRecord.previousPlaystyle !== playstyle &&
+      typeof daysSinceSkillReset === 'number' &&
+      daysSinceSkillReset <= 14
+    ) {
+      recentResetType = 'build-switch';
+      previousPlaystyleBeforeReset = playstyleRecord.previousPlaystyle;
+    } else if (
+      playstyleRecord.previousPlaystyle &&
+      playstyleRecord.previousPlaystyle !== playstyle &&
+      typeof daysSinceSkillReset === 'number' &&
+      daysSinceSkillReset <= 14
+    ) {
+      recentResetType = 'build-switch';
+      previousPlaystyleBeforeReset = playstyleRecord.previousPlaystyle;
     }
-
-    return {
-      daysInBuild: days,
-      buildDurationSource: newest.source,
-      switchedFromWarRecently,
-    };
   }
 
-  // Signal 4: Active 7D combat damage while currently in Eco build proves a switch within the last <= 7 days
-  if (playstyle === 'pure-eco' && weeklyCombatDamage > 0) {
+  // Step B: Combine with Combat & Economic Footprint Verification when a recent reset (<= 14d)
+  // occurred before local tracking started (or without an explicit cross-build alert)
+  if (recentResetType === 'none' && typeof daysSinceSkillReset === 'number' && daysSinceSkillReset <= 14) {
+    const worksCount = Number(footprintContext?.worksCount ?? user.stats?.worksCount ?? 0);
+    const companiesWealth = Number(footprintContext?.companiesWealthBtc ?? user.stats?.wealth?.companies ?? 0);
+    const companiesCap = Number(footprintContext?.companiesCount ?? user.skills?.companies?.value ?? 0);
+    const resourceWealth = Number(footprintContext?.resourceWealthBtc ?? 0);
+    const receiptCount = Number(footprintContext?.auditedReceiptCount ?? 0);
+    const wagesCount = Number(footprintContext?.wagesCount ?? 0);
+    const lifetimeDmg = Number(
+      footprintContext?.lifetimeCombatDamage ?? user.rankings?.userDamages?.value ?? weeklyCombatDamage ?? 0
+    );
+    const userLevel = Number(user.leveling?.level ?? user.level ?? 0);
+
+    if (playstyle === 'pure-eco') {
+      if (weeklyCombatDamage > 0) {
+        // Active 7D combat damage while in Eco proves a recent War -> Eco switch
+        recentResetType = 'build-switch';
+        previousPlaystyleBeforeReset = 'pure-war';
+      } else {
+        // 0 weekly combat damage + established economic footprint proves Eco ↻ Eco point redistribution
+        const hasEstablishedEcoFootprint =
+          worksCount >= 5 ||
+          companiesWealth > 25 ||
+          companiesCap >= 2 ||
+          resourceWealth > 25 ||
+          receiptCount >= 10 ||
+          wagesCount >= 2 ||
+          userLevel >= 15;
+        if (hasEstablishedEcoFootprint) {
+          recentResetType = 'same-build-reset';
+          previousPlaystyleBeforeReset = 'pure-eco';
+        }
+      }
+    } else if (playstyle === 'pure-war') {
+      if (weeklyCombatDamage > 0 || lifetimeDmg >= 20000 || userLevel >= 15) {
+        recentResetType = 'same-build-reset';
+        previousPlaystyleBeforeReset = 'pure-war';
+      }
+    } else if (playstyle === 'hybrid') {
+      recentResetType = 'same-build-reset';
+      previousPlaystyleBeforeReset = 'hybrid';
+    }
+  }
+
+  // Step C: Active 7D combat damage while in Eco build (even if free respec didn't update API reset timestamp)
+  if (playstyle === 'pure-eco' && weeklyCombatDamage > 0 && (daysSinceSkillReset === undefined || daysSinceSkillReset > 7)) {
     return {
       daysInBuild: undefined,
       buildDurationSource: 'weekly-combat-bound',
+      daysSinceSkillReset,
+      recentResetType: 'build-switch',
+      previousPlaystyleBeforeReset: 'pure-war',
       switchedFromWarRecently: true,
     };
   }
 
-  // Unverified reset date: never fabricate from user.createdAt
+  const switchedFromWarRecently = Boolean(
+    playstyle !== 'pure-war' &&
+      recentResetType !== 'same-build-reset' &&
+      (previousPlaystyleBeforeReset === 'pure-war' ||
+        playstyleRecord?.previousPlaystyle === 'pure-war' ||
+        weeklyCombatDamage > 0 ||
+        citizenAlerts.some(
+          (a) =>
+            a.previousMode === 'pure-war' &&
+            nowMs - new Date(a.timestamp).getTime() <= 21 * 24 * 60 * 60 * 1000
+        ))
+  );
+
+  // Step D: Resolve Archetype Tenure (daysInBuild) separately from Last Skill Reset Timer (daysSinceSkillReset)
+  if (recentResetType === 'same-build-reset') {
+    // Look for an earlier verified archetype start timestamp that predates the recent point redistribution
+    let archetypeStartMs: number | undefined = undefined;
+    if (playstyleRecord?.buildStartedAt) {
+      const bsMs = new Date(playstyleRecord.buildStartedAt).getTime();
+      if (!isNaN(bsMs) && bsMs > 0 && newestReset && newestReset.ms - bsMs >= 24 * 60 * 60 * 1000) {
+        archetypeStartMs = bsMs;
+      }
+    }
+    const modeSwitchAlert = citizenAlerts.find((a) => a.newMode === playstyle && a.previousMode !== playstyle);
+    if (modeSwitchAlert) {
+      const switchMs = new Date(modeSwitchAlert.timestamp).getTime();
+      if (!isNaN(switchMs) && switchMs > 0 && (!archetypeStartMs || switchMs < archetypeStartMs)) {
+        archetypeStartMs = switchMs;
+      }
+    }
+
+    const verifiedContinuedDays = archetypeStartMs
+      ? Math.max(1, Math.floor((nowMs - archetypeStartMs) / (1000 * 60 * 60 * 24)))
+      : undefined;
+
+    return {
+      daysInBuild: verifiedContinuedDays,
+      buildDurationSource: newestReset ? newestReset.source : 'unverified',
+      daysSinceSkillReset,
+      recentResetType: 'same-build-reset',
+      previousPlaystyleBeforeReset: previousPlaystyleBeforeReset || playstyle,
+      switchedFromWarRecently: false,
+    };
+  }
+
+  if (newestReset) {
+    return {
+      daysInBuild: daysSinceSkillReset,
+      buildDurationSource: newestReset.source,
+      daysSinceSkillReset,
+      recentResetType,
+      previousPlaystyleBeforeReset,
+      switchedFromWarRecently,
+    };
+  }
+
   return {
     daysInBuild: undefined,
     buildDurationSource: 'unverified',
+    daysSinceSkillReset: undefined,
+    recentResetType: 'none',
+    previousPlaystyleBeforeReset: undefined,
     switchedFromWarRecently,
   };
 }
@@ -1136,24 +1283,35 @@ export function detectCitizenRespecAlerts(
       }
     }
 
-    const effectiveBuildStartedAt = respecDetected
-      ? (apiResetAt && (!prior?.lastSkillsResetAt || apiResetAt !== prior.lastSkillsResetAt) ? apiResetAt : now)
+    const isModeSwitch = Boolean(respecDetected && prior?.playstyle && prior.playstyle !== profile.playstyle);
+    const isSameModeRedistribution = Boolean(respecDetected && prior?.playstyle && prior.playstyle === profile.playstyle);
+    const resetTimestamp =
+      apiResetAt && (!prior?.lastSkillsResetAt || apiResetAt !== prior.lastSkillsResetAt) ? apiResetAt : now;
+
+    // Only restart buildStartedAt when the citizen actually switches playstyle archetypes (e.g. War -> Eco).
+    // When redistributing points within the same playstyle (e.g. Eco ↻ Eco or War ↻ War), preserve prior.buildStartedAt!
+    const effectiveBuildStartedAt = isModeSwitch
+      ? resetTimestamp
       : prior?.buildStartedAt ||
-        (apiResetAt && (!rawUser?.createdAt || Math.abs(new Date(apiResetAt).getTime() - new Date(rawUser.createdAt).getTime()) > 60000)
+        (!isSameModeRedistribution &&
+        apiResetAt &&
+        (!rawUser?.createdAt || Math.abs(new Date(apiResetAt).getTime() - new Date(rawUser.createdAt).getTime()) > 60000)
           ? apiResetAt
           : undefined);
 
     updatedPlaystyles[profile.userId] = {
       playstyle: profile.playstyle,
-      previousPlaystyle:
-        respecDetected && prior?.playstyle && prior.playstyle !== profile.playstyle
-          ? prior.playstyle
-          : prior?.previousPlaystyle,
+      previousPlaystyle: respecDetected && prior?.playstyle ? prior.playstyle : prior?.previousPlaystyle,
       warPoints: profile.warSkillPoints,
       ecoPoints: profile.ecoSkillPoints,
       skillSignature: currentSig,
       buildStartedAt: effectiveBuildStartedAt,
-      lastSkillsResetAt: apiResetAt ?? prior?.lastSkillsResetAt,
+      lastSkillsResetAt: respecDetected ? resetTimestamp : (apiResetAt ?? prior?.lastSkillsResetAt),
+      recentResetType: isModeSwitch
+        ? 'build-switch'
+        : isSameModeRedistribution
+        ? 'same-build-reset'
+        : prior?.recentResetType,
       updatedAt: now,
     };
   }
@@ -1447,10 +1605,14 @@ export function evaluateLeechTier(
   const careerDamageMedian = hasBenchmark
     ? Math.max(20000, countryBenchmark!.careerDamageMedian ?? careerDamageP75 * 0.35)
     : 75000;
+  const effectiveSwitchedFromWar = Boolean(
+    extraContext?.switchedFromWarRecently ||
+      (playstyle !== 'pure-war' && combatDamage > 0)
+  );
   const qualifiesAsCareerWarVeteran =
     isNationalHeavyHitter ||
     careerDmg >= Math.max(careerDamageP75, careerDamageMedian * 2.5, (countryBenchmark?.fighterDamageMedianTopTier || 200000) * 0.65) ||
-    (Boolean(extraContext?.switchedFromWarRecently) && careerDmg >= Math.max(careerDamageMedian * 1.25, 60000));
+    (effectiveSwitchedFromWar && careerDmg >= Math.max(careerDamageMedian * 1.25, 60000));
 
   if (hasDismantledCompanies && hasHighNationalSacrifice && !meetsCountryRelativePatriot) {
     specialContextTag = 'industrial-war-sacrifice';
@@ -1617,16 +1779,6 @@ export function evaluateMinisterialAuditVerdict(
     ministerialVerdictReason =
       tierEval.reason ||
       `Model Patriot: Contributed ${effectiveDonated.toLocaleString()} BTC in period (${tierEval.ratio}% ratio), meeting or exceeding national target.`;
-  } else if (
-    tierEval.tier === 'low-contributor' &&
-    (isUpperQuartileWealth || isUpperQuartileLiquid || isUpperQuartileResource) &&
-    (effectiveDonated === 0 || wealthDonationRatio < 0.2) &&
-    (tierEval.damageValueBtc || 0) === 0
-  ) {
-    ministerialVerdict = 'slacker-evader';
-    ministerialVerdictReason =
-      tierEval.reason ||
-      `Identified Slacker: Upper wealth/stockpile bracket of ${profile.countryName || 'nation'} (${formatBtc(currentWealthBasis)} BTC) with token contributions (${effectiveDonated.toLocaleString()} BTC, ${wealthDonationRatio.toFixed(2)}% of wealth).`;
   } else if (
     currentWealthBasis < (hasBench ? countryBenchmark!.wealthMedian : 1500) &&
     liquidCash < (hasBench ? countryBenchmark!.liquidMedian : 200) &&
@@ -1797,6 +1949,11 @@ export async function auditCitizensIncomeGrowth(
           donationCount: p.donationCount,
           daysSinceLastDonation: p.daysSinceLastDonation,
           daysInBuild: p.daysInBuild,
+          switchedFromWarRecently: Boolean(
+            p.switchedFromWarRecently ||
+              p.buildDurationSource === 'weekly-combat-bound' ||
+              (p.playstyle !== 'pure-war' && (p.totalCombatDamage || 0) > 0)
+          ),
         }
       );
 
@@ -1932,6 +2089,11 @@ export async function auditCitizensIncomeGrowth(
         donationCount: p.donationCount,
         daysSinceLastDonation: p.daysSinceLastDonation,
         daysInBuild: p.daysInBuild,
+        switchedFromWarRecently: Boolean(
+          p.switchedFromWarRecently ||
+            p.buildDurationSource === 'weekly-combat-bound' ||
+            (p.playstyle !== 'pure-war' && (p.totalCombatDamage || 0) > 0)
+        ),
       }
     );
     const { ratio, tier, damageValueBtc, reason } = tierEval;
@@ -2485,6 +2647,11 @@ export function calculateCitizenSuggestedDonation(
       donationCount: profile.donationCount,
       daysSinceLastDonation: profile.daysSinceLastDonation,
       daysInBuild: profile.daysInBuild,
+      switchedFromWarRecently: Boolean(
+        profile.switchedFromWarRecently ||
+          profile.buildDurationSource === 'weekly-combat-bound' ||
+          (profile.playstyle !== 'pure-war' && (profile.totalCombatDamage || 0) > 0)
+      ),
     }
   );
 

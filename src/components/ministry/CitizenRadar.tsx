@@ -252,6 +252,17 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                   ministerialVerdict: refreshed.ministerialVerdict,
                   ministerialVerdictReason: refreshed.ministerialVerdictReason,
                   tierReasonBadge: refreshed.tierReasonBadge,
+                  isDormantPillar: refreshed.isDormantPillar,
+                  dormantWarningBadge: refreshed.dormantWarningBadge,
+                  specialContextTag: refreshed.specialContextTag,
+                  specialContextBadge: refreshed.specialContextBadge,
+                  specialContextReason: refreshed.specialContextReason,
+                  daysInBuild: refreshed.daysInBuild,
+                  buildDurationSource: refreshed.buildDurationSource,
+                  daysSinceSkillReset: refreshed.daysSinceSkillReset,
+                  recentResetType: refreshed.recentResetType,
+                  previousPlaystyleBeforeReset: refreshed.previousPlaystyleBeforeReset,
+                  switchedFromWarRecently: refreshed.switchedFromWarRecently,
                 }
               : bufProf;
           }
@@ -284,7 +295,16 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
             nextP.contributionRatio !== oldP.contributionRatio ||
             nextP.leechTier !== oldP.leechTier ||
             nextP.economicStanding !== oldP.economicStanding ||
-            nextP.ministerialVerdict !== oldP.ministerialVerdict
+            nextP.ministerialVerdict !== oldP.ministerialVerdict ||
+            nextP.specialContextTag !== oldP.specialContextTag ||
+            nextP.specialContextBadge !== oldP.specialContextBadge ||
+            nextP.isDormantPillar !== oldP.isDormantPillar ||
+            nextP.daysInBuild !== oldP.daysInBuild ||
+            nextP.buildDurationSource !== oldP.buildDurationSource ||
+            nextP.daysSinceSkillReset !== oldP.daysSinceSkillReset ||
+            nextP.recentResetType !== oldP.recentResetType ||
+            nextP.previousPlaystyleBeforeReset !== oldP.previousPlaystyleBeforeReset ||
+            nextP.switchedFromWarRecently !== oldP.switchedFromWarRecently
           ) {
             return {
               ...oldP,
@@ -297,6 +317,17 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
               ministerialVerdict: nextP.ministerialVerdict,
               ministerialVerdictReason: nextP.ministerialVerdictReason,
               tierReasonBadge: nextP.tierReasonBadge,
+              isDormantPillar: nextP.isDormantPillar,
+              dormantWarningBadge: nextP.dormantWarningBadge,
+              specialContextTag: nextP.specialContextTag,
+              specialContextBadge: nextP.specialContextBadge,
+              specialContextReason: nextP.specialContextReason,
+              daysInBuild: nextP.daysInBuild,
+              buildDurationSource: nextP.buildDurationSource,
+              daysSinceSkillReset: nextP.daysSinceSkillReset,
+              recentResetType: nextP.recentResetType,
+              previousPlaystyleBeforeReset: nextP.previousPlaystyleBeforeReset,
+              switchedFromWarRecently: nextP.switchedFromWarRecently,
             };
           }
           return oldP;
@@ -1403,11 +1434,19 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
               </tr>
             ) : (
               filtered.map((c) => {
-                const isPillar = c.leechTier === 'historical-pillar';
-                const isCombatVeteran = c.leechTier === 'combat-veteran';
-                const isLeech = c.leechTier === 'critical-leech';
-                const isLow = c.leechTier === 'low-contributor';
-                const isPatriot = c.leechTier === 'sovereign-patriot';
+                const rowStanding = resolveMasterCitizenStanding(
+                  c.leechTier,
+                  c.ministerialVerdict,
+                  c.isHistoricalTopDonor,
+                  c.isNationalHeavyHitter
+                );
+                const isPillar = rowStanding === 'historical-pillar' || c.leechTier === 'historical-pillar';
+                const isCombatVeteran = rowStanding === 'combat-veteran' || c.leechTier === 'combat-veteran';
+                const isLeech = rowStanding === 'evader-leech';
+                const isLow = rowStanding === 'low-contributor';
+                const isSubsistence = rowStanding === 'subsistence-worker';
+                const isIlliquidFighter = rowStanding === 'illiquid-fighter';
+                const isPatriot = rowStanding === 'sovereign-patriot' || c.leechTier === 'sovereign-patriot';
                 const isPinned = c.manualTag && c.manualTag !== 'none';
                 const { moderatePct: targetQuotaPct, patriotPct: targetPatriotPct } = getPlaystyleQuotaThresholds(
                   c.playstyle,
@@ -1461,8 +1500,14 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                               </span>
                             )}
                             {c.isInactiveDonor && !c.isHistoricalTopDonor && (
-                              <span className="text-xs text-amber-400/90 font-mono font-semibold" title={`Has not donated in ${c.daysSinceLastDonation} days`}>
-                                ⚠️ &gt;7d
+                              <span
+                                className="text-[11px] text-amber-400/90 font-mono font-semibold"
+                                title={tx(
+                                  `Treasury Donation Inactivity: Has not donated to the national treasury in ${c.daysSinceLastDonation} days (distinct from skill build tenure)`,
+                                  `Inactividad de Donación al Tesoro: No ha donado al tesoro nacional en ${c.daysSinceLastDonation} días (distinto de la antigüedad de build)`
+                                )}
+                              >
+                                {`⚠️ ${tx('>7d no donation', '>7d sin donar')}`}
                               </span>
                             )}
                           </div>
@@ -1634,9 +1679,13 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                           ) : isCombatVeteran ? (
                             <span className="text-rose-300">{tx('⚔️ Frontline Hero', '⚔️ Héroe del Frente')}</span>
                           ) : isLeech ? (
-                            <span className="text-red-400">{tx('🚨 Critical Leech', '🚨 Leech Crítico')}</span>
+                            <span className="text-red-400">{tx('🚨 Evader / Leech', '🚨 Evasor / Leech')}</span>
                           ) : isLow ? (
                             <span className="text-amber-400">{tx('⚠️ Low Donor', '⚠️ Bajo Donante')}</span>
+                          ) : isSubsistence ? (
+                            <span className="text-blue-300">{tx('🛡️ Subsistence Worker', '🛡️ Trabajador de Subsistencia')}</span>
+                          ) : isIlliquidFighter ? (
+                            <span className="text-purple-300">{tx('🔒 Illiquid Combatant', '🔒 Combatiente Ilíquido')}</span>
                           ) : isPatriot ? (
                             <span className="text-emerald-400">{tx('🟢 Model Patriot', '🟢 Patriota Modelo')}</span>
                           ) : (
@@ -1884,6 +1933,67 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                             {`· Lvl ${c.level}`}
                           </span>
                         </div>
+
+                        {/* Build Tenure & Last Skill Reset Indicator (matches Audit Modal header) */}
+                        {(c.recentResetType === 'same-build-reset' ||
+                          c.recentResetType === 'build-switch' ||
+                          typeof c.daysInBuild === 'number' ||
+                          typeof c.daysSinceSkillReset === 'number' ||
+                          c.buildDurationSource === 'weekly-combat-bound') && (
+                          <span
+                            className={`text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded border whitespace-nowrap ${
+                              c.recentResetType === 'same-build-reset'
+                                ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                                : c.recentResetType === 'build-switch' ||
+                                  c.buildDurationSource === 'weekly-combat-bound' ||
+                                  (typeof c.daysInBuild === 'number' && c.daysInBuild < 7)
+                                ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30'
+                                : 'bg-slate-800/80 text-slate-300 border-slate-700/80'
+                            }`}
+                            title={
+                              c.recentResetType === 'same-build-reset'
+                                ? tx(
+                                    `Continued ${buildLabel} Build (${buildLabel} ↻ ${buildLabel}): Citizen redistributed skill points ${c.daysSinceSkillReset ?? 0}d ago while continuing their ${buildLabel} build${typeof c.daysInBuild === 'number' ? ` (active ${c.daysInBuild}d+)` : ''}.`,
+                                    `Build ${buildLabel} Continua (${buildLabel} ↻ ${buildLabel}): El ciudadano redistribuyó puntos de habilidad hace ${c.daysSinceSkillReset ?? 0}d manteniendo su build ${buildLabel}${typeof c.daysInBuild === 'number' ? ` (activa ${c.daysInBuild}d+)` : ''}.`
+                                  )
+                                : c.recentResetType === 'build-switch' || c.buildDurationSource === 'weekly-combat-bound'
+                                ? tx(
+                                    `Recent Build Switch: Citizen switched into ${buildLabel} build ${typeof c.daysSinceSkillReset === 'number' ? `${c.daysSinceSkillReset}d ago` : '≤ 7d ago'}.`,
+                                    `Cambio Reciente de Build: El ciudadano cambió a build ${buildLabel} ${typeof c.daysSinceSkillReset === 'number' ? `hace ${c.daysSinceSkillReset}d` : 'hace ≤ 7d'}.`
+                                  )
+                                : tx(
+                                    `Skill Build Tenure: Active in current ${buildLabel} build for ${c.daysInBuild} days${c.daysInBuild && c.daysInBuild >= 7 ? ' (7d respec cooldown cleared)' : ''}`,
+                                    `Antigüedad de Build: Activo en build ${buildLabel} por ${c.daysInBuild} días${c.daysInBuild && c.daysInBuild >= 7 ? ' (enfriamiento de 7d cumplido)' : ''}`
+                                  )
+                            }
+                          >
+                            {c.recentResetType === 'same-build-reset'
+                              ? typeof c.daysInBuild === 'number'
+                                ? tx(
+                                    `Cont. ${buildLabel} (${c.daysInBuild}d+) · 🔄 Reset ${c.daysSinceSkillReset ?? 0}d`,
+                                    `${buildLabel} Cont. (${c.daysInBuild}d+) · 🔄 Reset ${c.daysSinceSkillReset ?? 0}d`
+                                  )
+                                : tx(
+                                    `Cont. ${buildLabel} · 🔄 Reset ${c.daysSinceSkillReset ?? 0}d (${buildLabel} ↻ ${buildLabel})`,
+                                    `${buildLabel} Cont. · 🔄 Reset ${c.daysSinceSkillReset ?? 0}d (${buildLabel} ↻ ${buildLabel})`
+                                  )
+                              : c.recentResetType === 'build-switch' || c.buildDurationSource === 'weekly-combat-bound'
+                              ? typeof c.daysInBuild === 'number'
+                                ? tx(
+                                    `Active ${c.daysInBuild}d · 🔄 Switch ${c.daysSinceSkillReset ?? c.daysInBuild}d`,
+                                    `Activo ${c.daysInBuild}d · 🔄 Cambio ${c.daysSinceSkillReset ?? c.daysInBuild}d`
+                                  )
+                                : tx('≤ 7d (Recent Switch)', '≤ 7d (Cambio Reciente)')
+                              : typeof c.daysInBuild === 'number'
+                              ? typeof c.daysSinceSkillReset === 'number' && c.daysSinceSkillReset !== c.daysInBuild
+                                ? tx(
+                                    `Active ${c.daysInBuild}d · Reset ${c.daysSinceSkillReset}d`,
+                                    `Activo ${c.daysInBuild}d · Reset ${c.daysSinceSkillReset}d`
+                                  )
+                                : tx(`Active ${c.daysInBuild}d`, `Activo ${c.daysInBuild}d`)
+                              : null}
+                          </span>
+                        )}
 
                         {/* v0.27 Build Evaluation Badge */}
                         {c.buildEvaluation && (

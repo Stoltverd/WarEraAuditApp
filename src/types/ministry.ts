@@ -183,6 +183,10 @@ export interface CitizenEconomicProfile {
   isActive: boolean;
   daysInBuild?: number;
   buildDurationSource?: 'api-reset' | 'respec-detected' | 'weekly-combat-bound' | 'unverified';
+  daysSinceSkillReset?: number;
+  recentResetType?: 'same-build-reset' | 'build-switch' | 'none';
+  previousPlaystyleBeforeReset?: PlaystyleMode;
+  switchedFromWarRecently?: boolean;
   daysSinceLastDonation?: number;
   isInactiveDonor?: boolean;
   isOnWatch?: boolean;
@@ -596,6 +600,7 @@ export interface CitizenPlaystyleRecord {
   skillSignature?: Record<string, number>;
   buildStartedAt?: string;
   lastSkillsResetAt?: string;
+  recentResetType?: 'same-build-reset' | 'build-switch' | 'none';
   updatedAt?: string;
 }
 
