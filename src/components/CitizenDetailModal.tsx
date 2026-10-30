@@ -3,6 +3,7 @@ import { DonorRankingItem, RankingTimeframe } from '../types/warera';
 import { Coins, Clock, X, Shield, Calendar, Check, Copy, Info, Swords, ShieldCheck } from 'lucide-react';
 import { formatDateDDMMYYYY } from '../utils/dateUtils';
 import { compareTransactionsNewestFirst } from '../services/apiService';
+import { useI18n } from '../i18n/I18nContext';
 
 interface CitizenDetailModalProps {
   donor: DonorRankingItem | null;
@@ -19,6 +20,7 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
   hasApiKey,
   timeframe,
 }) => {
+  const { tx } = useI18n();
   const [copied, setCopied] = useState(false);
 
   if (!donor) return null;
@@ -37,6 +39,30 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
   };
 
   const hasDamage = (donor.damageAmount || 0) > 0;
+  const timeframeLabel =
+    timeframe === 'daily'
+      ? 'Daily (24h)'
+      : timeframe === 'weekly'
+      ? 'Weekly (7d)'
+      : timeframe === 'monthly'
+      ? 'Monthly (30d)'
+      : timeframe === 'custom'
+      ? 'Custom Range'
+      : 'All-Time';
+  const timeframeLabelEs =
+    timeframe === 'daily'
+      ? 'Diario (24h)'
+      : timeframe === 'weekly'
+      ? 'Semanal (7d)'
+      : timeframe === 'monthly'
+      ? 'Mensual (30d)'
+      : timeframe === 'custom'
+      ? 'Rango Personalizado'
+      : 'Histórico';
+  const allTimeCountryBtc =
+    donor.allTimeDirectAmount !== undefined && donor.allTimeDirectAmount > 0
+      ? donor.allTimeDirectAmount
+      : donor.directAmount;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 animate-in fade-in duration-150">
@@ -67,6 +93,11 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
                 <span className="px-3 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs sm:text-sm font-mono font-black shadow-sm">
                   Rank #{donor.rank}
                 </span>
+                {donor.allTimeRank && timeframe !== 'all' && (
+                  <span className="px-3 py-1 rounded-full bg-cyan-500/15 border border-cyan-500/35 text-cyan-300 text-xs font-mono font-bold shadow-sm">
+                    {tx(`All-Time Rank #${donor.allTimeRank}`, `Rango Histórico #${donor.allTimeRank}`)}
+                  </span>
+                )}
                 {hasDamage && (
                   <span className="px-3 py-1 rounded-full bg-red-500/20 border border-red-500/40 text-red-300 text-xs font-mono font-bold flex items-center gap-1.5 shadow-sm">
                     <Swords className="w-3.5 h-3.5" /> War Mode Active
@@ -94,6 +125,50 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
           >
             <X className="w-6 h-6" />
           </button>
+        </div>
+
+        {/* Timeframe Scope Clarification Banner */}
+        <div className="mt-3.5 p-3.5 sm:p-4 rounded-2xl bg-cyan-950/35 border border-cyan-500/35 text-xs sm:text-sm text-cyan-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="flex items-start gap-2.5">
+            <Info className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+            <div className="leading-relaxed">
+              {timeframe === 'all' ? (
+                <span>
+                  <strong className="text-cyan-300 font-black uppercase tracking-wider">
+                    {tx('Audit Scope — All-Time Country Ledger:', 'Alcance de Auditoría — Libro Histórico del País:')}
+                  </strong>{' '}
+                  {tx(
+                    `Showing official cumulative lifetime confirmed donations to ${countryName}. Switch the timeframe filter (24h, 7d, 30d, or Custom) to inspect period-scoped itemized receipts.`,
+                    `Mostrando el total acumulado histórico oficial de donaciones confirmadas a ${countryName}. Cambia el filtro de tiempo (24h, 7d, 30d o Personalizado) para inspeccionar recibos detallados del período.`
+                  )}
+                </span>
+              ) : (
+                <span>
+                  <strong className="text-cyan-300 font-black uppercase tracking-wider">
+                    {tx(
+                      `Audit Scope — Selected Period (${timeframeLabel}):`,
+                      `Alcance de Auditoría — Período Seleccionado (${timeframeLabelEs}):`
+                    )}
+                  </strong>{' '}
+                  {tx(
+                    `Itemized receipts and primary totals below strictly show confirmed donations to ${countryName} within the selected ${timeframeLabel} window (${
+                      donor.periodStartDate ? formatDateDDMMYYYY(donor.periodStartDate) : timeframeLabel
+                    } → ${
+                      donor.periodEndDate ? formatDateDDMMYYYY(donor.periodEndDate) : 'Now'
+                    }). For full historical context, this citizen's All-Time Lifetime Country Total is also shown below.`,
+                    `Los recibos detallados y totales principales de abajo muestran estrictamente las donaciones confirmadas a ${countryName} dentro de la ventana seleccionada de ${timeframeLabelEs} (${
+                      donor.periodStartDate ? formatDateDDMMYYYY(donor.periodStartDate) : timeframeLabelEs
+                    } → ${
+                      donor.periodEndDate ? formatDateDDMMYYYY(donor.periodEndDate) : 'Ahora'
+                    }). Para contexto histórico completo, también se muestra abajo el Total Histórico del País de este ciudadano.`
+                  )}
+                </span>
+              )}
+            </div>
+          </div>
+          <span className="px-2.5 py-1 rounded-xl bg-cyan-500/20 border border-cyan-400/40 text-cyan-200 font-mono font-bold text-xs shrink-0 self-start sm:self-center">
+            {tx(`Window: ${timeframeLabel}`, `Ventana: ${timeframeLabelEs}`)}
+          </span>
         </div>
 
         {/* Explicit Damage Conversion Audit Statement */}
@@ -128,14 +203,29 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
           </div>
         ) : null}
 
-        {/* Consolidated Aggregate Stats Cards - No redundancy */}
-        <div className={`grid ${hasDamage ? 'grid-cols-1 sm:grid-cols-3' : 'grid-cols-1 sm:grid-cols-2'} gap-3.5 my-3.5`}>
-          {/* 1. Direct Donations (Pure cash given to treasury) */}
+        {/* Consolidated Aggregate Stats Cards - Period + Lifetime Side-by-Side */}
+        <div
+          className={`grid ${
+            timeframe !== 'all'
+              ? hasDamage
+                ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'
+                : 'grid-cols-1 sm:grid-cols-3'
+              : hasDamage
+              ? 'grid-cols-1 sm:grid-cols-3'
+              : 'grid-cols-1 sm:grid-cols-2'
+          } gap-3.5 my-3.5`}
+        >
+          {/* 1. Direct Donations in Selected Period */}
           <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-4 sm:p-5">
             <div className="text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
-              <Coins className="w-4 h-4 text-emerald-400" /> {hasDamage ? 'Direct Cash Donated' : 'Total BTC Donated'}
+              <Coins className="w-4 h-4 text-emerald-400" />{' '}
+              {timeframe === 'all'
+                ? hasDamage
+                  ? 'Direct Cash Donated'
+                  : 'Total BTC Donated'
+                : tx(`Period Donated (${timeframeLabel})`, `Donado en el Período (${timeframeLabelEs})`)}
             </div>
-            <div className="text-2xl sm:text-3xl lg:text-4xl font-mono font-black text-emerald-400">
+            <div className="text-2xl sm:text-3xl font-mono font-black text-emerald-400">
               {formatBtc(donor.directAmount)}{' '}
               <span className="text-sm sm:text-base font-bold text-emerald-500">BTC</span>
             </div>
@@ -146,13 +236,37 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
             </div>
           </div>
 
+          {/* 1b. All-Time Lifetime Confirmed Country Total Reference Card (shown whenever viewing a timed window) */}
+          {timeframe !== 'all' && (
+            <div className="bg-cyan-950/25 border border-cyan-500/35 rounded-2xl p-4 sm:p-5">
+              <div className="text-xs sm:text-sm font-bold text-cyan-300 uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
+                <Calendar className="w-4 h-4 text-cyan-400" /> {tx('All-Time Country Total', 'Total Histórico del País')}
+              </div>
+              <div className="text-2xl sm:text-3xl font-mono font-black text-cyan-300">
+                {formatBtc(allTimeCountryBtc)}{' '}
+                <span className="text-sm sm:text-base font-bold text-cyan-400">BTC</span>
+              </div>
+              <div className="text-xs text-cyan-200/80 mt-1 font-mono">
+                {donor.allTimeRank
+                  ? tx(
+                      `Lifetime Rank #${donor.allTimeRank} in ${countryName}`,
+                      `Rango Histórico #${donor.allTimeRank} en ${countryName}`
+                    )
+                  : tx(
+                      `Confirmed lifetime total for ${countryName}`,
+                      `Total histórico confirmado para ${countryName}`
+                    )}
+              </div>
+            </div>
+          )}
+
           {/* 2. Secondary Card: When War Mode is OFF -> Treasury Impact / Status. When War Mode is ON -> Combat Damage Credit */}
           {hasDamage ? (
             <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-4 sm:p-5">
               <div className="text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
                 <Swords className="w-4 h-4 text-red-400" /> Munitions Damage Credit
               </div>
-              <div className="text-2xl sm:text-3xl lg:text-4xl font-mono font-black text-red-300">
+              <div className="text-2xl sm:text-3xl font-mono font-black text-red-300">
                 {formatBtc(donor.damageAmount)}{' '}
                 <span className="text-sm sm:text-base font-bold text-red-400">BTC</span>
               </div>
@@ -165,7 +279,7 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
               <div className="text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
                 <ShieldCheck className="w-4 h-4 text-amber-400" /> Treasury Standing
               </div>
-              <div className="text-2xl sm:text-3xl lg:text-4xl font-mono font-black text-amber-400">
+              <div className="text-2xl sm:text-3xl font-mono font-black text-amber-400">
                 Rank #{donor.rank}
               </div>
               <div className="text-xs text-slate-400 mt-1 font-mono">
@@ -180,7 +294,7 @@ export const CitizenDetailModal: React.FC<CitizenDetailModalProps> = ({
               <div className="text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
                 <Coins className="w-4 h-4 text-amber-400" /> Total Sovereign Contribution
               </div>
-              <div className="text-2xl sm:text-3xl lg:text-4xl font-mono font-black text-amber-400">
+              <div className="text-2xl sm:text-3xl font-mono font-black text-amber-400">
                 {formatBtc(donor.totalAmount)}{' '}
                 <span className="text-sm sm:text-base font-bold text-amber-500">BTC</span>
               </div>

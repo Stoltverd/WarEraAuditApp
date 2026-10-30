@@ -187,17 +187,42 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
     return formatDateDDMMYYYY(isoString);
   };
 
+  const localizedTimeframe = useMemo(() => {
+    if (!timeframe) return '';
+    const trimmed = timeframe.trim();
+    if (trimmed === 'in the last 24 hours') {
+      return tx('in the last 24 hours', 'en las últimas 24 horas');
+    }
+    if (trimmed === 'in the last week') {
+      return tx('in the last week', 'en la última semana');
+    }
+    if (trimmed === 'in the last month') {
+      return tx('in the last month', 'en el último mes');
+    }
+    if (trimmed === 'across all recorded history') {
+      return tx('across all recorded history', 'en todo el historial registrado');
+    }
+    const betweenMatch = trimmed.match(/^between\s+(.+)\s+and\s+(.+)$/i);
+    if (betweenMatch) {
+      return tx(trimmed, `entre ${betweenMatch[1]} y ${betweenMatch[2]}`);
+    }
+    return trimmed;
+  }, [timeframe, tx]);
+
   return (
     <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-5 sm:p-7 shadow-xl">
       {/* Table Header Controls */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 mb-6">
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 mb-4">
         <div>
           <h3 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2.5">
             <TrendingUp className="w-6 h-6 text-amber-400" />
             Citizen Donation Leaderboard
           </h3>
           <p className="text-sm text-slate-300 mt-1">
-            {`Showing all ${filteredAndSorted.length} contributing citizens for ${timeframe}`}
+            {tx(
+              `Showing all ${filteredAndSorted.length} contributing citizens ${localizedTimeframe}`,
+              `Mostrando los ${filteredAndSorted.length} ciudadanos contribuyentes ${localizedTimeframe}`
+            )}
           </p>
         </div>
 
@@ -212,6 +237,22 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({
             className="w-full bg-slate-800/80 border border-slate-700/80 rounded-xl pl-10 pr-4 py-2.5 text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:border-amber-400"
           />
         </div>
+      </div>
+
+      {/* Timeframe Scope Clarification Notice */}
+      <div className="mb-4 px-4 py-2.5 rounded-xl bg-cyan-950/35 border border-cyan-500/30 flex flex-wrap items-center justify-between gap-2 text-xs text-cyan-200">
+        <div className="flex items-center gap-2">
+          <Clock className="w-4 h-4 text-cyan-400 shrink-0" />
+          <span>
+            {tx(
+              'Scope Notice: This leaderboard & its Audit receipts show confirmed donations to this country strictly within the selected time window. Click "Audit" on any citizen to view both their Period Receipts and their All-Time Lifetime Country Total.',
+              'Aviso de Alcance: Esta tabla y sus recibos de Auditoría muestran las donaciones confirmadas a este país estrictamente dentro de la ventana de tiempo seleccionada. Haz clic en "Auditoría" en cualquier ciudadano para ver tanto sus Recibos del Período como su Total Histórico del País.'
+            )}
+          </span>
+        </div>
+        <span className="px-2.5 py-0.5 rounded-full bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 font-mono font-bold text-[11px]">
+          {tx(`Active Window: ${localizedTimeframe}`, `Ventana Activa: ${localizedTimeframe}`)}
+        </span>
       </div>
 
       {/* Table Container */}

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AnalyzedCompanyRecord,
   BestProductOpportunity,
@@ -108,12 +109,8 @@ const V027_GUIDE_PAGES: GuidePageDef[] = [
         body: 'Self-work gives 30 + 3 per level.',
       },
       {
-        heading: 'Management',
-        body: 'No longer caps hiring: +2% employee output per point.',
-      },
-      {
-        heading: 'Leadership',
-        body: 'New, from level 10. Better training cards and event odds.',
+        heading: 'Management (Hotfix 0.27.3)',
+        body: 'Fused with Leadership: +2% employee output per point (up to +22%) plus better training cards and event odds.',
       },
     ],
   },
@@ -283,12 +280,8 @@ const V027_GUIDE_PAGES_ES: GuidePageDef[] = [
         body: 'El autotrabajo otorga 30 + 3 puntos por nivel.',
       },
       {
-        heading: 'Gestión (Management)',
-        body: 'Ya no limita la contratación: otorga +2% de producción a los empleados por punto.',
-      },
-      {
-        heading: 'Leadership',
-        body: 'Nueva habilidad desde nivel 10. Mejora las cartas de entrenamiento y las probabilidades de eventos.',
+        heading: 'Gestión (Management · Hotfix 0.27.3)',
+        body: 'Fusionada con Leadership: otorga +2% de producción a los empleados por punto (hasta +22%) y mejora las cartas de entrenamiento y las probabilidades de eventos.',
       },
     ],
   },
@@ -766,6 +759,27 @@ export const CompanyPortfolioAnalyzer: React.FC<CompanyPortfolioAnalyzerProps> =
   // 8-Page "How Work Runs Now (v0.27)" Reference Guide Modal
   const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [guideStep, setGuideStep] = useState(0);
+
+  // Scoped keyboard navigation (Escape closes only the guide without closing parent Audit Modal; Left/Right arrows step pages)
+  useEffect(() => {
+    if (!isGuideOpen) return;
+    const handleGuideKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        setIsGuideOpen(false);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setGuideStep((s) => Math.max(0, s - 1));
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        setGuideStep((s) => Math.min(activeGuidePages.length - 1, s + 1));
+      }
+    };
+    window.addEventListener('keydown', handleGuideKeyDown, true);
+    return () => window.removeEventListener('keydown', handleGuideKeyDown, true);
+  }, [isGuideOpen, activeGuidePages.length]);
 
   const saveRecentSearch = (username: string) => {
     if (!username) return;
@@ -2783,104 +2797,111 @@ export const CompanyPortfolioAnalyzer: React.FC<CompanyPortfolioAnalyzerProps> =
         </div>
       )}
 
-      {/* 8-Page "How Work Runs Now (v0.27)" Interactive Reference Guide Modal */}
-      {isGuideOpen && (
-        <div
-          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4"
-          onClick={() => setIsGuideOpen(false)}
-        >
+      {/* 8-Page "How Work Runs Now (v0.27)" Interactive Reference Guide Modal (Portaled to document.body) */}
+      {isGuideOpen &&
+        typeof document !== 'undefined' &&
+        createPortal(
           <div
-            className="bg-slate-900 border border-amber-500/40 rounded-2xl max-w-3xl w-full p-6 space-y-5 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
+            className="fixed inset-0 z-[80] bg-slate-950/85 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150"
+            onClick={() => setIsGuideOpen(false)}
           >
-            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-              <div>
-                <h2 className="text-lg sm:text-xl font-black text-white uppercase tracking-wider">
-                  {tx(
-                    '📜 How Work Runs Now (War Era v0.27)',
-                    '📜 Cómo Funciona el Trabajo Ahora (War Era v0.27)'
-                  )}
-                </h2>
-                <p className="text-xs sm:text-sm font-mono text-amber-300 mt-0.5">
-                  {tx('Page', 'Página')} {guideStep + 1} {tx('of', 'de')}{' '}
-                  {activeGuidePages.length} — {activeGuidePages[guideStep].title}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsGuideOpen(false)}
-                className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-4 min-h-[260px]">
-              <h3 className="text-base sm:text-lg font-extrabold text-amber-300">
-                {activeGuidePages[guideStep].title}
-              </h3>
-              {activeGuidePages[guideStep].intro && (
-                <p className="text-sm text-slate-200 leading-relaxed">
-                  {activeGuidePages[guideStep].intro}
-                </p>
-              )}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                {activeGuidePages[guideStep].cards.map((card, idx) => (
-                  <div
-                    key={idx}
-                    className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5"
-                  >
-                    <h4 className="text-sm font-black text-white">{card.heading}</h4>
-                    <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-                      {card.body}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between border-t border-slate-800 pt-4">
-              <button
-                type="button"
-                disabled={guideStep === 0}
-                onClick={() => setGuideStep((s) => Math.max(0, s - 1))}
-                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs sm:text-sm font-bold flex items-center gap-1.5 disabled:opacity-40 transition cursor-pointer"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span>{tx('Back', 'Anterior')}</span>
-              </button>
-
-              <div className="flex items-center gap-1.5">
-                {activeGuidePages.map((p, idx) => (
-                  <button
-                    key={p.title}
-                    type="button"
-                    onClick={() => setGuideStep(idx)}
-                    title={p.title}
-                    className={`w-2.5 h-2.5 rounded-full transition cursor-pointer ${
-                      idx === guideStep
-                        ? 'bg-amber-400 scale-125'
-                        : 'bg-slate-700 hover:bg-slate-500'
-                    }`}
-                  />
-                ))}
+            <div
+              className="bg-slate-900 border border-amber-500/40 rounded-2xl max-w-3xl w-full max-h-[88vh] flex flex-col p-5 sm:p-6 shadow-2xl overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Pinned Header */}
+              <div className="flex items-center justify-between border-b border-slate-800 pb-4 shrink-0">
+                <div>
+                  <h2 className="text-lg sm:text-xl font-black text-white uppercase tracking-wider">
+                    {tx(
+                      '📜 How Work Runs Now (War Era v0.27)',
+                      '📜 Cómo Funciona el Trabajo Ahora (War Era v0.27)'
+                    )}
+                  </h2>
+                  <p className="text-xs sm:text-sm font-mono text-amber-300 mt-0.5">
+                    {tx('Page', 'Página')} {guideStep + 1} {tx('of', 'de')}{' '}
+                    {activeGuidePages.length} — {activeGuidePages[guideStep].title}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsGuideOpen(false)}
+                  aria-label={tx('Close guide', 'Cerrar guía')}
+                  className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition cursor-pointer shrink-0"
+                >
+                  <X className="w-5 h-5" />
+                </button>
               </div>
 
-              <button
-                type="button"
-                disabled={guideStep === activeGuidePages.length - 1}
-                onClick={() =>
-                  setGuideStep((s) => Math.min(activeGuidePages.length - 1, s + 1))
-                }
-                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs sm:text-sm font-black flex items-center gap-1.5 disabled:opacity-40 transition cursor-pointer"
-              >
-                <span>{tx('Next', 'Siguiente')}</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
+              {/* Scrollable Content Body */}
+              <div className="space-y-4 min-h-[240px] py-4 overflow-y-auto overscroll-contain pr-1">
+                <h3 className="text-base sm:text-lg font-extrabold text-amber-300">
+                  {activeGuidePages[guideStep].title}
+                </h3>
+                {activeGuidePages[guideStep].intro && (
+                  <p className="text-sm text-slate-200 leading-relaxed">
+                    {activeGuidePages[guideStep].intro}
+                  </p>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  {activeGuidePages[guideStep].cards.map((card, idx) => (
+                    <div
+                      key={idx}
+                      className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5"
+                    >
+                      <h4 className="text-sm font-black text-white">{card.heading}</h4>
+                      <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+                        {card.body}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Pinned Footer */}
+              <div className="flex items-center justify-between border-t border-slate-800 pt-4 shrink-0">
+                <button
+                  type="button"
+                  disabled={guideStep === 0}
+                  onClick={() => setGuideStep((s) => Math.max(0, s - 1))}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs sm:text-sm font-bold flex items-center gap-1.5 disabled:opacity-40 transition cursor-pointer"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>{tx('Back', 'Anterior')}</span>
+                </button>
+
+                <div className="flex items-center gap-1.5">
+                  {activeGuidePages.map((p, idx) => (
+                    <button
+                      key={p.title}
+                      type="button"
+                      onClick={() => setGuideStep(idx)}
+                      title={p.title}
+                      className={`w-2.5 h-2.5 rounded-full transition cursor-pointer ${
+                        idx === guideStep
+                          ? 'bg-amber-400 scale-125'
+                          : 'bg-slate-700 hover:bg-slate-500'
+                      }`}
+                    />
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  disabled={guideStep === activeGuidePages.length - 1}
+                  onClick={() =>
+                    setGuideStep((s) => Math.min(activeGuidePages.length - 1, s + 1))
+                  }
+                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs sm:text-sm font-black flex items-center gap-1.5 disabled:opacity-40 transition cursor-pointer"
+                >
+                  <span>{tx('Next', 'Siguiente')}</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

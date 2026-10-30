@@ -29,7 +29,7 @@ import { CitizenCalculationExplainerModal } from './CitizenCalculationExplainerM
 import { GrossIncomeBreakdownModal } from './GrossIncomeBreakdownModal';
 import { AuditProgressDock } from './AuditProgressDock';
 import { ErrorBoundary } from '../common/ErrorBoundary';
-import { useI18n } from '../../i18n/I18nContext';
+import { useI18n, translateRawStringEs } from '../../i18n/I18nContext';
 import {
   Search,
   Filter,
@@ -116,7 +116,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
   onUpdateProfile,
   onUpdateProfilesBatch,
 }) => {
-  const { tx } = useI18n();
+  const { tx, lang } = useI18n();
   const [search, setSearch] = useState('');
   const [filterFiscalStanding, setFilterFiscalStanding] = useState<string>('all');
   const [filterBuild, setFilterBuild] = useState<string>('all');
@@ -158,6 +158,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
   const [selectedExplainerProfile, setSelectedExplainerProfile] = useState<CitizenEconomicProfile | null>(null);
   const [selectedIncomeBreakdownProfile, setSelectedIncomeBreakdownProfile] = useState<CitizenEconomicProfile | null>(null);
   const [selectedAuditProfile, setSelectedAuditProfile] = useState<CitizenEconomicProfile | null>(null);
+  const [standingExplainUserId, setStandingExplainUserId] = useState<string | null>(null);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
   // Reset nudge overrides when target citizen changes
@@ -1442,7 +1443,20 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                               <HelpCircle className="w-3.5 h-3.5 text-cyan-400 shrink-0 opacity-75 hover:opacity-100" />
                             </button>
                             {c.isHistoricalTopDonor && (
-                              <span className="text-xs text-amber-400 font-mono font-bold" title={`Top ${c.historicalRank ? `#${c.historicalRank}` : '10'} Lifetime Donor`}>
+                              <span
+                                className="text-xs text-amber-400 font-mono font-bold"
+                                title={
+                                  isPillar
+                                    ? tx(
+                                        `Top ${c.historicalRank ? `#${c.historicalRank}` : '10'} Lifetime Donor (${formatBtc(c.totalDonatedBtc)} BTC) — Qualified Historical Pillar`,
+                                        `Donante Histórico Top ${c.historicalRank ? `#${c.historicalRank}` : '10'} (${formatBtc(c.totalDonatedBtc)} BTC) — Pilar Histórico Calificado`
+                                      )
+                                    : tx(
+                                        `Top ${c.historicalRank ? `#${c.historicalRank}` : '10'} Lifetime Donor (${formatBtc(c.totalDonatedBtc)} BTC) — Below Rank #3 & ${config?.historicalDonorGraceThresholdBtc ?? 500} BTC Policy Grace Floor`,
+                                        `Donante Histórico Top ${c.historicalRank ? `#${c.historicalRank}` : '10'} (${formatBtc(c.totalDonatedBtc)} BTC) — Bajo Rango #3 y Piso de Gracia de ${config?.historicalDonorGraceThresholdBtc ?? 500} BTC`
+                                      )
+                                }
+                              >
                                 ⭐ #{c.historicalRank || '10'}
                               </span>
                             )}
@@ -1587,25 +1601,94 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     </td>
 
                     {/* Fiscal Assessment & Actual vs Policy Target Quota */}
-                    <td className="py-3 px-3.5 text-center font-sans">
+                    <td className="py-3 px-3.5 text-center font-sans relative">
                       <div className="flex flex-col items-center gap-1">
-                        <div className="text-xs sm:text-sm font-bold flex items-center gap-1 whitespace-nowrap">
-                          {c.auditBaselineStatus !== 'audited' && !isPillar ? (
-                            <span className="text-amber-300/90 font-semibold">⏳ Pending</span>
+                        <div className="text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5 flex-wrap">
+                          {c.auditBaselineStatus !== 'audited' && !isPillar && !c.specialContextTag ? (
+                            <span className="text-amber-300/90 font-semibold">
+                              {tx('⏳ Pending', '⏳ Pendiente')}
+                            </span>
                           ) : isPillar ? (
-                            <span className="text-amber-300">🏛️ Pillar</span>
+                            <div className="inline-flex items-center gap-1 flex-wrap justify-center">
+                              <span
+                                className="text-amber-300"
+                                title={tx(
+                                  `Historical Pillar: ${formatBtc(c.totalDonatedBtc)} BTC lifetime donated${c.historicalRank ? ` (All-Time Rank #${c.historicalRank})` : ''}`,
+                                  `Pilar Histórico: ${formatBtc(c.totalDonatedBtc)} BTC donados de por vida${c.historicalRank ? ` (Rango Histórico #${c.historicalRank})` : ''}`
+                                )}
+                              >
+                                {tx('🏛️ Pillar', '🏛️ Pilar')}
+                              </span>
+                              {c.isDormantPillar && (
+                                <span
+                                  className="px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-400/40 text-[10px] font-mono font-bold text-amber-300 cursor-help"
+                                  title={tx(
+                                    `Dormant Historical Pillar: Retains Pillar standing from ${formatBtc(c.totalDonatedBtc)} BTC lifetime donations, but contributed ${formatBtc(c.periodDonatedBtc ?? c.directDonatedBtc ?? 0)} BTC (${c.contributionRatio.toFixed(1)}% vs ${targetQuotaPct}% quota) this period. Open Nudge for Dual Recommendations (Commendation + Secondary Treasury Nudge).`,
+                                    `Pilar Histórico Inactivo: Conserva el rango de Pilar por sus ${formatBtc(c.totalDonatedBtc)} BTC donados de por vida, pero aportó ${formatBtc(c.periodDonatedBtc ?? c.directDonatedBtc ?? 0)} BTC (${c.contributionRatio.toFixed(1)}% vs ${targetQuotaPct}% de cuota) en este período. Abre Nudge para ver la Doble Recomendación (Condecoración + Solicitud Secundaria).`
+                                  )}
+                                >
+                                  {`⚠️ ${c.dormantWarningBadge || tx('Dormant', 'Inactivo')}`}
+                                </span>
+                              )}
+                            </div>
                           ) : isCombatVeteran ? (
-                            <span className="text-rose-300">⚔️ Frontline Hero</span>
+                            <span className="text-rose-300">{tx('⚔️ Frontline Hero', '⚔️ Héroe del Frente')}</span>
                           ) : isLeech ? (
-                            <span className="text-red-400">🚨 Critical Leech</span>
+                            <span className="text-red-400">{tx('🚨 Critical Leech', '🚨 Leech Crítico')}</span>
                           ) : isLow ? (
-                            <span className="text-amber-400">⚠️ Low Donor</span>
+                            <span className="text-amber-400">{tx('⚠️ Low Donor', '⚠️ Bajo Donante')}</span>
                           ) : isPatriot ? (
-                            <span className="text-emerald-400">🟢 Model Patriot</span>
+                            <span className="text-emerald-400">{tx('🟢 Model Patriot', '🟢 Patriota Modelo')}</span>
                           ) : (
-                            <span className="text-slate-200">🔵 Moderate</span>
+                            <span className="text-slate-200">{tx('🔵 Moderate', '🔵 Moderado')}</span>
                           )}
+
+                          {/* Clickable ? Fiscal Standing Explanation Trigger */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setStandingExplainUserId((prev) => (prev === c.userId ? null : c.userId));
+                            }}
+                            className={`w-4 h-4 rounded-full inline-flex items-center justify-center text-[10px] font-mono font-black border transition shrink-0 ${
+                              standingExplainUserId === c.userId
+                                ? 'bg-cyan-500 text-slate-950 border-cyan-300 shadow-sm'
+                                : 'bg-slate-800/90 text-cyan-300 border-slate-700 hover:bg-cyan-500/20 hover:border-cyan-400/60'
+                            }`}
+                            title={tx(
+                              'Click to see what this classification means and why this citizen is classified this way',
+                              'Haz clic para ver qué significa esta clasificación y por qué este ciudadano está clasificado así'
+                            )}
+                          >
+                            ?
+                          </button>
                         </div>
+
+                        {/* At-a-Glance Special Context Disclaimer Badge (Veteran on Pause/Hoarding, War Vet in Eco, Industrial Sacrifice) */}
+                        {c.specialContextBadge && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setStandingExplainUserId((prev) => (prev === c.userId ? null : c.userId));
+                            }}
+                            title={
+                              lang === 'es' && c.specialContextReason
+                                ? translateRawStringEs(c.specialContextReason)
+                                : c.specialContextReason
+                            }
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border transition max-w-[230px] truncate ${
+                              c.specialContextTag === 'industrial-war-sacrifice'
+                                ? 'bg-rose-500/15 text-rose-200 border-rose-400/40 hover:bg-rose-500/25'
+                                : c.specialContextTag === 'war-vet-in-eco'
+                                ? 'bg-indigo-500/15 text-indigo-200 border-indigo-400/40 hover:bg-indigo-500/25'
+                                : 'bg-amber-500/15 text-amber-200 border-amber-400/40 hover:bg-amber-500/25'
+                            }`}
+                          >
+                            {lang === 'es' ? translateRawStringEs(c.specialContextBadge) : c.specialContextBadge}
+                          </button>
+                        )}
+
                         <div
                           className="text-xs text-slate-300 font-mono flex items-center justify-center gap-1 flex-wrap"
                           title={
@@ -1639,6 +1722,145 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                           )}
                         </div>
                       </div>
+
+                      {/* Interactive ? Popover Card Explaining Classification & Exact Numbers */}
+                      {standingExplainUserId === c.userId && (
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          className="mt-2 p-3.5 rounded-2xl bg-slate-950/98 border border-cyan-500/50 shadow-2xl text-left text-xs space-y-2.5 z-40 relative max-w-[330px] mx-auto animate-in fade-in duration-150"
+                        >
+                          <div className="flex items-start justify-between gap-2 border-b border-slate-800 pb-2">
+                            <div>
+                              <div className="text-[10px] font-mono uppercase tracking-wider text-cyan-400 font-bold">
+                                {tx('Fiscal Standing Explainer', 'Explicación de Clasificación Fiscal')}
+                              </div>
+                              <div className="font-black text-white text-xs sm:text-sm mt-0.5">
+                                {c.username}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setStandingExplainUserId(null)}
+                              className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+
+                          {/* 1. What this classification means */}
+                          <div className="space-y-1">
+                            <div className="text-[10px] font-mono uppercase text-slate-400 font-bold">
+                              {tx('1. What This Standing Means', '1. Qué Significa Este Estatus')}
+                            </div>
+                            <p className="text-slate-200 leading-relaxed text-[11px]">
+                              {isPillar
+                                ? c.isDormantPillar
+                                  ? tx(
+                                      'Dormant Historical Pillar: Top lifetime national donor protected by the Policy Grace Floor, but with 0 or below-quota donations in the active window.',
+                                      'Pilar Histórico Inactivo: Donante histórico top protegido por el Piso de Gracia, pero con 0 o bajas donaciones en el período actual.'
+                                    )
+                                  : tx(
+                                      'Historical Pillar: Foundational all-time treasury donor whose lifetime contributions exceed the national Policy Grace Floor.',
+                                      'Pilar Histórico: Donante histórico fundamental cuyos aportes acumulados superan el Piso de Gracia nacional.'
+                                    )
+                                : isCombatVeteran
+                                ? tx(
+                                    'Frontline Hero: Active war combatant dealing top-tier battlefield damage for the country.',
+                                    'Héroe del Frente: Combatiente activo que inflige daño de primer nivel en batalla por el país.'
+                                  )
+                                : isPatriot
+                                ? tx(
+                                    `Model Patriot: Citizen meeting or exceeding the ${targetPatriotPct}% ${buildLabel} Patriot contribution quota.`,
+                                    `Patriota Modelo: Ciudadano que cumple o supera la cuota Patriota del ${targetPatriotPct}% para build ${buildLabel}.`
+                                  )
+                                : isLeech
+                                ? tx(
+                                    'Critical Leech: Upper-quartile wealth or idle liquidity/stockpile holder contributing <0.2% of wealth and below the playstyle quota, without veteran or sacrifice exemptions.',
+                                    'Leech Crítico: Ciudadano en el cuartil superior de riqueza o liquidez/stock inactivo que aporta <0.2% de su patrimonio y bajo la cuota, sin exenciones de veterano o sacrificio.'
+                                  )
+                                : isLow
+                                ? tx(
+                                    'Low Donor: Citizen contributing below the standard playstyle quota, or a proven above-median veteran currently on a donation pause.',
+                                    'Bajo Donante: Ciudadano que aporta por debajo de la cuota estándar, o un veterano sobre la mediana actualmente en pausa.'
+                                  )
+                                : tx(
+                                    `Moderate Contributor: Citizen meeting the ${targetQuotaPct}% standard quota or protected by verified veteran/sacrifice context.`,
+                                    `Contribuyente Moderado: Ciudadano que cumple la cuota estándar del ${targetQuotaPct}% o está protegido por contexto verificado de veterano/sacrificio.`
+                                  )}
+                            </p>
+                          </div>
+
+                          {/* 2. Why this citizen is classified like this (exact numbers) */}
+                          <div className="space-y-1 p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
+                            <div className="text-[10px] font-mono uppercase text-amber-300 font-bold">
+                              {tx('2. Why Classified This Way (Live Metrics)', '2. Por Qué Está Clasificado Así (Métricas)')}
+                            </div>
+                            <div className="grid grid-cols-2 gap-1.5 text-[11px] font-mono pt-1">
+                              <div>
+                                <span className="text-slate-400">{tx('Period:', 'Período:')}</span>{' '}
+                                <strong className="text-amber-300">{formatBtc(c.periodDonatedBtc ?? c.directDonatedBtc ?? 0)} BTC</strong>
+                              </div>
+                              <div>
+                                <span className="text-slate-400">{tx('Ratio:', 'Ratio:')}</span>{' '}
+                                <strong className="text-white">{c.contributionRatio.toFixed(1)}%</strong>{' '}
+                                <span className="text-slate-500">/ {targetQuotaPct}%</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400">{tx('Lifetime:', 'Histórico:')}</span>{' '}
+                                <strong className="text-emerald-300">{formatBtc(c.totalDonatedBtc)} BTC</strong>
+                              </div>
+                              <div>
+                                <span className="text-slate-400">{tx('Country Med:', 'Med. País:')}</span>{' '}
+                                <strong className="text-slate-300">{formatBtc(countryBenchmark?.lifetimeDonationMedian ?? 150)} BTC</strong>
+                              </div>
+                              <div>
+                                <span className="text-slate-400">{tx('Liquid:', 'Líquido:')}</span>{' '}
+                                <strong className="text-cyan-300">{formatBtc(c.liquidBtc || 0)} BTC</strong>
+                              </div>
+                              <div>
+                                <span className="text-slate-400">{tx('Stock:', 'Stock:')}</span>{' '}
+                                <strong className="text-indigo-300">{formatBtc(c.resourceWealthBtc || 0)} BTC</strong>
+                              </div>
+                            </div>
+                            {(c.specialContextReason || c.tierReasonBadge) && (
+                              <p className="text-[11px] text-slate-300 leading-relaxed pt-1.5 border-t border-slate-800/80 font-sans">
+                                {lang === 'es'
+                                  ? translateRawStringEs((c.specialContextReason || c.tierReasonBadge)!)
+                                  : (c.specialContextReason || c.tierReasonBadge)}
+                              </p>
+                            )}
+                          </div>
+
+                          {/* 3. Quick Actions */}
+                          <div className="flex items-center justify-between gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setStandingExplainUserId(null);
+                                setSelectedAuditProfile(c);
+                              }}
+                              className="flex-1 px-2.5 py-1.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40 text-cyan-200 font-bold text-[11px] transition text-center"
+                            >
+                              {tx('🔍 Open Full Audit', '🔍 Abrir Auditoría')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setStandingExplainUserId(null);
+                                setDiplomaticModeOverride(undefined);
+                                setNudgeArchetypeOverride(undefined);
+                                setCommendationArchetypeOverride(undefined);
+                                setOverDonationArchetypeOverride(undefined);
+                                setCustomNudgeBtc(undefined);
+                                setActiveNudgeProfile(c);
+                              }}
+                              className="flex-1 px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 font-bold text-[11px] transition text-center"
+                            >
+                              {tx('📨 Diplomatic Nudge', '📨 Enviar Nudge')}
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </td>
 
                     {/* Playstyle & Commitment (7-day Respec Pin) */}
@@ -2530,7 +2752,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-5 pr-1 my-4">
-              {/* 0. Ministerial Evaluation & Adaptive Diplomatic Mode Switcher */}
+              {/* 0. Ministerial Evaluation & Adaptive Diplomatic Mode Switcher (With Dual Recommendation Support) */}
               <div
                 className={`p-4 rounded-2xl border space-y-3 ${
                   nudgeRecommendation.recommendedDiplomaticMode === 'commendation'
@@ -2556,6 +2778,28 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                     <span className="text-xs font-mono text-slate-300 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-slate-800">
                       {nudgeRecommendation.recommendedDiplomaticBadge}
                     </span>
+                    {nudgeRecommendation.isDormantPillar && nudgeRecommendation.dormantWarningBadge && (
+                      <span
+                        className="px-2.5 py-1 rounded-lg text-xs font-mono font-bold bg-amber-500/20 border border-amber-400/50 text-amber-200"
+                        title={nudgeRecommendation.dormantWarningTooltip}
+                      >
+                        {`🏛️⚠️ ${tx('Historical Pillar', 'Pilar Histórico')} • ${nudgeRecommendation.dormantWarningBadge}`}
+                      </span>
+                    )}
+                    {nudgeRecommendation.specialContextBadge && (
+                      <span
+                        className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold border ${
+                          nudgeRecommendation.specialContextTag === 'industrial-war-sacrifice'
+                            ? 'bg-rose-500/20 border-rose-400/50 text-rose-200'
+                            : nudgeRecommendation.specialContextTag === 'war-vet-in-eco'
+                            ? 'bg-indigo-500/20 border-indigo-400/50 text-indigo-200'
+                            : 'bg-amber-500/20 border-amber-400/50 text-amber-200'
+                        }`}
+                        title={nudgeRecommendation.specialContextReason}
+                      >
+                        {nudgeRecommendation.specialContextBadge}
+                      </span>
+                    )}
                   </div>
                   {(diplomaticModeOverride || nudgeArchetypeOverride || commendationArchetypeOverride || overDonationArchetypeOverride) && (
                     <button
@@ -2578,6 +2822,48 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                 <p className="text-sm text-slate-200 leading-relaxed">
                   {nudgeRecommendation.recommendedDiplomaticReason}
                 </p>
+
+                {/* Dual Recommendation Callout Banner for Dormant Historical Pillars & Stockpiling Heroes */}
+                {nudgeRecommendation.secondaryDiplomaticMode && nudgeRecommendation.secondaryDiplomaticModeLabel && (
+                  <div className="p-3 rounded-xl bg-amber-950/50 border border-amber-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="px-2 py-0.5 rounded bg-amber-500/25 border border-amber-400/50 text-amber-200 text-xs font-mono font-black uppercase">
+                          {`⚡ ${tx('Secondary Recommendation', 'Recomendación Secundaria')}: ${nudgeRecommendation.secondaryDiplomaticModeLabel}`}
+                        </span>
+                        {nudgeRecommendation.secondaryDiplomaticBadge && (
+                          <span className="px-2 py-0.5 rounded bg-slate-900/90 border border-slate-700 text-xs font-mono font-bold text-amber-300">
+                            {nudgeRecommendation.secondaryDiplomaticBadge}
+                          </span>
+                        )}
+                      </div>
+                      {nudgeRecommendation.secondaryDiplomaticModeReason && (
+                        <p className="text-xs text-amber-100/90 leading-relaxed">
+                          {nudgeRecommendation.secondaryDiplomaticModeReason}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {activeDiplomaticMode !== nudgeRecommendation.secondaryDiplomaticMode ? (
+                        <button
+                          type="button"
+                          onClick={() => setDiplomaticModeOverride(nudgeRecommendation.secondaryDiplomaticMode)}
+                          className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs transition shadow-sm whitespace-nowrap"
+                        >
+                          {tx('Switch to Secondary (Treasury Nudge)', 'Cambiar a Secundaria (Solicitud del Tesoro)')}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setDiplomaticModeOverride(nudgeRecommendation.recommendedDiplomaticMode)}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs transition shadow-sm whitespace-nowrap"
+                        >
+                          {tx('Switch to Primary (Patriot Commendation)', 'Cambiar a Principal (Condecoración)')}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {/* 3-Way Diplomatic Mode Selector */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
@@ -2606,6 +2892,7 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                   ]).map((tab) => {
                     const isSelected = activeDiplomaticMode === tab.mode;
                     const isRec = nudgeRecommendation.recommendedDiplomaticMode === tab.mode;
+                    const isSecondaryRec = nudgeRecommendation.secondaryDiplomaticMode === tab.mode;
                     return (
                       <button
                         key={tab.mode}
@@ -2623,8 +2910,13 @@ export const CitizenRadar: React.FC<CitizenRadarProps> = ({
                         </div>
                         <div className="text-xs text-slate-300 mt-0.5">{tab.sub}</div>
                         {isRec && (
-                          <div className="mt-1.5 inline-block self-start px-2 py-0.5 rounded bg-slate-950/90 border border-slate-700 text-[11px] font-mono font-bold text-amber-300">
-                            {`★ Recommended for ${activeNudgeProfile.username}`}
+                          <div className="mt-1.5 inline-block self-start px-2 py-0.5 rounded bg-slate-950/90 border border-emerald-500/50 text-[11px] font-mono font-bold text-emerald-300">
+                            {`★ ${tx('Primary Rec. for', 'Rec. Principal para')} ${activeNudgeProfile.username}`}
+                          </div>
+                        )}
+                        {isSecondaryRec && (
+                          <div className="mt-1.5 inline-block self-start px-2 py-0.5 rounded bg-slate-950/90 border border-amber-500/50 text-[11px] font-mono font-bold text-amber-300">
+                            {`⚡ ${tx('Secondary Rec. for', 'Rec. Secundaria para')} ${activeNudgeProfile.username}`}
                           </div>
                         )}
                       </button>

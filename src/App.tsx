@@ -47,7 +47,7 @@ import {
 import {
   calculateWarSkillPoints,
   calculateEcoSkillPoints,
-  calculateDaysInBuild,
+  resolveCitizenBuildTenure,
   evaluatePlaystyle,
   evaluateLeechTier,
   evaluateMinisterialAuditVerdict,
@@ -77,8 +77,10 @@ import {
 } from 'lucide-react';
 import { CustomDateRange, DamageDonationConfig } from './types/warera';
 import { formatDateRangeDDMMYYYY } from './utils/dateUtils';
+import { useI18n } from './i18n/I18nContext';
 
 export default function App() {
+  const { tx } = useI18n();
   const [countries, setCountries] = useState<WareraCountry[]>([]);
   const [selectedCountry, setSelectedCountry] = useState<WareraCountry | null>(() => storage.getLastViewedCountry());
   const [transactions, setTransactions] = useState<WareraTransaction[]>([]);
@@ -814,6 +816,8 @@ export default function App() {
       heavyHitterRanks.set(f.userId, idx + 1);
     });
 
+    const priorPlaystylesMap = storage.getCitizenPlaystyles();
+
     activeCountryCitizens.forEach((user) => {
       const level = Number(user.leveling?.level ?? user.level ?? 0);
       const donor = donorStatsMap[user._id];
@@ -855,10 +859,32 @@ export default function App() {
       // Actual verified transfer count: only counts individual transaction events if recorded
       const donationCount = donor?.transactionCount || donor?.donations?.length || 0;
 
+      // 7-day weekly combat damage vs career lifetime damage:
+      const weeklyCombatDamage = Number(
+        user.rankings?.weeklyUserDamages?.value ??
+        (donor && timeframe !== 'all' ? donor.damageAmount : 0)
+      );
+      const lifetimeCombatDamage = Number(
+        user.rankings?.userDamages?.value ??
+        (user as any).stats?.damage ??
+        donor?.rawDamageDealt ??
+        weeklyCombatDamage
+      );
+
       const warPoints = calculateWarSkillPoints(user);
       const ecoPoints = calculateEcoSkillPoints(user);
       const playstyle = evaluatePlaystyle(warPoints, ecoPoints);
-      const daysInBuild = calculateDaysInBuild(user);
+      const {
+        daysInBuild,
+        buildDurationSource,
+        switchedFromWarRecently,
+      } = resolveCitizenBuildTenure(
+        user,
+        playstyle,
+        weeklyCombatDamage,
+        priorPlaystylesMap[user._id],
+        respecAlerts
+      );
       const audited = auditedProfilesMap[user._id];
       const activeCompsCap = audited?.activeCompaniesCount ?? Number(user.skills?.companies?.value ?? 2);
       const skillBreakdown = extractCitizenSkillBreakdown(user);
@@ -879,21 +905,24 @@ export default function App() {
       const heavyHitterRank = heavyHitterRanks.get(user._id);
       const isNationalHeavyHitter = Boolean(heavyHitterRank);
 
-      // 7-day weekly combat damage vs career lifetime damage:
-      const weeklyCombatDamage = Number(
-        user.rankings?.weeklyUserDamages?.value ??
-        (donor && timeframe !== 'all' ? donor.damageAmount : 0)
-      );
-      const lifetimeCombatDamage = Number(
-        user.rankings?.userDamages?.value ??
-        (user as any).stats?.damage ??
-        donor?.rawDamageDealt ??
-        weeklyCombatDamage
-      );
-
       const auditedGrossInflow = isAuditedValid
         ? (audited.grossInflowBtc ?? audited.grossIncomeBtc ?? 0)
         : undefined;
+
+      // Calculate days since last donation using true all-time records
+      const effectiveLastDonation = donor?.lastDonationAt || lifetimeData?.lastDonationAt;
+      let daysSinceLastDonation: number | undefined = undefined;
+      let isInactiveDonor = false;
+      if (effectiveLastDonation) {
+        const lastDonationMs = new Date(effectiveLastDonation).getTime();
+        daysSinceLastDonation = Math.max(0, Math.floor((Date.now() - lastDonationMs) / (1000 * 60 * 60 * 24)));
+        if (daysSinceLastDonation >= 7) {
+          isInactiveDonor = true;
+        }
+      } else {
+        // Never donated to this country
+        isInactiveDonor = true;
+      }
 
       const tierEval = evaluateLeechTier(
         wealth,
@@ -909,7 +938,17 @@ export default function App() {
         isNationalHeavyHitter,
         heavyHitterRank,
         countryBenchmark,
-        liquidMoney
+        liquidMoney,
+        {
+          companiesCount: isAuditedValid ? audited?.companiesCount : undefined,
+          companiesWealthBtc: companiesWealth,
+          pastWealthBtc: audited?.pastWealthBtc,
+          lifetimeCombatDamage,
+          donationCount,
+          daysSinceLastDonation,
+          daysInBuild,
+          switchedFromWarRecently,
+        }
       );
       const { ratio, tier, reason, damageValueBtc } = tierEval;
 
@@ -934,21 +973,6 @@ export default function App() {
 
       const tagInfo = playerTags[user._id];
       const watchedItem = watchedMap.get(user._id);
-
-      // Calculate days since last donation using true all-time records
-      const effectiveLastDonation = donor?.lastDonationAt || lifetimeData?.lastDonationAt;
-      let daysSinceLastDonation: number | undefined = undefined;
-      let isInactiveDonor = false;
-      if (effectiveLastDonation) {
-        const lastDonationMs = new Date(effectiveLastDonation).getTime();
-        daysSinceLastDonation = Math.max(0, Math.floor((Date.now() - lastDonationMs) / (1000 * 60 * 60 * 24)));
-        if (daysSinceLastDonation >= 7) {
-          isInactiveDonor = true;
-        }
-      } else {
-        // Never donated to this country
-        isInactiveDonor = true;
-      }
 
       list.push({
         userId: user._id,
@@ -979,15 +1003,24 @@ export default function App() {
         historicalRank,
         isNationalHeavyHitter,
         heavyHitterRank,
+        isDormantPillar: tierEval.isDormantPillar,
+        dormantWarningBadge: tierEval.dormantWarningBadge,
+        specialContextTag: tierEval.specialContextTag,
+        specialContextBadge: tierEval.specialContextBadge,
+        specialContextReason: tierEval.specialContextReason,
         tierReasonBadge: isAuditedValid
           ? (reason || audited.tierReasonBadge)
-          : isHistoricalTopDonor
-          ? reason
+          : tier === 'historical-pillar' || tier === 'combat-veteran' || Boolean(tierEval.specialContextTag)
+          ? (tierEval.specialContextReason || reason)
           : 'Pending personal receipt verification',
         donationCount,
         lastDonationAt: effectiveLastDonation,
         contributionRatio: isAuditedValid ? ratio : 0,
-        leechTier: isAuditedValid ? tier : (isHistoricalTopDonor ? 'historical-pillar' : 'moderate'),
+        leechTier: isAuditedValid
+          ? tier
+          : tier === 'historical-pillar' || tier === 'combat-veteran' || Boolean(tierEval.specialContextTag)
+          ? tier
+          : 'moderate',
         economicStanding: isAuditedValid
           ? resolveMasterCitizenStanding(
               tier,
@@ -995,8 +1028,12 @@ export default function App() {
               isHistoricalTopDonor,
               isNationalHeavyHitter
             )
-          : isHistoricalTopDonor
+          : tier === 'historical-pillar'
           ? 'historical-pillar'
+          : tier === 'combat-veteran'
+          ? 'combat-veteran'
+          : tierEval.specialContextTag === 'industrial-war-sacrifice'
+          ? 'illiquid-fighter'
           : 'standard-contributor',
         warSkillPoints: warPoints,
         ecoSkillPoints: ecoPoints,
@@ -1007,6 +1044,7 @@ export default function App() {
         notes: tagInfo?.notes,
         isActive: true,
         daysInBuild,
+        buildDurationSource,
         daysSinceLastDonation,
         isInactiveDonor,
         isOnWatch: Boolean(watchedItem),
@@ -1039,7 +1077,25 @@ export default function App() {
     });
 
     return list;
-  }, [summary.leaderboard, cumulative, transactions, usersMap, selectedCountry, playerTags, ministryConfig, watchedCitizens, auditedProfilesMap, countryBenchmark]);
+  }, [summary.leaderboard, cumulative, transactions, usersMap, selectedCountry, playerTags, ministryConfig, watchedCitizens, auditedProfilesMap, countryBenchmark, respecAlerts]);
+
+  // Universal Background Respec & Build-Switch Fingerprint Tracker (runs automatically on every citizen resolution/sync)
+  useEffect(() => {
+    if (citizenEconomicProfiles.length === 0) return;
+    const priorPlaystyles = storage.getCitizenPlaystyles();
+    const { newAlerts, updatedPlaystyles } = detectCitizenRespecAlerts(
+      citizenEconomicProfiles,
+      respecAlerts,
+      priorPlaystyles,
+      usersMap
+    );
+    storage.saveCitizenPlaystyles(updatedPlaystyles);
+    if (newAlerts.length > 0) {
+      const merged = [...newAlerts, ...respecAlerts];
+      setRespecAlerts(merged);
+      storage.saveRespecAlerts(merged);
+    }
+  }, [citizenEconomicProfiles, usersMap]);
 
   // Income Growth Audit Action (also refreshes live country citizen census when triggered manually)
   const handleRunIncomeAudit = async (customConfig?: MinistryConfig, refreshCensus = false) => {
@@ -1133,7 +1189,8 @@ export default function App() {
       const { newAlerts, updatedPlaystyles } = detectCitizenRespecAlerts(
         audited,
         respecAlerts,
-        priorPlaystyles
+        priorPlaystyles,
+        usersMap
       );
       if (newAlerts.length > 0) {
         const merged = [...newAlerts, ...respecAlerts];
@@ -1833,8 +1890,9 @@ export default function App() {
       <footer className="mt-12 border-t border-slate-800/80 py-6 text-center text-xs text-slate-500 bg-slate-950">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <span className="font-extrabold text-slate-400">WAR<span className="text-amber-500">ERA</span></span>
-            <span>Live Country BTC Donation Rankings</span>
+            <span className="font-extrabold text-slate-400">WAR<span className="text-amber-500">ERA</span> Big Brother</span>
+            <span className="text-amber-500/80 font-mono">•</span>
+            <span>{tx("It's watching you.", "Te vigila.")}</span>
           </div>
           <div className="flex items-center gap-4 text-[11px]">
             <span className="text-slate-400 font-mono">

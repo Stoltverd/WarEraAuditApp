@@ -781,16 +781,19 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
             </table>
           </div>
 
-          {/* Secondary Respec Alerts Log */}
+          {/* Secondary Respec Alerts Log (Immutable Build-Tenure Audit Trail) */}
           {alerts.length > 0 && (
             <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3 shadow-lg">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
                 <h4 className="text-sm font-bold text-white flex items-center gap-2">
-                  <span>Citizen Respec & Playstyle Shifts</span>
+                  <span>Citizen Respec &amp; Playstyle Shifts</span>
                   <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-mono text-[10px]">
                     {alerts.length} logged
                   </span>
                 </h4>
+                <span className="text-[10px] font-mono text-cyan-300 bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 rounded-lg">
+                  Permanent Build-Tenure History (Non-Deletable)
+                </span>
               </div>
 
               <div className="space-y-2">
@@ -809,6 +812,7 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                       </div>
                       <div className="text-slate-400 font-mono text-[10px]">
                         {alert.ecoPoints} Eco · {alert.warPoints} War · {formatDateDDMMYYYY(alert.timestamp)}
+                        {alert.triggerReason ? ` · ${alert.triggerReason}` : ''}
                       </div>
                     </div>
 
@@ -852,8 +856,9 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                           type="button"
                           onClick={() => onAcknowledgeAlert(alert.id)}
                           className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center gap-1 transition"
+                          title="Mark notification as read (record remains in permanent build history)"
                         >
-                          <CheckCircle className="w-3.5 h-3.5 text-emerald-400" /> Dismiss
+                          <CheckCircle className="w-3.5 h-3.5 text-emerald-400" /> Acknowledge
                         </button>
                       )}
                     </div>
@@ -1142,12 +1147,22 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
               </div>
 
               <div className="flex-1 overflow-y-auto space-y-5 pr-1 my-4">
-                {/* 0. Ministerial Evaluation & Mode Switcher */}
+                {/* 0. Ministerial Evaluation & Mode Switcher (With Dual Recommendation Support) */}
                 <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-3">
                   <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <span className="px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-400/40 text-amber-200 text-xs font-mono font-black uppercase">
-                      {`★ Recommended Action: ${nudgeRec.recommendedDiplomaticModeLabel} (${nudgeRec.recommendedDiplomaticBadge})`}
-                    </span>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-400/40 text-amber-200 text-xs font-mono font-black uppercase">
+                        {`★ Recommended Action: ${nudgeRec.recommendedDiplomaticModeLabel} (${nudgeRec.recommendedDiplomaticBadge})`}
+                      </span>
+                      {nudgeRec.isDormantPillar && nudgeRec.dormantWarningBadge && (
+                        <span
+                          className="px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-400/50 text-amber-200 text-xs font-mono font-bold"
+                          title={nudgeRec.dormantWarningTooltip}
+                        >
+                          {`🏛️⚠️ Historical Pillar • ${nudgeRec.dormantWarningBadge}`}
+                        </span>
+                      )}
+                    </div>
                     {(diplomaticModeOverride || nudgeArchetypeOverride || commendationArchetypeOverride || overDonationArchetypeOverride) && (
                       <button
                         type="button"
@@ -1166,6 +1181,48 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                     )}
                   </div>
                   <p className="text-sm text-slate-200 leading-relaxed">{nudgeRec.recommendedDiplomaticReason}</p>
+
+                  {nudgeRec.secondaryDiplomaticMode && nudgeRec.secondaryDiplomaticModeLabel && (
+                    <div className="p-3 rounded-xl bg-amber-950/50 border border-amber-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="px-2 py-0.5 rounded bg-amber-500/25 border border-amber-400/50 text-amber-200 text-xs font-mono font-black uppercase">
+                            {`⚡ Secondary Recommendation: ${nudgeRec.secondaryDiplomaticModeLabel}`}
+                          </span>
+                          {nudgeRec.secondaryDiplomaticBadge && (
+                            <span className="px-2 py-0.5 rounded bg-slate-900/90 border border-slate-700 text-xs font-mono font-bold text-amber-300">
+                              {nudgeRec.secondaryDiplomaticBadge}
+                            </span>
+                          )}
+                        </div>
+                        {nudgeRec.secondaryDiplomaticModeReason && (
+                          <p className="text-xs text-amber-100/90 leading-relaxed">
+                            {nudgeRec.secondaryDiplomaticModeReason}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {activeMode !== nudgeRec.secondaryDiplomaticMode ? (
+                          <button
+                            type="button"
+                            onClick={() => setDiplomaticModeOverride(nudgeRec.secondaryDiplomaticMode)}
+                            className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs transition shadow-sm whitespace-nowrap"
+                          >
+                            Switch to Secondary (Treasury Nudge)
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setDiplomaticModeOverride(nudgeRec.recommendedDiplomaticMode)}
+                            className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs transition shadow-sm whitespace-nowrap"
+                          >
+                            Switch to Primary (Patriot Commendation)
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                     {([
                       { mode: 'nudge' as DiplomaticActionMode, title: 'Treasury Nudge', sub: 'Request fair BTC contribution' },
@@ -1173,6 +1230,8 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                       { mode: 'over-donation-warning' as DiplomaticActionMode, title: 'Over-Donation Warning', sub: 'Protect citizen growth & ammo' },
                     ]).map((tab) => {
                       const isSel = activeMode === tab.mode;
+                      const isPrimaryRec = nudgeRec.recommendedDiplomaticMode === tab.mode;
+                      const isSecondaryRec = nudgeRec.secondaryDiplomaticMode === tab.mode;
                       return (
                         <button
                           key={tab.mode}
@@ -1189,6 +1248,16 @@ export const MinistryWorkspace: React.FC<MinistryWorkspaceProps> = ({
                             {isSel && <Check className="w-4 h-4 text-amber-400" />}
                           </div>
                           <div className="text-xs text-slate-300 mt-0.5">{tab.sub}</div>
+                          {isPrimaryRec && (
+                            <div className="mt-1.5 inline-block px-2 py-0.5 rounded bg-slate-950/90 border border-emerald-500/50 text-[11px] font-mono font-bold text-emerald-300">
+                              ★ Primary Rec.
+                            </div>
+                          )}
+                          {isSecondaryRec && (
+                            <div className="mt-1.5 inline-block px-2 py-0.5 rounded bg-slate-950/90 border border-amber-500/50 text-[11px] font-mono font-bold text-amber-300">
+                              ⚡ Secondary Rec.
+                            </div>
+                          )}
                         </button>
                       );
                     })}

@@ -6,7 +6,7 @@ import {
   Search,
   Wifi,
   WifiOff,
-  Coins,
+  Eye,
   Key,
   ShieldCheck,
   ShieldAlert,
@@ -94,39 +94,43 @@ export const Header: React.FC<HeaderProps> = ({
       data-no-dom-i18n="true"
       className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 text-white"
     >
-      <div className="max-w-[1760px] w-full mx-auto px-4 sm:px-6 xl:px-10 h-18 py-2.5 flex items-center justify-between gap-4">
-        {/* Logo / Branding */}
-        <div className="flex items-center gap-3.5 shrink-0">
-          <div className="w-11 h-11 rounded-xl bg-gradient-to-tr from-amber-500 to-orange-600 flex items-center justify-center shadow-lg shadow-amber-500/20 ring-1 ring-amber-400/30">
-            <Coins className="w-6 h-6 text-white" />
+      <div className="max-w-[1760px] w-full mx-auto px-3 sm:px-5 xl:px-8 py-2.5 flex items-center justify-between gap-2.5 lg:gap-3.5">
+        {/* Logo / Branding: WARERA Big Brother + Eye Emblem */}
+        <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
+          <div
+            className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-gradient-to-tr from-amber-500 to-orange-600 flex items-center justify-center shadow-lg shadow-amber-500/20 ring-1 ring-amber-400/30 shrink-0"
+            title={tx("WARERA Big Brother — It's watching you.", "WARERA Big Brother — Te vigila.")}
+          >
+            <Eye className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
           </div>
-          <div>
-            <div className="flex items-center gap-2.5">
-              <span className="font-black tracking-tight text-xl text-slate-100">
-                WAR<span className="text-amber-400">ERA</span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+              <span className="font-black tracking-tight text-base sm:text-lg lg:text-xl text-slate-100 whitespace-nowrap leading-tight">
+                WAR<span className="text-amber-400">ERA</span>{' '}
+                <span className="text-slate-100 font-extrabold">Big Brother</span>
               </span>
-              <span className="text-xs px-2.5 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 font-mono font-bold">
-                {tx('BTC Donations', 'Donaciones BTC')}
+              <span className="text-[11px] sm:text-xs px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 font-mono font-bold whitespace-nowrap shrink-0">
+                {tx("It's watching you.", "Te vigila.")}
               </span>
             </div>
-            <p className="text-xs text-slate-300 hidden sm:block">
+            <p className="text-[11px] text-slate-300 hidden xl:block truncate mt-0.5">
               {tx('Daily, Weekly & Monthly Citizen Audit', 'Auditoría Ciudadana Diaria, Semanal y Mensual')}
             </p>
           </div>
         </div>
 
         {/* Center: Country Selector */}
-        <div className="relative flex-1 max-w-xl">
+        <div className="relative flex-1 min-w-[160px] max-w-md lg:max-w-lg">
           <button
             type="button"
             onClick={() => setIsCountryMenuOpen(!isCountryMenuOpen)}
-            className={`w-full flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl transition text-left text-sm sm:text-base shadow-sm ${
+            className={`w-full flex items-center justify-between gap-2.5 px-3.5 py-2 rounded-xl transition text-left text-xs sm:text-sm shadow-sm ${
               !selectedCountry
                 ? 'bg-slate-800 border-2 border-amber-500/60 ring-2 ring-amber-500/20 hover:border-amber-400'
                 : 'bg-slate-800/90 hover:bg-slate-750 border border-slate-700'
             }`}
           >
-            <div className="flex items-center gap-3 truncate">
+            <div className="flex items-center gap-2.5 truncate">
               {selectedCountry ? (
                 <WareraCountryFlag
                   countryName={selectedCountry.name}
@@ -134,13 +138,13 @@ export const Header: React.FC<HeaderProps> = ({
                   size="lg"
                 />
               ) : (
-                <Globe className="w-5 h-5 text-amber-400 shrink-0" />
+                <Globe className="w-4 h-4 sm:w-5 sm:h-5 text-amber-400 shrink-0" />
               )}
               <span className={`truncate ${!selectedCountry ? 'font-black text-amber-300' : 'font-extrabold text-slate-100'}`}>
                 {selectedCountry ? selectedCountry.name : tx('Choose Country to Audit...', 'Elegir País a Auditar...')}
               </span>
               {selectedCountry && (
-                <span className="text-xs sm:text-sm text-amber-400 bg-amber-400/10 px-2.5 py-0.5 rounded-full border border-amber-400/20 font-mono font-bold hidden md:inline">
+                <span className="text-xs text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full border border-amber-400/20 font-mono font-bold hidden 2xl:inline shrink-0">
                   {formatBtc(getCountryWealthValue(selectedCountry))}
                 </span>
               )}
@@ -155,7 +159,7 @@ export const Header: React.FC<HeaderProps> = ({
                 <Search className="w-4 h-4 absolute left-3.5 top-3 text-slate-400" />
                 <input
                   type="text"
-                  placeholder="Search 180 countries..."
+                  placeholder={tx('Search 180 countries...', 'Buscar 180 países...')}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full bg-slate-800 border border-slate-700 rounded-xl pl-10 pr-3 py-2 text-sm text-slate-200 placeholder-slate-400 focus:outline-none focus:border-amber-400"
@@ -164,14 +168,14 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
 
               <div className="px-2 py-1 text-xs text-slate-400 font-mono flex justify-between">
-                <span>{filteredCountries.length} countries (Alphabetical)</span>
-                <span>Select for audit</span>
+                <span>{tx(`${filteredCountries.length} countries (Alphabetical)`, `${filteredCountries.length} países (Alfabético)`)}</span>
+                <span>{tx('Select for audit', 'Seleccionar para auditar')}</span>
               </div>
 
               <div className="overflow-y-auto space-y-1 flex-1 pr-1 max-h-72">
                 {filteredCountries.length === 0 ? (
                   <div className="text-sm text-slate-400 text-center py-6">
-                    No countries matching &quot;{searchQuery}&quot;
+                    {tx(`No countries matching "${searchQuery}"`, `Ningún país coincide con "${searchQuery}"`)}
                   </div>
                 ) : (
                   filteredCountries.map((c) => {
@@ -214,11 +218,11 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Workspace Mode Switcher: Leaderboard vs Ministry */}
-        <div className="flex items-center gap-1.5 p-1 bg-slate-950 border border-slate-800 rounded-xl shrink-0">
+        <div className="flex items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-xl shrink-0">
           <button
             type="button"
             onClick={() => onToggleMode('leaderboard')}
-            className={`px-3.5 py-2 rounded-lg text-xs sm:text-sm font-bold transition flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+            className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-bold transition flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeMode === 'leaderboard'
                 ? 'bg-amber-500 text-slate-950 shadow-sm font-black'
                 : 'text-slate-300 hover:text-white'
@@ -230,7 +234,7 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             type="button"
             onClick={() => onToggleMode('ministry')}
-            className={`px-3.5 py-2 rounded-lg text-xs sm:text-sm font-bold transition flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+            className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-bold transition flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeMode === 'ministry'
                 ? 'bg-amber-500 text-slate-950 shadow-sm font-black'
                 : 'text-slate-300 hover:text-white'
@@ -245,13 +249,13 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Right Actions: Theme Switcher, Language Pill, API Token Button & Sync */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           {/* Theme Switcher Dropdown */}
           <div className="relative shrink-0" ref={themeMenuRef}>
             <button
               type="button"
               onClick={() => setIsThemeMenuOpen((prev) => !prev)}
-              className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-200 text-xs font-bold transition whitespace-nowrap shadow-sm"
+              className="flex items-center gap-1.5 px-2.5 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-200 text-xs font-bold transition whitespace-nowrap shadow-sm"
               title={tx(
                 'Change color theme (5 Dark & 4 Light high-readability themes)',
                 'Cambiar tema de color (5 temas oscuros y 4 claros de alta legibilidad)'

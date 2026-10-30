@@ -235,7 +235,7 @@ html[data-theme-mode="light"] .text-slate-950 {
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 

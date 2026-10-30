@@ -29,7 +29,7 @@ import {
 import { formatDateDDMMYYYY, formatDateTimeDDMMYYYY } from '../../utils/dateUtils';
 import { WareraItemIcon } from '../common/WareraItemIcon';
 import { CompanyPortfolioAnalyzer } from './CompanyPortfolioAnalyzer';
-import { useI18n } from '../../i18n/I18nContext';
+import { useI18n, translateRawStringEs } from '../../i18n/I18nContext';
 import {
   X,
   Coins,
@@ -92,13 +92,14 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
   onUpdateConfig,
   onOpenNudge,
 }) => {
-  const { translateCommodity } = useI18n();
+  const { lang, translateCommodity, tx } = useI18n();
   const [activeTab, setActiveTab] = useState<'cashflow' | 'transactions' | 'companies' | 'defense'>('cashflow');
   const [localProfile, setLocalProfile] = useState<CitizenEconomicProfile | null>(profile);
   const [auditPeriodDays, setAuditPeriodDays] = useState<number>(config.analysisPeriodDays || 7);
   const [activeExplainerCard, setActiveExplainerCard] = useState<
     'grossInflow' | 'netCashflow' | 'disposableCashflow' | 'treasuryContribution' | 'wages' | 'sales' | 'purchases' | 'tradingMargin' | null
   >(null);
+  const [showHeaderTagsExplainer, setShowHeaderTagsExplainer] = useState<boolean>(false);
   const autoStreamInitiatedRef = useRef<string | null>(null);
 
   // Industrial state
@@ -514,7 +515,16 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
     currentProfile.isNationalHeavyHitter || false,
     currentProfile.heavyHitterRank,
     countryBenchmark,
-    liquidBtc
+    liquidBtc,
+    {
+      companiesCount: liveCompanies.length > 0 ? liveCompanies.length : currentProfile.companiesCount,
+      companiesWealthBtc: companiesWealth,
+      pastWealthBtc: currentProfile.pastWealthBtc,
+      lifetimeCombatDamage,
+      donationCount: currentProfile.donationCount,
+      daysSinceLastDonation: currentProfile.daysSinceLastDonation,
+      daysInBuild: currentProfile.daysInBuild,
+    }
   );
 
   const liveVerdictEval = evaluateMinisterialAuditVerdict(
@@ -946,39 +956,93 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                 <h3 className="text-lg sm:text-xl font-black text-white tracking-tight">
                   {currentProfile.username || `Citizen #${(currentProfile.userId || '').slice(-6)}`}
                 </h3>
-                {/* Unified Master Standing Badge (only shown once audited or historical pillar) */}
-                {currentProfile.auditBaselineStatus !== 'audited' && timeframeTransactions.length === 0 && standing !== 'historical-pillar' ? (
+                {/* Unified Master Standing Badge (only shown once audited or historical pillar or special context) */}
+                {currentProfile.auditBaselineStatus !== 'audited' &&
+                timeframeTransactions.length === 0 &&
+                standing !== 'historical-pillar' &&
+                !liveTierEval.specialContextTag ? (
                   <span className="px-2.5 py-0.5 rounded-full text-xs font-bold border bg-amber-500/15 text-amber-300 border-amber-500/40">
-                    ⏳ Pending Receipt Verification
+                    {tx('⏳ Pending Receipt Verification', '⏳ Verificación de Recibos Pendiente')}
                   </span>
                 ) : (
-                  <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border ${
-                    standing === 'evader-leech'
-                      ? 'bg-red-500/20 text-red-300 border-red-500/40'
-                      : standing === 'low-contributor'
-                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                      : standing === 'subsistence-worker'
-                      ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
-                      : standing === 'illiquid-fighter'
-                      ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
-                      : standing === 'combat-veteran'
-                      ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
-                      : standing === 'sovereign-patriot'
-                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                      : standing === 'historical-pillar'
-                      ? 'bg-amber-400/20 text-amber-300 border-amber-400/50'
-                      : 'bg-slate-800 text-slate-300 border-slate-700'
-                  }`}>
-                    {standing === 'evader-leech' && '🚨 Evader / Leech'}
-                    {standing === 'low-contributor' && '⚠️ Low Donor'}
-                    {standing === 'subsistence-worker' && '🛡️ Subsistence Worker'}
-                    {standing === 'illiquid-fighter' && '🔒 Illiquid Combatant'}
-                    {standing === 'combat-veteran' && '⚔️ Frontline Hero'}
-                    {standing === 'sovereign-patriot' && '🌟 Sovereign Patriot'}
-                    {standing === 'historical-pillar' && '🏛️ Historical Pillar'}
-                    {standing === 'standard-contributor' && '🔵 Standard Contributor'}
-                  </span>
+                  <>
+                    <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border ${
+                      standing === 'evader-leech'
+                        ? 'bg-red-500/20 text-red-300 border-red-500/40'
+                        : standing === 'low-contributor'
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                        : standing === 'subsistence-worker'
+                        ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
+                        : standing === 'illiquid-fighter'
+                        ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                        : standing === 'combat-veteran'
+                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                        : standing === 'sovereign-patriot'
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                        : standing === 'historical-pillar'
+                        ? 'bg-amber-400/20 text-amber-300 border-amber-400/50'
+                        : 'bg-slate-800 text-slate-300 border-slate-700'
+                    }`}>
+                      {standing === 'evader-leech' && tx('🚨 Evader / Leech', '🚨 Evasor / Leech')}
+                      {standing === 'low-contributor' && tx('⚠️ Low Donor', '⚠️ Bajo Donante')}
+                      {standing === 'subsistence-worker' && tx('🛡️ Subsistence Worker', '🛡️ Trabajador de Subsistencia')}
+                      {standing === 'illiquid-fighter' && tx('🔒 Illiquid Combatant', '🔒 Combatiente Ilíquido')}
+                      {standing === 'combat-veteran' && tx('⚔️ Frontline Hero', '⚔️ Héroe del Frente')}
+                      {standing === 'sovereign-patriot' && tx('🌟 Sovereign Patriot', '🌟 Patriota Soberano')}
+                      {standing === 'historical-pillar' && tx('🏛️ Historical Pillar', '🏛️ Pilar Histórico')}
+                      {standing === 'standard-contributor' && tx('🔵 Standard Contributor', '🔵 Contribuyente Estándar')}
+                    </span>
+                    {standing === 'historical-pillar' && liveTierEval.isDormantPillar && (
+                      <span
+                        onClick={() => setShowHeaderTagsExplainer((prev) => !prev)}
+                        className="px-2 py-0.5 rounded-full text-xs font-mono font-bold bg-amber-500/20 text-amber-200 border border-amber-400/50 cursor-pointer hover:bg-amber-500/30 transition"
+                        title={`Dormant Historical Pillar: Retains Pillar standing from ${formatBtc(currentProfile.totalDonatedBtc)} BTC lifetime donations, but contributed ${formatBtc(periodDonated)} BTC in the active ${auditPeriodDays}D window. Dual Nudge options (Patriot Commendation + Secondary Treasury Nudge) are recommended.`}
+                      >
+                        {`⚠️ ${liveTierEval.dormantWarningBadge || tx('Dormant Period', 'Período Inactivo')}`}
+                      </span>
+                    )}
+                    {liveTierEval.specialContextBadge && (
+                      <span
+                        onClick={() => setShowHeaderTagsExplainer((prev) => !prev)}
+                        className={`px-2.5 py-0.5 rounded-full text-xs font-mono font-bold border cursor-pointer transition ${
+                          liveTierEval.specialContextTag === 'industrial-war-sacrifice'
+                            ? 'bg-rose-500/20 text-rose-200 border-rose-400/50 hover:bg-rose-500/30'
+                            : liveTierEval.specialContextTag === 'war-vet-in-eco'
+                            ? 'bg-indigo-500/20 text-indigo-200 border-indigo-400/50 hover:bg-indigo-500/30'
+                            : 'bg-amber-500/20 text-amber-200 border-amber-400/50 hover:bg-amber-500/30'
+                        }`}
+                        title={
+                          lang === 'es' && liveTierEval.specialContextReason
+                            ? translateRawStringEs(liveTierEval.specialContextReason)
+                            : liveTierEval.specialContextReason
+                        }
+                      >
+                        {lang === 'es'
+                          ? translateRawStringEs(liveTierEval.specialContextBadge)
+                          : liveTierEval.specialContextBadge}
+                      </span>
+                    )}
+                  </>
                 )}
+
+                {/* Clickable ? Button Explaining All Audit Header Tags */}
+                <button
+                  type="button"
+                  onClick={() => setShowHeaderTagsExplainer((prev) => !prev)}
+                  className={`px-2 py-0.5 rounded-full text-xs font-mono font-bold border inline-flex items-center gap-1 transition ${
+                    showHeaderTagsExplainer
+                      ? 'bg-cyan-500 text-slate-950 border-cyan-300 shadow-sm'
+                      : 'bg-slate-800/90 text-cyan-300 border-slate-700 hover:bg-cyan-500/20 hover:border-cyan-400/60'
+                  }`}
+                  title={tx(
+                    'Click to explain all status tags, Dormant Pillar rules, and veteran protections for this citizen',
+                    'Haz clic para explicar todas las etiquetas de estatus, reglas de Pilar Inactivo y protecciones de veterano'
+                  )}
+                >
+                  <HelpCircle className="w-3.5 h-3.5" />
+                  <span>{tx('Explain Tags', 'Explicar Etiquetas')}</span>
+                </button>
+
                 <span className="text-xs font-mono text-slate-400">
                   {`Level ${currentProfile.level} · ${countryName}`}
                 </span>
@@ -999,8 +1063,21 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                 </span>
                 <span>·</span>
                 <span className="text-cyan-400">
-                  {`${currentProfile.playstyle === 'pure-eco' ? '🌾 Eco Build' : currentProfile.playstyle === 'pure-war' ? '⚔️ War Build' : '⚖️ Hybrid Build'}${
-                    typeof currentProfile.daysInBuild === 'number' ? ` · Active for ${currentProfile.daysInBuild}d (Cooldown cleared)` : ''
+                  {`${
+                    currentProfile.playstyle === 'pure-eco'
+                      ? tx('🌾 Eco Build', '🌾 Build Eco')
+                      : currentProfile.playstyle === 'pure-war'
+                      ? tx('⚔️ War Build', '⚔️ Build Guerra')
+                      : tx('⚖️ Hybrid Build', '⚖️ Build Híbrida')
+                  } · ${
+                    typeof currentProfile.daysInBuild === 'number'
+                      ? tx(
+                          `Active for ${currentProfile.daysInBuild}d${currentProfile.daysInBuild >= 7 ? ' (Cooldown cleared)' : ''}`,
+                          `Activa por ${currentProfile.daysInBuild}d${currentProfile.daysInBuild >= 7 ? ' (Enfriamiento finalizado)' : ''}`
+                        )
+                      : currentProfile.buildDurationSource === 'weekly-combat-bound'
+                      ? tx('≤ 7d (Recent Switch)', '≤ 7d (Cambio Reciente)')
+                      : tx('Reset date unverified', 'Reinicio no verificado')
                   }`}
                 </span>
                 <span>·</span>
@@ -1069,6 +1146,126 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Interactive Audit Header Tags & Dormant Pillar Explainer Panel */}
+        {showHeaderTagsExplainer && (
+          <div className="shrink-0 mt-2.5 p-4 rounded-2xl bg-slate-950/95 border border-cyan-500/40 shadow-xl space-y-3 text-xs animate-in fade-in duration-150">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+              <div className="flex items-center gap-2">
+                <HelpCircle className="w-4 h-4 text-cyan-400 shrink-0" />
+                <span className="font-black text-white uppercase tracking-wider text-xs">
+                  {tx(
+                    `Audit Tags & Classification Guide for ${currentProfile.username}`,
+                    `Guía de Etiquetas y Clasificación de Auditoría para ${currentProfile.username}`
+                  )}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowHeaderTagsExplainer(false)}
+                className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+              {/* Card 1: Master Standing */}
+              <div className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 space-y-1.5">
+                <div className="text-[10px] font-mono uppercase text-cyan-400 font-bold">
+                  {tx('1. Master Fiscal Standing', '1. Clasificación Fiscal Principal')}
+                </div>
+                <div className="font-bold text-white">
+                  {standing === 'historical-pillar' && tx('🏛️ Historical Pillar', '🏛️ Pilar Histórico')}
+                  {standing === 'combat-veteran' && tx('⚔️ Frontline Hero', '⚔️ Héroe del Frente')}
+                  {standing === 'sovereign-patriot' && tx('🌟 Sovereign Patriot', '🌟 Patriota Soberano')}
+                  {standing === 'standard-contributor' && tx('🔵 Standard Contributor', '🔵 Contribuyente Estándar')}
+                  {standing === 'low-contributor' && tx('⚠️ Low Donor', '⚠️ Bajo Donante')}
+                  {standing === 'illiquid-fighter' && tx('🔒 Illiquid Combatant / Sacrifice', '🔒 Combatiente Ilíquido / Sacrificio')}
+                  {standing === 'subsistence-worker' && tx('🛡️ Subsistence Worker', '🛡️ Trabajador de Subsistencia')}
+                  {standing === 'evader-leech' && tx('🚨 Evader / Leech', '🚨 Evasor / Leech')}
+                </div>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  {lang === 'es'
+                    ? translateRawStringEs(liveVerdictEval.ministerialVerdictReason)
+                    : liveVerdictEval.ministerialVerdictReason}
+                </p>
+              </div>
+
+              {/* Card 2: Dormant Historical Pillar Explanation */}
+              <div className="p-3 rounded-xl bg-amber-950/25 border border-amber-500/35 space-y-1.5">
+                <div className="text-[10px] font-mono uppercase text-amber-300 font-bold">
+                  {tx('2. Dormant Pillar Tag (🏛️ + ⚠️)', '2. Etiqueta Pilar Inactivo (🏛️ + ⚠️)')}
+                </div>
+                <div className="font-bold text-amber-200">
+                  {standing === 'historical-pillar'
+                    ? liveTierEval.isDormantPillar
+                      ? tx('Active on This Citizen (Dormant Pillar)', 'Activa en Este Ciudadano (Pilar Inactivo)')
+                      : tx('Active Pillar (Donating in Period)', 'Pilar Activo (Donando en el Período)')
+                    : tx('How Dormant Pillar Works', 'Cómo Funciona el Pilar Inactivo')}
+                </div>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  {tx(
+                    `Citizens in the Top Lifetime Donors who meet the Policy Grace Floor (≥${(config.historicalDonorGraceThresholdBtc ?? 500).toLocaleString()} BTC) keep their 🏛️ Historical Pillar shield permanently. When their ${auditPeriodDays}D donation is 0 or below quota (${formatBtc(periodDonated)} BTC), they receive the ⚠️ Dormant badge and unlock Dual Nudge Recommendations (Primary Commendation + Secondary Treasury Nudge).`,
+                    `Los ciudadanos en el Top de Donantes Históricos que cumplen el Piso de Gracia (≥${(config.historicalDonorGraceThresholdBtc ?? 500).toLocaleString()} BTC) conservan su escudo de 🏛️ Pilar Histórico. Cuando su donación en ${auditPeriodDays}D es 0 o bajo cuota (${formatBtc(periodDonated)} BTC), reciben la etiqueta ⚠️ Inactivo y desbloquean la Doble Recomendación en Nudge (Condecoración + Solicitud Secundaria).`
+                  )}
+                </p>
+              </div>
+
+              {/* Card 3: Special Context & Median-Based Protections */}
+              <div className="p-3 rounded-xl bg-indigo-950/25 border border-indigo-500/35 space-y-1.5">
+                <div className="text-[10px] font-mono uppercase text-indigo-300 font-bold">
+                  {tx('3. Special Context & Median Shield', '3. Contexto Especial y Escudo por Mediana')}
+                </div>
+                <div className="font-bold text-indigo-200">
+                  {liveTierEval.specialContextBadge
+                    ? lang === 'es'
+                      ? translateRawStringEs(liveTierEval.specialContextBadge)
+                      : liveTierEval.specialContextBadge
+                    : tx('Standard Country-Median Evaluation', 'Evaluación Estándar por Mediana del País')}
+                </div>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  {liveTierEval.specialContextReason
+                    ? lang === 'es'
+                      ? translateRawStringEs(liveTierEval.specialContextReason)
+                      : liveTierEval.specialContextReason
+                    : tx(
+                        `Evaluated dynamically against ${countryName}'s medians: Lifetime Donated ${formatBtc(currentProfile.totalDonatedBtc)} BTC (vs. ${formatBtc(countryBenchmark?.lifetimeDonationMedian ?? 150)} BTC median / ${formatBtc(countryBenchmark?.lifetimeDonationP75 ?? 500)} BTC P75), Career Damage ${lifetimeCombatDamage.toLocaleString()} (vs. ${(countryBenchmark?.careerDamageP75 ?? 200000).toLocaleString()} P75), Company Equity ${formatBtc(companiesWealth)} BTC. Protects proven veterans, war-to-eco farmers, and company sacrificers from false Leech shaming.`,
+                        `Evaluado dinámicamente frente a las medianas de ${countryName}: Donado Histórico ${formatBtc(currentProfile.totalDonatedBtc)} BTC (vs. ${formatBtc(countryBenchmark?.lifetimeDonationMedian ?? 150)} BTC mediana / ${formatBtc(countryBenchmark?.lifetimeDonationP75 ?? 500)} BTC P75), Daño Histórico ${lifetimeCombatDamage.toLocaleString()} (vs. ${(countryBenchmark?.careerDamageP75 ?? 200000).toLocaleString()} P75), Empresas ${formatBtc(companiesWealth)} BTC. Protege a donantes veteranos, guerreros en modo eco y sacrificios industriales.`
+                      )}
+                </p>
+              </div>
+
+              {/* Card 4: Build Mode & Respec Tenure */}
+              <div className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 space-y-1.5">
+                <div className="text-[10px] font-mono uppercase text-emerald-400 font-bold">
+                  {tx('4. Build Mode & Policy Quotas', '4. Modo de Build y Cuotas')}
+                </div>
+                <div className="font-bold text-emerald-200">
+                  {`${currentProfile.playstyle === 'pure-eco' ? '🌾 Eco Build' : currentProfile.playstyle === 'pure-war' ? '⚔️ War Build' : '⚖️ Hybrid Build'} (${targetQuotaPct}% / ${targetPatriotPct}%)`}
+                </div>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  {tx(
+                    `Detected from v0.27.3 skill allocation (${currentProfile.ecoSkillPoints} Eco SP / ${currentProfile.warSkillPoints} War SP${
+                      typeof currentProfile.daysInBuild === 'number'
+                        ? `, active ${currentProfile.daysInBuild}d`
+                        : currentProfile.buildDurationSource === 'weekly-combat-bound'
+                        ? ', switched ≤7d ago'
+                        : ', reset date unverified'
+                    }). Sets this citizen's standard quota to ${targetQuotaPct}% and Model Patriot quota to ${targetPatriotPct}% of verified ${auditPeriodDays}D gross cashflow.`,
+                    `Detectado por puntos de habilidad v0.27.3 (${currentProfile.ecoSkillPoints} Eco SP / ${currentProfile.warSkillPoints} War SP${
+                      typeof currentProfile.daysInBuild === 'number'
+                        ? `, activo por ${currentProfile.daysInBuild}d`
+                        : currentProfile.buildDurationSource === 'weekly-combat-bound'
+                        ? ', cambio reciente ≤7d'
+                        : ', reinicio no verificado'
+                    }). Fija la cuota estándar en ${targetQuotaPct}% y la cuota Patriota Modelo en ${targetPatriotPct}% del flujo bruto de ${auditPeriodDays}D.`
+                  )}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Navigation Tabs (no vertical scrollbar) */}
         <div className="shrink-0 flex flex-wrap items-center gap-1.5 border-b border-slate-800 py-2.5 px-0.5 text-xs font-bold overflow-hidden">
@@ -1890,19 +2087,15 @@ export const CitizenAuditModal: React.FC<CitizenAuditModalProps> = ({
                   </div>
                 </div>
 
-                {/* v0.27 Skill Points Breakdown Strip */}
+                {/* v0.27.3 Skill Points Breakdown Strip (Leadership fused into Management) */}
                 {hasVerifiedSkillBreakdown ? (
-                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center font-mono text-xs">
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center font-mono text-xs">
                     <div className="p-2 bg-slate-900 border border-slate-800 rounded-xl">
                       <div className="text-[10px] text-slate-400 font-sans">Companies</div>
                       <div className="font-black text-white mt-0.5">{activeSkillBreakdown.companies}</div>
                     </div>
-                    <div className="p-2 bg-slate-900 border border-slate-800 rounded-xl">
-                      <div className="text-[10px] text-slate-400 font-sans">Leadership</div>
-                      <div className="font-black text-amber-300 mt-0.5">{activeSkillBreakdown.leadership}</div>
-                    </div>
-                    <div className="p-2 bg-slate-900 border border-slate-800 rounded-xl">
-                      <div className="text-[10px] text-slate-400 font-sans">Management</div>
+                    <div className="p-2 bg-slate-900 border border-slate-800 rounded-xl" title="Hotfix 0.27.3 fused Leadership into Management: +2% employee output/lvl + better training card draws & event odds">
+                      <div className="text-[10px] text-slate-400 font-sans">Management (0.27.3)</div>
                       <div className="font-black text-emerald-300 mt-0.5">
                         {activeSkillBreakdown.management} <span className="text-[10px] text-emerald-400">(+{activeSkillBreakdown.management * 2}%)</span>
                       </div>

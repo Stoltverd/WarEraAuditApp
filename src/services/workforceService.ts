@@ -772,13 +772,13 @@ export function resolveCommodityLivePriceBtc(
 }
 
 /**
- * Extract structured v0.27 CitizenSkillBreakdown from WareraUserLite
+ * Extract structured v0.27.3 CitizenSkillBreakdown from WareraUserLite.
+ * Hotfix 0.27.3 removed Leadership and fused its training/event effects into Management.
  */
 export function extractCitizenSkillBreakdown(user?: WareraUserLite): CitizenSkillBreakdown {
   const s = user?.skills || {};
   const companies = Number(s.companies?.level ?? 0);
-  // In v0.27, Entrepreneurship was removed and replaced by Leadership.
-  const leadership = Number(s.leadership?.level ?? (s as any).leader?.level ?? 0);
+  const leadership = 0; // Removed in Hotfix 0.27.3 (fused into Management)
   const legacyEntrepreneurship = Number(s.entrepreneurship?.level ?? 0);
   const management = Number(s.management?.level ?? 0);
   const energy = Number(s.energy?.level ?? 0);
@@ -805,12 +805,13 @@ export function extractCitizenSkillBreakdown(user?: WareraUserLite): CitizenSkil
 }
 
 /**
- * Level-Aware BuhDeuce Skill Build Evaluator (War Era v0.27)
- * Incorporates the two confirmed Ministerial caveats:
- * 1. Low levels (Levels 1–25) SHOULD have points in Production (and Energy) because paying NPC employees
- *    at early levels is less profitable than self-working their own companies.
- * 2. High levels (Levels 26+) that ignore Leadership and max Production + Energy are NOT recommended,
- *    but ARE recognized as a Viable Self-Work build (`viable-selfwork`).
+ * Level-Aware Skill Build Evaluator (War Era Hotfix 0.27.3)
+ * Incorporates the post-0.27.3 economy rules and Level 50 + Prestige SP math:
+ * - Max player level is Level 50 (200 base SP), after which players Prestige (+1 respec-able SP per prestige that ignores skill caps).
+ * - Hotfix 0.27.3 fused Leadership into Management (+2% employee output/lvl up to +22% AND better training card draws / event odds).
+ * - Because maxing Companies (55 SP) + Management (55 SP) + Energy (55 SP) costs at most 165 SP, Level 26–50 (and Prestige) Eco players
+ *   now have 35+ base SP (plus Prestige SP) to invest into high Production (Lvl 7–8+) alongside a full 36-employee workforce.
+ * - Levels 1–25 SHOULD invest in Production + Energy because self-working companies is more profitable at early levels than paying NPC wages.
  */
 export function evaluateCitizenSkillBuild(
   level: number,
@@ -818,17 +819,17 @@ export function evaluateCitizenSkillBuild(
   skills: CitizenSkillBreakdown,
   companiesCount = 2
 ): CitizenBuildEvaluation {
-  const effectiveLevel = Math.max(1, level || 1);
+  const effectiveLevel = Math.min(50, Math.max(1, level || 1));
   const isEarlyLevel = effectiveLevel <= 25;
-  const managementBoostPct = skills.management * 2; // +2% employee output per Management point in v0.27
+  const managementBoostPct = skills.management * 2; // +2% employee output per Management point + fused training/event quality in v0.27.3
   const energyPoolMax = 100 + skills.energy * 10; // Base 100 + 10 per Energy level
 
   const recommendations: string[] = [];
   const warnings: string[] = [];
 
-  if (skills.legacyEntrepreneurship > 0 && skills.leadership === 0) {
+  if (skills.legacyEntrepreneurship > 0 && skills.management === 0) {
     warnings.push(
-      `Legacy Entrepreneurship detected (${skills.legacyEntrepreneurship} SP): Patch v0.27 replaced Entrepreneurship with Leadership. Refresh profile or reallocate refunded SP.`
+      `Legacy Entrepreneurship detected (${skills.legacyEntrepreneurship} SP): Hotfix 0.27.3 fused workforce training and +2%/lvl output into Management. Refresh profile or reallocate refunded SP.`
     );
   }
 
@@ -850,7 +851,7 @@ export function evaluateCitizenSkillBuild(
         summary: `Level ${effectiveLevel} War Build: Focused on combat stats with ${skills.companies} Company SP and ${skills.lootChance} Luck SP.`,
         recommendations: [
           'During active war at Lvl 1–25, no extra Eco SP is needed beyond Companies and Luck.',
-          'When rotating to Eco, invest in Production + Energy for self-work until Level 26+.',
+          'When rotating to Eco, invest in Production + Energy for self-work until Level 26–50.',
         ],
         warnings,
       };
@@ -862,7 +863,7 @@ export function evaluateCitizenSkillBuild(
         `Level ${effectiveLevel} Caveat Active: Self-working companies with Production (${skills.production}) + Energy (${skills.energy}) is more profitable at Lvl 1–25 than paying hourly NPC employee wages.`
       );
       recommendations.push(
-        'Upgrade Breakrooms toward Level 3 using steel reserves as you approach Level 26+, then transition into Leadership + Management for 3-employee rosters.'
+        'Upgrade Breakrooms toward Level 3 using steel reserves as you approach Level 26–50, then transition into Management + Energy (plus Production) for 3-employee rosters.'
       );
       return {
         grade: 'optimal-early-selfwork',
@@ -903,20 +904,20 @@ export function evaluateCitizenSkillBuild(
   }
 
   // =========================================================================
-  // CASE 2: HIGH-LEVEL WAR PLAYERS (LEVEL 26+, PURE WAR)
+  // CASE 2: HIGH-LEVEL WAR PLAYERS (LEVEL 26–50, PURE WAR)
   // =========================================================================
   if (playstyle === 'pure-war') {
-    const wastedEcoSp = skills.production + skills.management + skills.leadership;
+    const wastedEcoSp = skills.production + skills.management;
     if (wastedEcoSp <= 2) {
       recommendations.push(
-        'BuhDeuce War Rule: No extra SP in Eco is needed during active war apart from Companies and Luck.',
+        'Wartime Spec Rule: No extra SP in Eco is needed during active war apart from Companies and Luck.',
         'Ensure your pre-trained bot employees stay above 30 happiness so they continue producing passively while you fight.'
       );
       return {
         grade: 'war-ready',
         badgeLabel: '⚔️ Optimal War Spec',
         shortLabel: 'War Optimal',
-        archetypeLabel: 'BuhDeuce Wartime Combat Spec',
+        archetypeLabel: 'Wartime Combat Spec (Lvl 26–50)',
         score: 96,
         isLevelEarlySelfWork: false,
         isHighLevelViableSelfWork: false,
@@ -928,10 +929,10 @@ export function evaluateCitizenSkillBuild(
       };
     } else {
       warnings.push(
-        `Has ${wastedEcoSp} SP split into Production/Leadership/Management while in War stance.`
+        `Has ${wastedEcoSp} levels split into Production/Management while in War stance.`
       );
       recommendations.push(
-        'While in active War mode, keep Eco SP strictly in Companies and Luck, or commit to an Eco training week with Energy + Leadership.'
+        'While in active War mode, keep Eco SP strictly in Companies and Luck, or commit to an Eco training cycle with Management + Energy.'
       );
       return {
         grade: 'war-eco-builder',
@@ -943,7 +944,7 @@ export function evaluateCitizenSkillBuild(
         isHighLevelViableSelfWork: false,
         managementBoostPct,
         energyPoolMax,
-        summary: `War player retaining ${wastedEcoSp} Eco SP across Production/Management/Leadership.`,
+        summary: `War player retaining ${wastedEcoSp} Eco skill levels across Production/Management.`,
         recommendations,
         warnings,
       };
@@ -951,12 +952,12 @@ export function evaluateCitizenSkillBuild(
   }
 
   // =========================================================================
-  // CASE 3: HIGH-LEVEL HYBRID / WAR PLAYERS IN ECO (LEVEL 26+)
+  // CASE 3: HIGH-LEVEL HYBRID / WAR PLAYERS IN ECO (LEVEL 26–50)
   // =========================================================================
   if (playstyle === 'hybrid') {
-    if (skills.leadership > 0 && skills.energy > 0) {
+    if (skills.management > 0 && skills.energy > 0) {
       recommendations.push(
-        'BuhDeuce War-in-Eco Rule: Investing SP in Energy and Leadership builds strong, high-trait bot employees that keep earning during your next war period.',
+        'War-in-Eco Rule (Hotfix 0.27.3): Investing SP in Management (+2%/lvl output & training card quality) and Energy builds strong, high-trait bot employees that keep earning during your next war period.',
         'Upgrade all company Breakrooms to Level 3 (3 employees each) before rotating back to War spec.'
       );
       return {
@@ -969,7 +970,7 @@ export function evaluateCitizenSkillBuild(
         isHighLevelViableSelfWork: false,
         managementBoostPct,
         energyPoolMax,
-        summary: `Aligned with BuhDeuce War-in-Eco strategy: Energy (${skills.energy}) + Leadership (${skills.leadership}) to train permanent bot employees for wartime income.`,
+        summary: `Aligned with v0.27.3 War-in-Eco strategy: Management (${skills.management}, +${managementBoostPct}%) + Energy (${skills.energy}) to train permanent bot employees for wartime income.`,
         recommendations,
         warnings,
       };
@@ -977,63 +978,67 @@ export function evaluateCitizenSkillBuild(
   }
 
   // =========================================================================
-  // CASE 4: HIGH-LEVEL ECO PLAYERS (LEVEL 26+)
+  // CASE 4: HIGH-LEVEL ECO PLAYERS (LEVEL 26–50 & PRESTIGE)
   // =========================================================================
-  const hasStrongLeadership = skills.leadership >= 3 || (skills.leadership >= 2 && skills.management >= 2);
+  const hasStrongManagement =
+    skills.management >= 3 ||
+    (skills.management >= 2 && (skills.companies >= 3 || skills.energy >= 2));
   const hasHighProductionAndEnergy = skills.production >= 3 && skills.energy >= 2;
 
-  // 4A. BuhDeuce Recommended v0.27 Workforce Meta (Companies + Leadership + Energy/Management, or post-training 1:1 Prod/Energy with Leadership)
-  if (hasStrongLeadership) {
+  // 4A. Hotfix 0.27.3 Workforce + High Production Hybrid Meta (Companies + Management + Energy + Surplus SP in Production)
+  if (hasStrongManagement) {
     if (skills.companies < 6 && companiesCount < 8) {
-      recommendations.push('Scale toward 12 active companies with Level 3 Breakrooms (3 employees per company = 36 total bot workers).');
+      recommendations.push('Scale toward 10–12 active companies with Level 3 Breakrooms (3 employees per company = up to 36 total bot workers).');
     }
-    if (skills.management > 0) {
-      recommendations.push(`Management Level ${skills.management} is granting a +${managementBoostPct}% production boost across all hired bot employees.`);
+    recommendations.push(
+      `Hotfix 0.27.3 Management (Lvl ${skills.management}): Grants +${managementBoostPct}% bot employee output AND fused training card/event quality.`
+    );
+    if (skills.production >= 4) {
+      recommendations.push(
+        `Post-0.27.3 SP Surplus Active: Because Leadership was fused into Management (max 165 SP for Companies+Management+Energy), investing surplus SP & Prestige SP into Production (Lvl ${skills.production}) adds strong self-work output on top of your bot workforce.`
+      );
     } else {
-      recommendations.push('Energy and Management have equal value in Eco: add Management SP (+2% bot output per level) alongside Energy.');
-    }
-    if (skills.production > 0 && skills.energy > 0) {
-      recommendations.push('Following Phase 2 Eco cycle: 1:1 ratio with Production and Energy after training employees.');
-    } else {
-      recommendations.push('BuhDeuce Eco Protocol: Run 1 week all-out Energy (train 3 employees in all 12 companies daily), then balance 1:1 with Production and Energy.');
+      recommendations.push(
+        'Post-0.27.3 Level 26–50 Tip: With Leadership fused into Management, maxing Companies + Management + Energy costs at most 165 SP—leaving 35+ base SP at Lvl 50 (plus Prestige SP) to invest in high Production (Lvl 7–8+) for bonus self-work.'
+      );
     }
 
     return {
       grade: 'optimal-meta',
-      badgeLabel: '🌟 Optimal v0.27 Eco Meta',
-      shortLabel: 'Optimal v0.27 Meta',
-      archetypeLabel: 'BuhDeuce Workforce & Leadership Meta',
+      badgeLabel: skills.production >= 4 ? '🌟 Optimal v0.27.3 Workforce+Prod' : '🌟 Optimal v0.27.3 Eco Meta',
+      shortLabel: 'Optimal v0.27.3 Meta',
+      archetypeLabel: skills.production >= 4 ? 'v0.27.3 Workforce + High Production Hybrid' : 'v0.27.3 Workforce & Management Meta',
       score: 98,
       isLevelEarlySelfWork: false,
       isHighLevelViableSelfWork: false,
       managementBoostPct,
       energyPoolMax,
-      summary: `High-efficiency v0.27 Eco Build (Lvl ${effectiveLevel}): Leadership (${skills.leadership}), Management (+${managementBoostPct}%), Energy (${energyPoolMax} cap), Companies (${skills.companies}).`,
+      summary: `High-efficiency v0.27.3 Eco Build (Lvl ${effectiveLevel}): Management Lvl ${skills.management} (+${managementBoostPct}% & training), Energy (${energyPoolMax} cap), Companies (${skills.companies}), Production (${skills.production}).`,
       recommendations,
       warnings,
     };
   }
 
-  // 4B. High-Level Viable Self-Work Build (Caveat 2: Ignores Leadership, Maxes Production + Energy — NOT recommended, but Viable)
-  if (skills.leadership <= 1 && (hasHighProductionAndEnergy || skills.production >= 4)) {
+  // 4B. High-Level Pure Self-Work Build (Skips Management <2, Maxes Production + Energy — Viable)
+  if (skills.management <= 1 && (hasHighProductionAndEnergy || skills.production >= 4)) {
     warnings.push(
-      `High-Level Self-Work Build (Leadership ${skills.leadership}, Production ${skills.production}, Energy ${skills.energy}): Ignoring Leadership to max Production + Energy is NOT the recommended v0.27 meta, though it remains viable.`
+      `Pure Self-Work Build (Management ${skills.management}, Production ${skills.production}, Energy ${skills.energy}): Skipping Management at Level ${effectiveLevel} leaves +2%/lvl bot output and training quality on the table, though self-work remains viable.`
     );
     recommendations.push(
-      'Viable Self-Work Assessment: Your high Production + Energy self-work output is functional and generates steady personal PP.',
-      'Meta Upgrade Path: In v0.27, a Level 3 Breakroom with 3 trained employees (backed by Max Leadership + Management) earns as much as an Automated Engine per company. Consider shifting into Leadership + Energy for 1 week to train a permanent bot workforce.'
+      'Viable Self-Work Assessment: Your high Production + Energy self-work output generates steady personal PP.',
+      'Hotfix 0.27.3 Upgrade Path: Since Leadership was fused into Management, you no longer have to choose between a bot workforce and high Production—maxing Companies + Management + Energy costs 165 SP, leaving 35+ SP at Lvl 50 (plus Prestige SP) for Lvl 7–8+ Production.'
     );
     return {
       grade: 'viable-selfwork',
       badgeLabel: '🛠️ Viable (Prod+Energy Self-Work)',
       shortLabel: 'Viable Self-Work',
-      archetypeLabel: 'High-Level Self-Work Grinder (Viable / Non-Meta)',
+      archetypeLabel: 'High-Level Self-Work Grinder (Viable / Low Mgmt)',
       score: 78,
       isLevelEarlySelfWork: false,
       isHighLevelViableSelfWork: true,
       managementBoostPct,
       energyPoolMax,
-      summary: `Level ${effectiveLevel} citizen ignores Leadership (${skills.leadership}) and focuses on Production (${skills.production}) + Energy (${skills.energy}). Viable self-work output, though below the 3-employee Breakroom ceiling.`,
+      summary: `Level ${effectiveLevel} citizen has low Management (${skills.management}) and focuses on Production (${skills.production}) + Energy (${skills.energy}). Viable self-work output, though adding Management unlocks full v0.27.3 bot workforce scaling.`,
       recommendations,
       warnings,
     };
@@ -1041,16 +1046,16 @@ export function evaluateCitizenSkillBuild(
 
   // 4C. Suboptimal / Unbalanced High-Level Build
   warnings.push(
-    `Unoptimized v0.27 Eco SP distribution at Level ${effectiveLevel} (Leadership: ${skills.leadership}, Management: ${skills.management}, Energy: ${skills.energy}, Production: ${skills.production}).`
+    `Unoptimized v0.27.3 Eco SP distribution at Level ${effectiveLevel} (Management: ${skills.management}, Energy: ${skills.energy}, Production: ${skills.production}, Companies: ${skills.companies}).`
   );
   recommendations.push(
-    'Recommended v0.27 Eco Build: Max Companies (up to 12) + Max Leadership, then invest equally in Energy and Management (+2% employee output/lvl) with Level 3 Breakrooms.',
-    'Alternative Viable Path: If skipping employees, pair high Energy with Production for manual self-work.'
+    'Recommended v0.27.3 Eco Build (Lvl 26–50 & Prestige): Invest in Companies + Management (+2% bot output/lvl & fused training quality) + Energy, and allocate surplus SP into Production.',
+    'Alternative Viable Path: Pair high Energy with Production for manual self-work.'
   );
 
   return {
     grade: 'suboptimal-sp',
-    badgeLabel: '⚠️ Suboptimal v0.27 SP Split',
+    badgeLabel: '⚠️ Suboptimal v0.27.3 SP Split',
     shortLabel: 'Needs SP Rework',
     archetypeLabel: 'Unoptimized Skill Allocation',
     score: 55,
@@ -1058,7 +1063,7 @@ export function evaluateCitizenSkillBuild(
     isHighLevelViableSelfWork: false,
     managementBoostPct,
     energyPoolMax,
-    summary: `Level ${effectiveLevel} build lacks both Leadership (${skills.leadership}) for bot employee training and sufficient Energy (${skills.energy}) for self-work.`,
+    summary: `Level ${effectiveLevel} build lacks both Management (${skills.management}) for bot workforce output/training and sufficient Energy (${skills.energy}) + Production (${skills.production}) for self-work.`,
     recommendations,
     warnings,
   };

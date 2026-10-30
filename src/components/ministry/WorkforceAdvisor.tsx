@@ -281,14 +281,14 @@ export const WorkforceAdvisor: React.FC<WorkforceAdvisorProps> = ({
           <div className="flex items-center gap-2.5 flex-wrap">
             <h2 className="text-base sm:text-lg font-black text-white flex items-center gap-2">
               <Award className="w-5 h-5 text-amber-400" />
-              War Era v0.27 Workforce, Trait Tier List &amp; Build Advisor — {countryName}
+              War Era v0.27.3 Workforce, Trait Tier List &amp; Build Advisor — {countryName}
             </h2>
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 uppercase">
-              BuhDeuce &amp; Piraterers Standard
+              Hotfix 0.27.3 &amp; Piraterers Standard
             </span>
           </div>
           <p className="text-xs text-slate-300 leading-relaxed max-w-3xl">
-            Complete reference and interactive simulator for the War Era v0.27 Company &amp; Bot Employee overhaul: Breakroom Level 3 capacity, Leadership &amp; Management (+2%/lvl) skill builds, level-aware Production caveats, and all 29 Piraterers employee traits.
+            Complete reference and interactive simulator for the War Era v0.27.3 Company &amp; Bot Employee system: Breakroom Level 3 capacity, fused Management (+2%/lvl output &amp; training card/event quality), Level 26–50 + Prestige high-Production synergy, and all 29 Piraterers employee traits.
           </p>
         </div>
 
@@ -366,13 +366,13 @@ export const WorkforceAdvisor: React.FC<WorkforceAdvisorProps> = ({
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
           <div className="p-3.5 rounded-2xl bg-slate-900 border border-slate-800">
             <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
-              🌟 Lvl 26+ Eco Meta
+              🌟 Lvl 26–50 Eco Meta
             </div>
             <div className="text-xl font-black font-mono text-white mt-0.5 tabular-nums">
               {nationalBuildStats.optimalMeta}
             </div>
             <div className="text-[10px] text-slate-400 mt-0.5">
-              Leadership + Mgmt/Energy
+              Mgmt + Energy + High Prod
             </div>
           </div>
 
@@ -390,13 +390,13 @@ export const WorkforceAdvisor: React.FC<WorkforceAdvisorProps> = ({
 
           <div className="p-3.5 rounded-2xl bg-slate-900 border border-slate-800">
             <div className="text-[10px] font-bold uppercase tracking-wider text-blue-400">
-              🛠️ Lvl 26+ Viable Self-Work
+              🛠️ Lvl 26–50 Self-Work
             </div>
             <div className="text-xl font-black font-mono text-white mt-0.5 tabular-nums">
               {nationalBuildStats.viableSelfWork}
             </div>
             <div className="text-[10px] text-slate-400 mt-0.5">
-              Max Prod + Energy (No Lead)
+              Max Prod + Energy (Low Mgmt)
             </div>
           </div>
 
@@ -420,7 +420,7 @@ export const WorkforceAdvisor: React.FC<WorkforceAdvisorProps> = ({
               {nationalBuildStats.suboptimal}
             </div>
             <div className="text-[10px] text-slate-400 mt-0.5">
-              Missing Leadership / Mgmt
+              Missing Management / Energy
             </div>
           </div>
         </div>
@@ -660,10 +660,10 @@ export const WorkforceAdvisor: React.FC<WorkforceAdvisorProps> = ({
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-black text-white uppercase tracking-wider flex items-center gap-2">
                   <TrendingUp className="w-4 h-4 text-emerald-400" />
-                  <span>v0.27 Player Skill Builds &amp; Level Caveats</span>
+                  <span>v0.27.3 Player Skill Builds &amp; Level 50 + Prestige Math</span>
                 </h3>
                 <span className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-mono font-bold">
-                  Ministry Evaluation Standard
+                  Hotfix 0.27.3 Standard
                 </span>
               </div>
 
@@ -679,19 +679,19 @@ export const WorkforceAdvisor: React.FC<WorkforceAdvisorProps> = ({
 
                 <div className="p-3 rounded-xl bg-emerald-950/25 border border-emerald-500/40 space-y-1">
                   <div className="font-black text-emerald-300">
-                    🌟 High Levels (Levels 26+) — BuhDeuce Bot Workforce Meta
+                    🌟 High Levels (Levels 26–50 + Prestige) — Hotfix 0.27.3 Workforce + High Production Meta
                   </div>
                   <p className="text-slate-300 leading-relaxed">
-                    <strong>12 Companies, Max Leadership</strong> (improves training card draws), and equal <strong>Energy &amp; Management</strong> (+2% employee output/lvl). Spend 1 week all-out Energy (train 3 employees across 12 companies daily), then 1:1 Energy &amp; Management. Avoid investing SP in personal Production once your bot workforce is running.
+                    Hotfix 0.27.3 removed <em>Leadership</em> and fused its training card &amp; event quality bonus directly into <strong>Management</strong> (+2% employee output/lvl up to +22%). Because maxing <strong>Companies</strong> + <strong>Management</strong> + <strong>Energy</strong> costs at most 165 SP, Level 26–50 citizens (up to 200 base SP at Level 50, plus +1 respec-able SP per Prestige that ignores skill caps) have <strong>35+ surplus SP</strong> to invest in high <strong>Production (Level 7–8+)</strong> alongside their 36-employee workforce.
                   </p>
                 </div>
 
                 <div className="p-3 rounded-xl bg-blue-950/25 border border-blue-500/40 space-y-1">
                   <div className="font-black text-blue-300">
-                    🛠️ Caveat 2: High Levels (Levels 26+) — Max Production + Energy (Viable)
+                    🛠️ Caveat 2: High Levels (Levels 26–50) — Max Production + Energy Only (Viable)
                   </div>
                   <p className="text-slate-300 leading-relaxed">
-                    A high-level build that ignores Leadership and maxes <strong>Production + Energy</strong> is <em>not recommended</em> compared to a 36-bot workforce empire, but it remains <strong>Viable (if not ideal)</strong> for self-working industrialists.
+                    A high-level build that skips <strong>Management</strong> and only invests in <strong>Production + Energy</strong> misses out on the fused +2%/lvl employee output and training card bonuses across a 36-bot empire, though it remains <strong>Viable (if not ideal)</strong> for pure self-working industrialists.
                   </p>
                 </div>
 
@@ -701,7 +701,7 @@ export const WorkforceAdvisor: React.FC<WorkforceAdvisorProps> = ({
                   </div>
                   <p className="text-slate-300 leading-relaxed">
                     <strong>In War:</strong> No extra SP in Eco is needed apart from <strong>Companies</strong> and <strong>Luck</strong>.<br />
-                    <strong>War Players in Eco:</strong> Invest SP in <strong>Energy</strong> and <strong>Leadership</strong> to train strong employees that passively fund your next war period.
+                    <strong>War Players in Eco:</strong> Invest SP in <strong>Management</strong> and <strong>Energy</strong> (plus surplus SP into <strong>Production</strong>) to train strong employees and passively fund your next war deployment.
                   </p>
                 </div>
               </div>
@@ -1233,33 +1233,7 @@ export const WorkforceAdvisor: React.FC<WorkforceAdvisorProps> = ({
 
       {/* SUB-TAB 4: ORIGINAL COMMUNITY REFERENCE POSTERS */}
       {subTab === 'posters' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-black text-white">
-                  War Era Employee Guide — By BuhDeuce
-                </h3>
-                <p className="text-xs text-slate-400">
-                  Breakroom Lvl 3, Safe Region Selection, Hiring Rules, Training Priority &amp; Player Stats
-                </p>
-              </div>
-              <span className="px-2.5 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-mono font-bold">
-                v0.27 Reference
-              </span>
-            </div>
-            <div className="rounded-xl overflow-hidden border border-slate-800 bg-slate-950">
-              <img
-                src="/assets/aistudio/WhatsApp_Image_2026-10-26_at_5.47.26_PM_b22c7181.jpeg"
-                alt="War Era Employee Guide by BuhDeuce"
-                className="w-full h-auto object-contain"
-                onError={(e) => {
-                  (e.currentTarget as HTMLElement).style.display = 'none';
-                }}
-              />
-            </div>
-          </div>
-
+        <div className="grid grid-cols-1 gap-6 max-w-3xl mx-auto">
           <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
             <div className="flex items-center justify-between">
               <div>

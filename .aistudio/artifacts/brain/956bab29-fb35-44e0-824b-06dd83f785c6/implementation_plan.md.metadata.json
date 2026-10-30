@@ -1,6 +1,6 @@
 {
-  "summary":  "Architectural and UX implementation plan to make Policies & Quotas dynamically re-evaluate all audited citizens in real time, credit battlefield combat damage across all builds using the exact (Damage / 1,000) * Rate formula without hidden caps, and display Actual vs. Policy Target Quota under Donor Classification.",
-  "updatedAt":  "2026-10-28T23:30:52.970417090Z",
+  "summary":  "Revised implementation plan addressing all user review comments: (1) Universal multi-check respec & build-duration engine for ALL citizens across every country (combining fresh API skill hydration, API lastSkillsResetAt, individual skill-level decrease / SP-redistribution fingerprint checks, and recent combat activity vs. current Eco build heuristics); (2) Non-deletable permanent RespecAlert & build-transition history executed automatically across all syncs and background streams; (3) Exact War Era Level 50 cap + Prestige SP math (max level is 50 granting 200 base SP + Prestige points that ignore skill caps; fusing Leadership into Management in Hotfix 0.27.3 drops the 3 workforce skills from an impossible 220 SP to 165 SP max, freeing 35+ SP plus Prestige points for high Production in Levels 26–50); and (4) 100% Spanish localization for Active Window and dynamic fiscal classification strings.",
+  "updatedAt":  "2026-10-30T00:28:51.881934555Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

@@ -30,6 +30,11 @@ export type CitizenEconomicStanding =
   | 'historical-pillar'
   | 'standard-contributor';
 
+export type SpecialCitizenContext =
+  | 'resting-veteran-donor'
+  | 'war-vet-in-eco'
+  | 'industrial-war-sacrifice';
+
 export interface PlayerTransactionSummary {
   userId: string;
   // 1. Employment Wages (Wage transactions)
@@ -156,6 +161,11 @@ export interface CitizenEconomicProfile {
   historicalRank?: number;
   isNationalHeavyHitter?: boolean; // In Top Heavy Hitters for this country
   heavyHitterRank?: number;
+  isDormantPillar?: boolean; // True when citizen qualifies as a Historical Pillar but has 0 / below-low-quota contribution in active window
+  dormantWarningBadge?: string;
+  specialContextTag?: SpecialCitizenContext;
+  specialContextBadge?: string;
+  specialContextReason?: string;
   tierReasonBadge?: string;
   donationCount: number;
   lastDonationAt?: string;
@@ -172,6 +182,7 @@ export interface CitizenEconomicProfile {
   lastRespecAlert?: string;
   isActive: boolean;
   daysInBuild?: number;
+  buildDurationSource?: 'api-reset' | 'respec-detected' | 'weekly-combat-bound' | 'unverified';
   daysSinceLastDonation?: number;
   isInactiveDonor?: boolean;
   isOnWatch?: boolean;
@@ -218,6 +229,12 @@ export interface CountryEconomicBenchmark {
   incomeP75?: number;
   donationMedian?: number;
   donationP75?: number;
+  lifetimeDonationMedian?: number;
+  lifetimeDonationP75?: number;
+  careerDamageMedian?: number;
+  careerDamageP75?: number;
+  companiesWealthMedian?: number;
+  companiesWealthP75?: number;
   topDonorsThreshold: number;
   fighterDamageMedianTopTier: number;
   heavyHitterCohortSize: number;
@@ -261,6 +278,8 @@ export type DiplomaticActionMode =
 
 export type CommendationArchetype =
   | 'active-historical-pillar'
+  | 'dormant-pillar-reactivation'
+  | 'industrial-war-sacrifice'
   | 'sovereign-treasury-patriot'
   | 'battlefield-frontline-hero'
   | 'dual-crown-vanguard';
@@ -343,6 +362,18 @@ export interface CitizenNudgeRecommendation {
   recommendedDiplomaticModeReason: string;
   recommendedDiplomaticReason: string;
   recommendedDiplomaticBadge: string;
+  // Dual-Status / Secondary Diplomatic Recommendation (for Dormant Pillars & Stockpiling Combat Heroes)
+  isDormantPillar?: boolean;
+  isStockpilingCombatHero?: boolean;
+  dormantWarningBadge?: string;
+  dormantWarningTooltip?: string;
+  specialContextTag?: SpecialCitizenContext;
+  specialContextBadge?: string;
+  specialContextReason?: string;
+  secondaryDiplomaticMode?: DiplomaticActionMode;
+  secondaryDiplomaticModeLabel?: string;
+  secondaryDiplomaticModeReason?: string;
+  secondaryDiplomaticBadge?: string;
   recommendedCommendationArchetype: CommendationArchetype;
   recommendedCommendationLabel: string;
   recommendedCommendationReason: string;
@@ -557,6 +588,17 @@ export interface CommodityMovementItem {
   referenceNote?: string;
 }
 
+export interface CitizenPlaystyleRecord {
+  playstyle: PlaystyleMode;
+  previousPlaystyle?: PlaystyleMode;
+  warPoints: number;
+  ecoPoints: number;
+  skillSignature?: Record<string, number>;
+  buildStartedAt?: string;
+  lastSkillsResetAt?: string;
+  updatedAt?: string;
+}
+
 export interface RespecAlert {
   id: string;
   userId: string;
@@ -567,6 +609,7 @@ export interface RespecAlert {
   ecoPoints: number;
   timestamp: string;
   acknowledged: boolean;
+  triggerReason?: string;
 }
 
 export interface MinisterialMessage {

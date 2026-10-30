@@ -173,24 +173,32 @@ export function calculateGranularRankings(
   targetCountryId?: string,
   cumulativeDonations?: WareraCumulativeDonation[]
 ): RankingSummary {
-  // Build lookup of verified cumulative donors and recent updates for target nation
+  // Build lookup of verified cumulative donors, all-time amounts, and all-time ranks for target nation
   const verifiedDonorIds = new Set<string>();
+  const cumulativeMap = new Map<string, number>();
+  const allTimeRankMap = new Map<string, number>();
   const cumulativeUpdates: Array<{ userId: string; updatedAt: string; amount: number }> = [];
   if (cumulativeDonations) {
-    cumulativeDonations.forEach((c) => {
-      if (
+    const validCumulative = cumulativeDonations.filter(
+      (c) =>
         c.userId &&
         !knownCountryIdsSet.has(c.userId) &&
         (!c.countryId || !targetCountryId || c.countryId === targetCountryId)
-      ) {
+    );
+    validCumulative
+      .slice()
+      .sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0))
+      .forEach((c, idx) => {
+        const amt = Number(c.amount || 0);
         verifiedDonorIds.add(c.userId);
+        cumulativeMap.set(c.userId, amt);
+        allTimeRankMap.set(c.userId, idx + 1);
         cumulativeUpdates.push({
           userId: c.userId,
           updatedAt: c.updatedAt || c.createdAt,
-          amount: Number(c.amount || 0),
+          amount: amt,
         });
-      }
-    });
+      });
   }
 
   // Strict country boundary filter and non-donation purge
@@ -353,12 +361,19 @@ export function calculateGranularRankings(
       playstyle = evaluatePlaystyle(warPoints, ecoPoints);
     }
 
+    const allTimeAmt = cumulativeMap.get(d.userId);
+    const allTimeRnk = allTimeRankMap.get(d.userId);
+
     return {
       ...d,
       username: resolvedUsername,
       avatarUrl: resolvedAvatarUrl,
       totalAmount: combinedTotal,
       directAmount: parseFloat(d.directAmount.toFixed(3)),
+      allTimeDirectAmount: allTimeAmt !== undefined ? parseFloat(allTimeAmt.toFixed(3)) : parseFloat(d.directAmount.toFixed(3)),
+      allTimeRank: allTimeRnk,
+      periodStartDate: startDate,
+      periodEndDate: endDate,
       damageAmount,
       rawDamageDealt,
       appliedRatePer1k: isCurrentCitizen ? appliedRate : 0,
@@ -417,15 +432,24 @@ export function calculateCumulativeRankings(
   const appliedRate = damageConfig?.enabled ? (Number(damageConfig.ratePer1k) || 0) : 0;
 
   // Strict country boundary filter: only process cumulative records belonging strictly to targetCountryId
-  const scopedCumulative = cumulative.filter((c) => {
-    if (!c.userId || knownCountryIdsSet.has(c.userId) || (targetCountryId && c.userId === targetCountryId)) {
-      return false;
-    }
-    if (targetCountryId && c.countryId !== targetCountryId) {
-      return false;
-    }
-    return true;
+  const scopedCumulative = cumulative
+    .filter((c) => {
+      if (!c.userId || knownCountryIdsSet.has(c.userId) || (targetCountryId && c.userId === targetCountryId)) {
+        return false;
+      }
+      if (targetCountryId && c.countryId !== targetCountryId) {
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0));
+
+  const allTimeRankMap = new Map<string, number>();
+  scopedCumulative.forEach((c, idx) => {
+    allTimeRankMap.set(c.userId, idx + 1);
   });
+
+  const windowBounds = filterTransactionsByTimeframe([], timeframe, customRange);
 
   const donorsList: DonorRankingItem[] = scopedCumulative.map((c) => {
     const userProfile = usersMap[c.userId];
@@ -469,9 +493,11 @@ export function calculateCumulativeRankings(
     const lastDonationAt = latestTx ? latestTx.createdAt : (c.updatedAt || c.createdAt);
 
     const countrySpecificTxs = transactions && targetCountryId && timeframe !== 'all'
-      ? transactions
-          .filter((t) => t.userId === c.userId && (!t.countryId || t.countryId === targetCountryId))
-          .sort(compareTransactionsNewestFirst)
+      ? filterTransactionsByTimeframe(
+          transactions.filter((t) => t.userId === c.userId && (!t.countryId || t.countryId === targetCountryId)),
+          timeframe,
+          customRange
+        ).filtered.sort(compareTransactionsNewestFirst)
       : [];
     const donationCount = countrySpecificTxs.length > 0 ? countrySpecificTxs.length : 1;
     const resolvedTransactions = countrySpecificTxs.length > 0 ? countrySpecificTxs : [singleTx];
@@ -491,6 +517,10 @@ export function calculateCumulativeRankings(
       avatarUrl: userProfile?.avatarUrl,
       totalAmount: combinedTotal,
       directAmount: parseFloat(directAmount.toFixed(3)),
+      allTimeDirectAmount: parseFloat(directAmount.toFixed(3)),
+      allTimeRank: allTimeRankMap.get(c.userId),
+      periodStartDate: windowBounds.startDate,
+      periodEndDate: windowBounds.endDate,
       damageAmount,
       rawDamageDealt,
       appliedRatePer1k: isCurrentCitizen ? appliedRate : 0,
@@ -542,6 +572,9 @@ export function calculateCumulativeRankings(
             avatarUrl: userProfile.avatarUrl,
             totalAmount: damageAmount,
             directAmount: 0,
+            allTimeDirectAmount: 0,
+            periodStartDate: windowBounds.startDate,
+            periodEndDate: windowBounds.endDate,
             damageAmount,
             rawDamageDealt,
             appliedRatePer1k: appliedRate,
@@ -572,8 +605,8 @@ export function calculateCumulativeRankings(
 
   return {
     timeframe,
-    startDate: '',
-    endDate: new Date().toISOString(),
+    startDate: windowBounds.startDate,
+    endDate: windowBounds.endDate,
     totalDonors,
     totalAmountDonated: totalCombined,
     totalDirectDonated: parseFloat(totalDirect.toFixed(3)),

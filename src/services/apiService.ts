@@ -1158,6 +1158,7 @@ export async function fetchUserLite(userId: string, forceRefresh = false): Promi
         militaryRank: data.militaryRank,
         isActive: Boolean(data.isActive !== undefined ? data.isActive : true),
         createdAt: data.createdAt,
+        skillsUpdatedAt: Date.now(),
         dates: data.dates,
         skills: data.skills,
         rankings: data.rankings,
@@ -1186,8 +1187,10 @@ export async function batchResolveUsers(
   Object.assign(memoryUserCache, existingMap);
 
   const liveCensusSet = countryId ? liveCountryCensusMap[countryId] : undefined;
+  const nowMs = Date.now();
+  const SKILLS_TTL_MS = 15 * 60 * 1000; // Refresh cached skill trees & reset dates every 15 minutes
 
-  // Filter missing: query users who have no record, unresolved level, or missing deep skills/rankings
+  // Filter missing: query users who have no record, unresolved level, missing deep skills/rankings, or stale skillsUpdatedAt
   const missingIds = userIds.filter((id) => {
     const cached = memoryUserCache[id];
     return (
@@ -1196,7 +1199,9 @@ export async function batchResolveUsers(
       cached.username.startsWith('Citizen #') ||
       cached.level === undefined ||
       !cached.skills ||
-      !cached.rankings
+      !cached.rankings ||
+      !cached.skillsUpdatedAt ||
+      nowMs - cached.skillsUpdatedAt > SKILLS_TTL_MS
     );
   });
 

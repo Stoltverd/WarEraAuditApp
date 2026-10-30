@@ -961,7 +961,7 @@ class OfflineStorageService {
     ];
   }
 
-  // --- Ministry: Respec Alerts ---
+  // --- Ministry: Respec Alerts (Immutable Audit Trail — Acknowledge-Only, Never Deleted) ---
   async saveRespecAlerts(alerts: RespecAlert[]): Promise<void> {
     try {
       const db = await this.initDB();
@@ -991,14 +991,14 @@ class OfflineStorageService {
     }
   }
 
-  // --- Ministry: Citizen Playstyles (Build Tracking for Respecs) ---
-  saveCitizenPlaystyles(styles: Record<string, { playstyle: PlaystyleMode; warPoints: number; ecoPoints: number }>): void {
+  // --- Ministry: Citizen Playstyles (4-Signal Build & Respec Fingerprint Tracking) ---
+  saveCitizenPlaystyles(styles: Record<string, import('../types/ministry').CitizenPlaystyleRecord>): void {
     try {
       localStorage.setItem('warera_citizen_playstyles', JSON.stringify(styles));
     } catch {}
   }
 
-  getCitizenPlaystyles(): Record<string, { playstyle: PlaystyleMode; warPoints: number; ecoPoints: number }> {
+  getCitizenPlaystyles(): Record<string, import('../types/ministry').CitizenPlaystyleRecord> {
     try {
       const raw = localStorage.getItem('warera_citizen_playstyles');
       return raw ? JSON.parse(raw) : {};

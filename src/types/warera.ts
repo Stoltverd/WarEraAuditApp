@@ -53,6 +53,7 @@ export interface WareraUserLite {
   militaryRank?: number;
   isActive?: boolean;
   createdAt?: string;
+  skillsUpdatedAt?: number;
   dates?: {
     lastConnectionAt?: string;
     lastSkillsResetAt?: string;
@@ -197,6 +198,10 @@ export interface DonorRankingItem {
   isCumulativeOnly?: boolean;
   level?: number;
   playstyle?: 'pure-eco' | 'pure-war' | 'hybrid';
+  allTimeDirectAmount?: number; // Lifetime cumulative BTC donated to this country
+  allTimeRank?: number;         // Lifetime cumulative rank in this country
+  periodStartDate?: string;     // Start ISO date of the active timeframe window
+  periodEndDate?: string;       // End ISO date of the active timeframe window
 }
 
 export interface RankingSummary {

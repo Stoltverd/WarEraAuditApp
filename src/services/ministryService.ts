@@ -515,7 +515,16 @@ export function buildAuditedCitizenProfile(
     profile.isNationalHeavyHitter || false,
     profile.heavyHitterRank,
     countryBenchmark,
-    profile.liquidBtc
+    profile.liquidBtc,
+    {
+      companiesCount: recalculated.companiesCount ?? profile.companiesCount,
+      companiesWealthBtc: profile.companiesWealthBtc,
+      pastWealthBtc: profile.pastWealthBtc,
+      lifetimeCombatDamage: profile.lifetimeCombatDamage ?? profile.totalCombatDamage,
+      donationCount: profile.donationCount,
+      daysSinceLastDonation: profile.daysSinceLastDonation,
+      daysInBuild: profile.daysInBuild,
+    }
   );
 
   const { ministerialVerdict, ministerialVerdictReason } = evaluateMinisterialAuditVerdict(
@@ -552,6 +561,11 @@ export function buildAuditedCitizenProfile(
     contributionRatio: tierEval.ratio > 0 ? tierEval.ratio : effectiveVerifiedRatio,
     leechTier: tierEval.tier,
     economicStanding: newStanding,
+    isDormantPillar: tierEval.isDormantPillar,
+    dormantWarningBadge: tierEval.dormantWarningBadge,
+    specialContextTag: tierEval.specialContextTag,
+    specialContextBadge: tierEval.specialContextBadge,
+    specialContextReason: tierEval.specialContextReason,
     damageValueBtc: tierEval.damageValueBtc,
     tierReasonBadge: tierEval.reason || profile.tierReasonBadge,
     ministerialVerdict,
@@ -606,6 +620,12 @@ export function calculateCountryEconomicBenchmark(
       incomeP75: 300,
       donationMedian: 25,
       donationP75: 100,
+      lifetimeDonationMedian: 150,
+      lifetimeDonationP75: 500,
+      careerDamageMedian: 50000,
+      careerDamageP75: 200000,
+      companiesWealthMedian: 200,
+      companiesWealthP75: 600,
       topDonorsThreshold: 100,
       fighterDamageMedianTopTier: 250000,
       heavyHitterCohortSize: 3,
@@ -708,13 +728,57 @@ export function calculateCountryEconomicBenchmark(
     ? topTierDamages[Math.floor(topTierDamages.length / 2)]
     : (damageValues[0] || 100000);
 
-  // 7. Lifetime donors threshold relative to country's donor distribution
-  const donorTotals: number[] = Array.from(cumulativeMap.values())
+  // 7. Lifetime donors threshold & distribution relative to country's donor distribution
+  const donorTotalsAsc: number[] = Array.from(cumulativeMap.values())
     .map((d) => d.totalAmount)
     .filter((a) => a > 0)
-    .sort((a, b) => b - a);
+    .sort((a, b) => a - b);
+  const lifetimeDonationMedian =
+    donorTotalsAsc.length > 0
+      ? computePercentile(donorTotalsAsc, 0.5)
+      : Math.max(50, Math.round(donationMedian * 3));
+  const lifetimeDonationP75 =
+    donorTotalsAsc.length > 0
+      ? computePercentile(donorTotalsAsc, 0.75)
+      : Math.max(150, Math.round(donationP75 * 3));
+
+  const donorTotals = [...donorTotalsAsc].sort((a, b) => b - a);
   const topDonorsIndex = Math.min(donorTotals.length - 1, Math.max(0, Math.min(9, Math.ceil(donorTotals.length * 0.15) - 1)));
   const topDonorsThreshold = donorTotals.length > 0 ? donorTotals[topDonorsIndex] : Math.max(25, Math.round(wealthP75 * 0.1));
+
+  // 8. Career combat damage & company equity distributions (for dynamic War-Vet-in-Eco & Industrial Sacrifice verification)
+  const careerDamageValuesAsc = activeCitizens
+    .map((c) =>
+      Number(
+        c.rankings?.userDamages?.value ??
+          (c as any).stats?.damagesCount ??
+          (c as any).stats?.damage ??
+          fightersDamageMap?.get(c._id) ??
+          0
+      )
+    )
+    .filter((v) => v > 0)
+    .sort((a, b) => a - b);
+  const careerDamageMedian =
+    careerDamageValuesAsc.length > 0 ? computePercentile(careerDamageValuesAsc, 0.5) : 50000;
+  const careerDamageP75 =
+    careerDamageValuesAsc.length > 0 ? computePercentile(careerDamageValuesAsc, 0.75) : 200000;
+
+  const companiesWealthValuesAsc = activeCitizens
+    .map((c) => {
+      const wealthObj = typeof c.stats?.wealth === 'object' ? c.stats.wealth : null;
+      return Number(wealthObj?.companies ?? 0);
+    })
+    .filter((v) => v > 0)
+    .sort((a, b) => a - b);
+  const companiesWealthMedian =
+    companiesWealthValuesAsc.length > 0
+      ? computePercentile(companiesWealthValuesAsc, 0.5)
+      : Math.max(100, Math.round(wealthMedian * 0.35));
+  const companiesWealthP75 =
+    companiesWealthValuesAsc.length > 0
+      ? computePercentile(companiesWealthValuesAsc, 0.75)
+      : Math.max(300, Math.round(wealthP75 * 0.45));
 
   return {
     countryId,
@@ -731,6 +795,12 @@ export function calculateCountryEconomicBenchmark(
     incomeP75,
     donationMedian,
     donationP75,
+    lifetimeDonationMedian,
+    lifetimeDonationP75,
+    careerDamageMedian,
+    careerDamageP75,
+    companiesWealthMedian,
+    companiesWealthP75,
     topDonorsThreshold,
     fighterDamageMedianTopTier,
     heavyHitterCohortSize,
@@ -799,30 +869,133 @@ export function calculateWarSkillPoints(user: WareraUserLite): number {
 }
 
 /**
- * Calculate total Economy Skill Points from War Era v0.27 user profile levels
- * Includes Companies, Leadership (replaced Entrepreneurship in v0.27), Management (+2% employee output/lvl),
- * Energy (used for self-work, hiring, and training), Production, and LootChance (Luck).
+ * Calculate total Economy Skill Points from War Era v0.27.3 user profile levels.
+ * Hotfix 0.27.3 removed Leadership and fused its effects into Management (+2% employee output/lvl + better training card draws & event odds).
+ * Includes Companies, Management, Energy (used for self-work, hiring, and training), Production, and LootChance (Luck).
  */
 export function calculateEcoSkillPoints(user: WareraUserLite): number {
   if (!user.skills) return 0;
   const s = user.skills;
   const companies = Number(s.companies?.level ?? 0);
-  const leadership = Number(s.leadership?.level ?? (s as any).leader?.level ?? s.entrepreneurship?.level ?? 0);
   const production = Number(s.production?.level ?? 0);
   const management = Number(s.management?.level ?? 0);
   const energy = Number(s.energy?.level ?? 0);
   const lootChance = Number(s.lootChance?.level ?? 0);
-  return companies + leadership + production + management + energy + lootChance;
+  return companies + production + management + energy + lootChance;
 }
 
 /**
- * Calculate days spent in current skill build (matching SpyWarEra)
+ * Multi-Signal Build Tenure Resolver (Universal for all citizens).
+ * NEVER falls back to `user.createdAt` (account creation date), preventing false 200+ day Eco timers
+ * when a free respec or recent build switch occurred without updating `dates.lastSkillsResetAt`.
  */
-export function calculateDaysInBuild(user: WareraUserLite): number {
-  const resetAt = user.dates?.lastSkillsResetAt || user.createdAt;
-  if (!resetAt) return 0;
-  const diffMs = Date.now() - new Date(resetAt).getTime();
-  return Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+export function resolveCitizenBuildTenure(
+  user: WareraUserLite,
+  playstyle: PlaystyleMode,
+  weeklyCombatDamage = 0,
+  playstyleRecord?: import('../types/ministry').CitizenPlaystyleRecord,
+  respecAlerts?: RespecAlert[]
+): {
+  daysInBuild?: number;
+  buildDurationSource: 'api-reset' | 'respec-detected' | 'weekly-combat-bound' | 'unverified';
+  switchedFromWarRecently: boolean;
+} {
+  const candidateTimestamps: { ms: number; source: 'api-reset' | 'respec-detected' }[] = [];
+
+  // Signal 1: Explicit API lastSkillsResetAt (when present and valid)
+  if (user.dates?.lastSkillsResetAt) {
+    const apiResetMs = new Date(user.dates.lastSkillsResetAt).getTime();
+    // Guard against API returning createdAt as lastSkillsResetAt
+    const createdMs = user.createdAt ? new Date(user.createdAt).getTime() : 0;
+    if (!isNaN(apiResetMs) && apiResetMs > 0 && Math.abs(apiResetMs - createdMs) > 60 * 1000) {
+      candidateTimestamps.push({ ms: apiResetMs, source: 'api-reset' });
+    }
+  }
+
+  // Signal 2: Local playstyle fingerprint transition timestamp
+  if (playstyleRecord?.buildStartedAt) {
+    const localMs = new Date(playstyleRecord.buildStartedAt).getTime();
+    if (!isNaN(localMs) && localMs > 0) {
+      candidateTimestamps.push({ ms: localMs, source: 'respec-detected' });
+    }
+  }
+
+  // Signal 3: Non-deletable RespecAlert history for this citizen
+  if (respecAlerts && respecAlerts.length > 0) {
+    for (const alert of respecAlerts) {
+      if (alert.userId === user._id && alert.newMode === playstyle && alert.timestamp) {
+        const alertMs = new Date(alert.timestamp).getTime();
+        if (!isNaN(alertMs) && alertMs > 0) {
+          candidateTimestamps.push({ ms: alertMs, source: 'respec-detected' });
+        }
+      }
+    }
+  }
+
+  const switchedFromWarRecently = Boolean(
+    playstyle !== 'pure-war' &&
+      (playstyleRecord?.previousPlaystyle === 'pure-war' ||
+        weeklyCombatDamage > 0 ||
+        respecAlerts?.some(
+          (a) =>
+            a.userId === user._id &&
+            a.previousMode === 'pure-war' &&
+            Date.now() - new Date(a.timestamp).getTime() <= 21 * 24 * 60 * 60 * 1000
+        ))
+  );
+
+  if (candidateTimestamps.length > 0) {
+    // Pick the most recent verified reset/transition timestamp
+    candidateTimestamps.sort((a, b) => b.ms - a.ms);
+    const newest = candidateTimestamps[0];
+    const days = Math.max(0, Math.floor((Date.now() - newest.ms) / (1000 * 60 * 60 * 24)));
+
+    // If citizen is in Eco build and has active 7-day combat damage, their Eco switch cannot be older than 7 days
+    if (playstyle === 'pure-eco' && weeklyCombatDamage > 0 && days > 7) {
+      return {
+        daysInBuild: undefined,
+        buildDurationSource: 'weekly-combat-bound',
+        switchedFromWarRecently: true,
+      };
+    }
+
+    return {
+      daysInBuild: days,
+      buildDurationSource: newest.source,
+      switchedFromWarRecently,
+    };
+  }
+
+  // Signal 4: Active 7D combat damage while currently in Eco build proves a switch within the last <= 7 days
+  if (playstyle === 'pure-eco' && weeklyCombatDamage > 0) {
+    return {
+      daysInBuild: undefined,
+      buildDurationSource: 'weekly-combat-bound',
+      switchedFromWarRecently: true,
+    };
+  }
+
+  // Unverified reset date: never fabricate from user.createdAt
+  return {
+    daysInBuild: undefined,
+    buildDurationSource: 'unverified',
+    switchedFromWarRecently,
+  };
+}
+
+/**
+ * Calculate days spent in current skill build when verified (never falls back to user.createdAt).
+ */
+export function calculateDaysInBuild(
+  user: WareraUserLite,
+  playstyleRecord?: import('../types/ministry').CitizenPlaystyleRecord,
+  respecAlerts?: RespecAlert[]
+): number | undefined {
+  const warPoints = calculateWarSkillPoints(user);
+  const ecoPoints = calculateEcoSkillPoints(user);
+  const playstyle = evaluatePlaystyle(warPoints, ecoPoints);
+  const weeklyDmg = Number(user.rankings?.weeklyUserDamages?.value ?? 0);
+  return resolveCitizenBuildTenure(user, playstyle, weeklyDmg, playstyleRecord, respecAlerts).daysInBuild;
 }
 
 /**
@@ -839,22 +1012,50 @@ export function evaluatePlaystyle(warPoints: number, ecoPoints: number): Playsty
   return 'hybrid';
 }
 
+function extractSkillSignatureFromProfile(profile: CitizenEconomicProfile): Record<string, number> {
+  const sb = profile.skillBreakdown;
+  if (!sb) {
+    return {
+      warSkillPoints: profile.warSkillPoints,
+      ecoSkillPoints: profile.ecoSkillPoints,
+    };
+  }
+  return {
+    companies: sb.companies || 0,
+    management: sb.management || 0,
+    energy: sb.energy || 0,
+    production: sb.production || 0,
+    lootChance: sb.lootChance || 0,
+    attack: sb.attack || 0,
+    criticalDamages: sb.criticalDamages || 0,
+    criticalChance: sb.criticalChance || 0,
+    armor: sb.armor || 0,
+    precision: sb.precision || 0,
+    dodge: sb.dodge || 0,
+    health: sb.health || 0,
+    stamina: sb.stamina || 0,
+  };
+}
+
 /**
- * Phase 4.1: Respec Detection Engine
- * Compares current citizen build playstyles against previously recorded playstyles
- * to detect build shifts (e.g., Pure-Eco -> Pure-War, Pure-War -> Pure-Eco, or Hybrid transitions).
- * Deduplicates alerts to avoid repeated notifications for the same citizen build transition.
+ * 4-Signal Respec & Build-Switch Detection Engine (Universal for all citizens).
+ * Detects build shifts and skill resets via:
+ * 1. Playstyle mode transition (e.g. pure-war -> pure-eco, hybrid -> pure-eco)
+ * 2. Any decrease in an individual skill level (since skill levels in War Era cannot decrease without a respec)
+ * 3. Opposing shift in War SP vs Eco SP (e.g. War SP drops while Eco SP rises)
+ * 4. Advancement of API `lastSkillsResetAt` timestamp
  */
 export function detectCitizenRespecAlerts(
   currentProfiles: CitizenEconomicProfile[],
   existingAlerts: RespecAlert[],
-  priorPlaystyles: Record<string, { playstyle: PlaystyleMode; warPoints: number; ecoPoints: number }>
+  priorPlaystyles: Record<string, import('../types/ministry').CitizenPlaystyleRecord>,
+  usersMap?: Record<string, WareraUserLite>
 ): {
   newAlerts: RespecAlert[];
-  updatedPlaystyles: Record<string, { playstyle: PlaystyleMode; warPoints: number; ecoPoints: number }>;
+  updatedPlaystyles: Record<string, import('../types/ministry').CitizenPlaystyleRecord>;
 } {
   const newAlerts: RespecAlert[] = [];
-  const updatedPlaystyles: Record<string, { playstyle: PlaystyleMode; warPoints: number; ecoPoints: number }> = {
+  const updatedPlaystyles: Record<string, import('../types/ministry').CitizenPlaystyleRecord> = {
     ...priorPlaystyles,
   };
 
@@ -862,18 +1063,62 @@ export function detectCitizenRespecAlerts(
 
   for (const profile of currentProfiles) {
     const prior = priorPlaystyles[profile.userId];
+    const currentSig = extractSkillSignatureFromProfile(profile);
+    const rawUser = usersMap?.[profile.userId];
+    const apiResetAt = rawUser?.dates?.lastSkillsResetAt;
+
+    let respecDetected = false;
+    let triggerReason: string | undefined;
 
     if (prior && prior.playstyle) {
+      // Check 1: Playstyle classification changed
       if (prior.playstyle !== profile.playstyle) {
-        // Check if an unacknowledged alert for this citizen and this transition already exists
-        const alreadyAlerted = existingAlerts.some(
+        respecDetected = true;
+        triggerReason = `Playstyle shifted ${prior.playstyle.toUpperCase()} -> ${profile.playstyle.toUpperCase()}`;
+      }
+
+      // Check 2: Individual skill level decreased (deterministic proof of a respec, even a free respec)
+      if (!respecDetected && prior.skillSignature) {
+        for (const [skillKey, prevLvl] of Object.entries(prior.skillSignature)) {
+          if (skillKey === 'warSkillPoints' || skillKey === 'ecoSkillPoints') continue;
+          const currLvl = currentSig[skillKey] ?? 0;
+          if (typeof prevLvl === 'number' && currLvl < prevLvl) {
+            respecDetected = true;
+            triggerReason = `Skill reset detected (${skillKey} Lvl ${prevLvl} -> ${currLvl})`;
+            break;
+          }
+        }
+      }
+
+      // Check 3: Aggregate War SP / Eco SP decreased or shifted in opposite directions
+      if (!respecDetected) {
+        const warDelta = profile.warSkillPoints - (prior.warPoints ?? 0);
+        const ecoDelta = profile.ecoSkillPoints - (prior.ecoPoints ?? 0);
+        if ((warDelta < 0 && ecoDelta > 0) || (ecoDelta < 0 && warDelta > 0) || warDelta <= -4 || ecoDelta <= -4) {
+          respecDetected = true;
+          triggerReason = `SP reallocation (${prior.ecoPoints} Eco / ${prior.warPoints} War -> ${profile.ecoSkillPoints} Eco / ${profile.warSkillPoints} War)`;
+        }
+      }
+
+      // Check 4: API lastSkillsResetAt advanced
+      if (!respecDetected && apiResetAt && prior.lastSkillsResetAt && apiResetAt !== prior.lastSkillsResetAt) {
+        const newResetMs = new Date(apiResetAt).getTime();
+        const oldResetMs = new Date(prior.lastSkillsResetAt).getTime();
+        if (!isNaN(newResetMs) && !isNaN(oldResetMs) && newResetMs > oldResetMs) {
+          respecDetected = true;
+          triggerReason = `API skill reset timestamp updated`;
+        }
+      }
+
+      if (respecDetected) {
+        const recentDuplicate = existingAlerts.some(
           (a) =>
             a.userId === profile.userId &&
             a.newMode === profile.playstyle &&
-            !a.acknowledged
+            Date.now() - new Date(a.timestamp).getTime() < 6 * 60 * 60 * 1000
         );
 
-        if (!alreadyAlerted) {
+        if (!recentDuplicate) {
           const alert: RespecAlert = {
             id: `respec_${profile.userId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
             userId: profile.userId,
@@ -882,19 +1127,34 @@ export function detectCitizenRespecAlerts(
             newMode: profile.playstyle,
             warPoints: profile.warSkillPoints,
             ecoPoints: profile.ecoSkillPoints,
-            timestamp: now,
+            timestamp: apiResetAt && (!prior.lastSkillsResetAt || apiResetAt !== prior.lastSkillsResetAt) ? apiResetAt : now,
             acknowledged: false,
+            triggerReason,
           };
           newAlerts.push(alert);
         }
       }
     }
 
-    // Update tracking entry with current stats
+    const effectiveBuildStartedAt = respecDetected
+      ? (apiResetAt && (!prior?.lastSkillsResetAt || apiResetAt !== prior.lastSkillsResetAt) ? apiResetAt : now)
+      : prior?.buildStartedAt ||
+        (apiResetAt && (!rawUser?.createdAt || Math.abs(new Date(apiResetAt).getTime() - new Date(rawUser.createdAt).getTime()) > 60000)
+          ? apiResetAt
+          : undefined);
+
     updatedPlaystyles[profile.userId] = {
       playstyle: profile.playstyle,
+      previousPlaystyle:
+        respecDetected && prior?.playstyle && prior.playstyle !== profile.playstyle
+          ? prior.playstyle
+          : prior?.previousPlaystyle,
       warPoints: profile.warSkillPoints,
       ecoPoints: profile.ecoSkillPoints,
+      skillSignature: currentSig,
+      buildStartedAt: effectiveBuildStartedAt,
+      lastSkillsResetAt: apiResetAt ?? prior?.lastSkillsResetAt,
+      updatedAt: now,
     };
   }
 
@@ -958,8 +1218,28 @@ export function evaluateLeechTier(
   isNationalHeavyHitter = false,
   heavyHitterRank?: number,
   countryBenchmark?: CountryEconomicBenchmark,
-  liquidBtc?: number
-): { ratio: number; tier: LeechTier; reason?: string; damageValueBtc?: number } {
+  liquidBtc?: number,
+  extraContext?: {
+    companiesCount?: number;
+    companiesWealthBtc?: number;
+    pastWealthBtc?: number;
+    lifetimeCombatDamage?: number;
+    donationCount?: number;
+    daysSinceLastDonation?: number;
+    daysInBuild?: number;
+    switchedFromWarRecently?: boolean;
+  }
+): {
+  ratio: number;
+  tier: LeechTier;
+  reason?: string;
+  damageValueBtc?: number;
+  isDormantPillar?: boolean;
+  dormantWarningBadge?: string;
+  specialContextTag?: import('../types/ministry').SpecialCitizenContext;
+  specialContextBadge?: string;
+  specialContextReason?: string;
+} {
   const { patriotPct, moderatePct, lowPct } = getPlaystyleQuotaThresholds(playstyle, config);
 
   // Base wealth considering resource stockpile toggle if enabled
@@ -988,6 +1268,19 @@ export function evaluateLeechTier(
   const countryMedianIncome = hasBenchmark ? Math.max(15, countryBenchmark!.incomeMedian || 0) : 200;
   const countryMedianDonation = hasBenchmark ? Math.max(10, countryBenchmark!.donationMedian || 0) : 25;
 
+  const lifetimeDonationMedian = hasBenchmark
+    ? Math.max(20, countryBenchmark!.lifetimeDonationMedian ?? countryMedianDonation * 3)
+    : 200;
+  const lifetimeDonationP75 = hasBenchmark
+    ? Math.max(50, countryBenchmark!.lifetimeDonationP75 ?? countryMedianDonation * 6)
+    : 500;
+  const careerDamageP75 = hasBenchmark
+    ? Math.max(50000, countryBenchmark!.careerDamageP75 ?? 200000)
+    : 200000;
+  const companiesWealthMedian = hasBenchmark
+    ? Math.max(50, countryBenchmark!.companiesWealthMedian ?? countryMedianWealth * 0.35)
+    : 400;
+
   // Dual-Index Component 1: Stock / Hoarding Index (relative to country median & P75)
   const citizenLiquid = typeof liquidBtc === 'number' ? liquidBtc : 0;
   const isLiquidHoarder = citizenLiquid >= Math.max(countryP75Liquid, countryMedianLiquid * 2) && citizenLiquid > 0;
@@ -1013,19 +1306,35 @@ export function evaluateLeechTier(
     ? parseFloat(((effectiveCredit / effectiveIncome) * 100).toFixed(1))
     : (effectiveWealth > 0 ? parseFloat(((effectiveCredit / effectiveWealth) * 100).toFixed(2)) : 0);
 
-  // 1. Historical Top Donor & Veteran Grace Safeguards (100% proportional to country topDonorsThreshold):
+  // 1. Canonical Historical Top Donor & Veteran Grace Safeguards:
+  // Single unified rule used identically across Overview, Forensic Audit, and Diplomatic Nudge.
   const graceThreshold = config?.historicalDonorGraceThresholdBtc ?? (hasBenchmark ? Math.max(10, Math.round(countryBenchmark!.topDonorsThreshold * 0.35)) : 500);
   const qualifiesForPillarShield =
-    !isHighWealth ||
-    lifetimeDonations >= Math.max(graceThreshold, effectiveWealth * 0.03);
+    (isHistoricalTopDonor && lifetimeDonations >= graceThreshold) ||
+    lifetimeDonations >= Math.max(graceThreshold * 1.5, hasBenchmark ? countryBenchmark!.topDonorsThreshold : 1000);
 
-  if (isHistoricalTopDonor && lifetimeDonations >= graceThreshold && qualifiesForPillarShield) {
+  if (qualifiesForPillarShield) {
     const rankLabel = historicalRank ? `#${historicalRank}` : 'Top';
+    const isActiveInPeriod =
+      (effectiveCredit > 0 && (effectiveIncome <= 0 || ratio >= lowPct)) ||
+      (playstyle === 'pure-war' && combatDamage > 0) ||
+      effectiveCredit >= countryMedianDonation * 0.5;
+    const isDormantPillar = !isActiveInPeriod;
+    const dormantWarningBadge = isDormantPillar
+      ? effectiveCredit === 0
+        ? '⚠️ Dormant (0 BTC)'
+        : `⚠️ Low (${ratio.toFixed(1)}%)`
+      : undefined;
+    const reason = isDormantPillar
+      ? `Historical Pillar (${rankLabel} Lifetime Donor: ${lifetimeDonations.toLocaleString()} BTC lifetime protected by Veteran Grace Floor ≥${graceThreshold.toLocaleString()} BTC), currently Dormant in active period (${effectiveCredit.toLocaleString()} BTC / ${ratio.toFixed(1)}% vs ${moderatePct}% quota). Eligible for Primary Commendation + Secondary Treasury Nudge.`
+      : `Historical Pillar (${rankLabel} Lifetime Donor in Country): ${lifetimeDonations.toLocaleString()} BTC lifetime contributions preserved by national charter (${effectiveCredit.toLocaleString()} BTC active period credit).`;
     return {
       ratio,
       tier: 'historical-pillar',
       damageValueBtc,
-      reason: `Historical Pillar (${rankLabel} Lifetime Donor in Country): ${lifetimeDonations.toLocaleString()} BTC lifetime contributions preserved by national charter.`,
+      isDormantPillar,
+      dormantWarningBadge,
+      reason,
     };
   }
 
@@ -1044,7 +1353,6 @@ export function evaluateLeechTier(
   let tier: LeechTier;
   let reason: string | undefined = undefined;
   const wealthDonationRatioPct = effectiveWealth > 0 ? (effectiveCredit / effectiveWealth) * 100 : 0;
-  // Meets country-relative patriot benchmark if flow ratio >= patriotPct OR if period contribution >= 1.5x country median donation (for low-flow donors)
   const meetsCountryRelativePatriot =
     (effectiveIncome > 0 && ratio >= patriotPct) ||
     (effectiveCredit > 0 && effectiveCredit >= Math.max(countryMedianDonation * 1.5, countryMedianIncome * (patriotPct / 100)));
@@ -1105,7 +1413,109 @@ export function evaluateLeechTier(
     }
   }
 
-  return { ratio, tier, reason, damageValueBtc };
+  // 4. Dynamic Country-Median-Calibrated Special Cases & Overview Disclaimers:
+  // Protects proven national contributors from demoralizing 'critical-leech' classification while
+  // attaching an explicit at-a-glance Overview disclaimer badge so the MoE has full visibility.
+  let specialContextTag: import('../types/ministry').SpecialCitizenContext | undefined;
+  let specialContextBadge: string | undefined;
+  let specialContextReason: string | undefined;
+
+  const compWealth = extraContext?.companiesWealthBtc;
+  const compCount = extraContext?.companiesCount;
+  const pastWealth = extraContext?.pastWealthBtc;
+  const careerDmg = Math.max(combatDamage, extraContext?.lifetimeCombatDamage ?? 0);
+  const txDonationCount = extraContext?.donationCount ?? 0;
+
+  // Case A: Industrial / Company Sacrifice for War or Treasury Support (e.g., Soplete in Colombia)
+  // Verified when company equity is dismantled/depleted (0 companies or <= 22% of country median company equity
+  // or >25% net worth drop) AND citizen has proven upper-quartile lifetime donations or combat damage.
+  const hasDismantledCompanies =
+    (typeof compCount === 'number' && compCount === 0) ||
+    (typeof compWealth === 'number' &&
+      compWealth <= Math.max(25, companiesWealthMedian * 0.22) &&
+      effectiveWealth < leechWealthFloor * 1.1) ||
+    (typeof pastWealth === 'number' &&
+      pastWealth > countryMedianWealth &&
+      effectiveWealth < pastWealth * 0.72);
+  const hasHighNationalSacrifice =
+    lifetimeDonations >= Math.max(lifetimeDonationP75, countryMedianWealth * 0.25) ||
+    careerDmg >= Math.max(careerDamageP75, (countryBenchmark?.fighterDamageMedianTopTier || 200000) * 0.75) ||
+    donatedBtc >= countryMedianDonation * 2;
+
+  // Case B: Career War Veteran Temporarily in Eco/Hybrid to Farm & Buy Gear (universal across all citizens)
+  // Verified against country career damage P75, >= 2.5x country median career damage, Heavy Hitter status, or verified recent switch from War mode.
+  const careerDamageMedian = hasBenchmark
+    ? Math.max(20000, countryBenchmark!.careerDamageMedian ?? careerDamageP75 * 0.35)
+    : 75000;
+  const qualifiesAsCareerWarVeteran =
+    isNationalHeavyHitter ||
+    careerDmg >= Math.max(careerDamageP75, careerDamageMedian * 2.5, (countryBenchmark?.fighterDamageMedianTopTier || 200000) * 0.65) ||
+    (Boolean(extraContext?.switchedFromWarRecently) && careerDmg >= Math.max(careerDamageMedian * 1.25, 60000));
+
+  if (hasDismantledCompanies && hasHighNationalSacrifice && !meetsCountryRelativePatriot) {
+    specialContextTag = 'industrial-war-sacrifice';
+    specialContextBadge = '🔥🏭 War/Treasury Sacrifice';
+    specialContextReason = `Verified Industrial Sacrifice: Company equity is depleted (${Math.round(compWealth ?? 0).toLocaleString()} BTC vs. ${Math.round(companiesWealthMedian).toLocaleString()} BTC country median) alongside ${Math.round(lifetimeDonations).toLocaleString()} BTC lifetime donated and ${careerDmg.toLocaleString()} career combat damage. Protected from Leech classification—eligible for Morale & Rebuild Commendation.`;
+    if (tier === 'critical-leech' || tier === 'low-contributor') {
+      tier = 'moderate';
+    }
+    reason = specialContextReason;
+  }
+  else if (
+    playstyle !== 'pure-war' &&
+    !meetsCountryRelativePatriot &&
+    ratio < moderatePct &&
+    qualifiesAsCareerWarVeteran
+  ) {
+    specialContextTag = 'war-vet-in-eco';
+    const hoardLabel =
+      isLiquidHoarder || isResourceStockpiler
+        ? `Farming/Hoarding (${Math.round(citizenLiquid + resourceWealthBtc).toLocaleString()} BTC)`
+        : donatedBtc === 0
+        ? '0 BTC • Farming Gear'
+        : `Low (${ratio.toFixed(1)}%)`;
+    specialContextBadge = `⚔️🔄 War Vet in Eco • ${hoardLabel}`;
+    specialContextReason = `Verified Career War Veteran in ${playstyle === 'pure-eco' ? 'Eco' : 'Hybrid'} Mode: Recorded ${careerDmg.toLocaleString()} career combat damage (exceeding country benchmark of ${Math.round(careerDamageP75).toLocaleString()} dmg), currently farming capital (${Math.round(citizenLiquid).toLocaleString()} BTC liquid / ${Math.round(resourceWealthBtc).toLocaleString()} BTC stock) with ${donatedBtc.toLocaleString()} BTC donated this period. Protected from Critical Leech.`;
+    if (tier === 'critical-leech') {
+      tier = effectiveCredit > 0 ? 'moderate' : 'low-contributor';
+    }
+    reason = specialContextReason;
+  }
+  // Case C: Proven Above-Median / Frequent Veteran Donor on Pause or Hoarding (e.g., Chopper with 1,065 BTC lifetime)
+  // Protects non-Pillar veterans whose lifetime donations exceed the country P75 (or 1.5x country median, or >= median with >= 5 donations)
+  // from harsh Critical Leech shaming, while displaying an explicit pause/hoarding disclaimer in the Overview table.
+  else if (
+    !meetsCountryRelativePatriot &&
+    ratio < moderatePct &&
+    (lifetimeDonations >= Math.max(lifetimeDonationP75, lifetimeDonationMedian * 1.5) ||
+      (lifetimeDonations >= lifetimeDonationMedian && txDonationCount >= 5))
+  ) {
+    specialContextTag = 'resting-veteran-donor';
+    const pauseDetail =
+      isLiquidHoarder || isResourceStockpiler
+        ? `Hoarding (${Math.round(citizenLiquid + resourceWealthBtc).toLocaleString()} BTC)`
+        : donatedBtc === 0
+        ? '0 BTC in Period'
+        : `Low (${ratio.toFixed(1)}%)`;
+    specialContextBadge = `🎖️⚠️ Veteran (${Math.round(lifetimeDonations).toLocaleString()} BTC life) • ${pauseDetail}`;
+    specialContextReason = `Proven Above-Median Veteran Donor: Contributed ${Math.round(lifetimeDonations).toLocaleString()} BTC lifetime (${txDonationCount > 0 ? `${txDonationCount}x donations, ` : ''}vs. ${Math.round(lifetimeDonationMedian).toLocaleString()} BTC country lifetime median & ${Math.round(lifetimeDonationP75).toLocaleString()} BTC P75), currently at ${donatedBtc.toLocaleString()} BTC in the active window (${Math.round(citizenLiquid).toLocaleString()} BTC liquid cash). Protected from Critical Leech—use Encouraging Veteran Nudge.`;
+    if (tier === 'critical-leech') {
+      tier = effectiveCredit > 0 ? 'moderate' : 'low-contributor';
+    }
+    reason = specialContextReason;
+  }
+
+  return {
+    ratio,
+    tier,
+    reason,
+    damageValueBtc,
+    isDormantPillar: false,
+    dormantWarningBadge: undefined,
+    specialContextTag,
+    specialContextBadge,
+    specialContextReason,
+  };
 }
 
 /**
@@ -1118,7 +1528,16 @@ export function evaluateMinisterialAuditVerdict(
     'level' | 'wealthBtc' | 'liquidBtc' | 'resourceWealthBtc' | 'totalCombatDamage' | 'countryName' | 'ministerialVerdict' | 'ministerialVerdictReason'
   >,
   periodDonated: number,
-  tierEval: { ratio: number; tier: LeechTier; reason?: string; damageValueBtc?: number },
+  tierEval: {
+    ratio: number;
+    tier: LeechTier;
+    reason?: string;
+    damageValueBtc?: number;
+    isDormantPillar?: boolean;
+    specialContextTag?: import('../types/ministry').SpecialCitizenContext;
+    specialContextBadge?: string;
+    specialContextReason?: string;
+  },
   config?: MinistryConfig,
   countryBenchmark?: CountryEconomicBenchmark
 ): {
@@ -1163,6 +1582,21 @@ export function evaluateMinisterialAuditVerdict(
   if (profile.level < 15) {
     ministerialVerdict = 'exempted-recruit';
     ministerialVerdictReason = 'New recruit (Level < 15); exempt from ministerial contribution pressure.';
+  } else if (tierEval.specialContextTag === 'industrial-war-sacrifice') {
+    ministerialVerdict = 'illiquid-asset-rich';
+    ministerialVerdictReason =
+      tierEval.specialContextReason ||
+      tierEval.reason ||
+      'Industrial & War Sacrifice: Citizen dismantled or depleted company assets to support the nation.';
+  } else if (
+    tierEval.specialContextTag === 'resting-veteran-donor' ||
+    tierEval.specialContextTag === 'war-vet-in-eco'
+  ) {
+    ministerialVerdict = 'moderate-contributor';
+    ministerialVerdictReason =
+      tierEval.specialContextReason ||
+      tierEval.reason ||
+      'Protected Veteran Contributor: Above-median career record shielded from Critical Leech classification.';
   } else if (tierEval.tier === 'critical-leech') {
     ministerialVerdict = 'slacker-evader';
     ministerialVerdictReason =
@@ -1221,17 +1655,19 @@ export function evaluateMinisterialAuditVerdict(
 /**
  * Consolidates fragmented classifications (leech tier, verdict, quotas)
  * into a single unified ministerial economic standing.
+ * Uses `tier` from `evaluateLeechTier` as the authoritative source for Historical Pillar and Combat Hero shields
+ * so Overview, Forensic Audit, and Diplomatic Nudge modals never contradict one another.
  */
 export function resolveMasterCitizenStanding(
   tier?: LeechTier,
   verdict?: import('../types/ministry').MinisterialVerdict,
-  isHistoricalPillar = false,
-  isCombatHero = false
+  isHistoricalPillarFallback = false,
+  isCombatHeroFallback = false
 ): CitizenEconomicStanding {
-  if (isHistoricalPillar || tier === 'historical-pillar') {
+  if (tier === 'historical-pillar' || (!tier && isHistoricalPillarFallback)) {
     return 'historical-pillar';
   }
-  if (isCombatHero || tier === 'combat-veteran') {
+  if (tier === 'combat-veteran' || (!tier && isCombatHeroFallback)) {
     return 'combat-veteran';
   }
   // Industrial & battlefield solvency buffer: illiquid producers and active veterans are protected
@@ -1352,7 +1788,16 @@ export async function auditCitizensIncomeGrowth(
         p.isNationalHeavyHitter || false,
         p.heavyHitterRank,
         countryBenchmark,
-        p.liquidBtc
+        p.liquidBtc,
+        {
+          companiesCount: p.companiesCount,
+          companiesWealthBtc: p.companiesWealthBtc,
+          pastWealthBtc: p.pastWealthBtc,
+          lifetimeCombatDamage: p.lifetimeCombatDamage ?? p.totalCombatDamage,
+          donationCount: p.donationCount,
+          daysSinceLastDonation: p.daysSinceLastDonation,
+          daysInBuild: p.daysInBuild,
+        }
       );
 
       const { ministerialVerdict: reVerdict, ministerialVerdictReason: reVerdictReason } =
@@ -1375,6 +1820,11 @@ export async function auditCitizensIncomeGrowth(
         damageValueBtc: reEval.damageValueBtc ?? 0,
         contributionRatio: reEval.ratio,
         leechTier: reEval.tier,
+        isDormantPillar: reEval.isDormantPillar,
+        dormantWarningBadge: reEval.dormantWarningBadge,
+        specialContextTag: reEval.specialContextTag,
+        specialContextBadge: reEval.specialContextBadge,
+        specialContextReason: reEval.specialContextReason,
         tierReasonBadge: reEval.reason || p.tierReasonBadge,
         ministerialVerdict: reVerdict,
         ministerialVerdictReason: reVerdictReason,
@@ -1473,7 +1923,16 @@ export async function auditCitizensIncomeGrowth(
       p.isNationalHeavyHitter || false,
       p.heavyHitterRank,
       countryBenchmark,
-      p.liquidBtc
+      p.liquidBtc,
+      {
+        companiesCount: cashflow.companiesCount ?? p.companiesCount,
+        companiesWealthBtc: p.companiesWealthBtc,
+        pastWealthBtc: pastWealth,
+        lifetimeCombatDamage: p.lifetimeCombatDamage ?? p.totalCombatDamage,
+        donationCount: p.donationCount,
+        daysSinceLastDonation: p.daysSinceLastDonation,
+        daysInBuild: p.daysInBuild,
+      }
     );
     const { ratio, tier, damageValueBtc, reason } = tierEval;
 
@@ -1496,7 +1955,11 @@ export async function auditCitizensIncomeGrowth(
       cashflow.summary.ministerialVerdictReason = ministerialVerdictReason;
     }
 
-    const effectiveTier = hasLivePersonalReceipts ? tier : p.leechTier;
+    const effectiveTier = hasLivePersonalReceipts
+      ? tier
+      : tier === 'historical-pillar' || tier === 'combat-veteran' || Boolean(tierEval.specialContextTag)
+      ? tier
+      : p.leechTier;
     const newStanding = resolveMasterCitizenStanding(
       effectiveTier,
       ministerialVerdict,
@@ -1516,8 +1979,13 @@ export async function auditCitizensIncomeGrowth(
       contributionRatio: hasLivePersonalReceipts ? ratio : 0,
       leechTier: effectiveTier,
       economicStanding: newStanding,
+      isDormantPillar: tierEval.isDormantPillar,
+      dormantWarningBadge: tierEval.dormantWarningBadge,
+      specialContextTag: tierEval.specialContextTag,
+      specialContextBadge: tierEval.specialContextBadge,
+      specialContextReason: tierEval.specialContextReason,
       damageValueBtc: damageValueBtc !== undefined ? damageValueBtc : p.damageValueBtc,
-      tierReasonBadge: hasLivePersonalReceipts ? (reason || p.tierReasonBadge) : (p.tierReasonBadge || 'Pending personal audit'),
+      tierReasonBadge: hasLivePersonalReceipts ? (reason || p.tierReasonBadge) : (tierEval.specialContextReason || p.tierReasonBadge || 'Pending personal audit'),
       auditBaselineStatus: auditStatus,
       auditSchemaVersion: hasLivePersonalReceipts ? AUDIT_PROFILE_SCHEMA_VERSION : undefined,
       auditedAt: auditedAtTimestamp,
@@ -1984,11 +2452,9 @@ export function calculateCitizenSuggestedDonation(
   ];
 
   // ============================================================================
-  // 5. ADAPTIVE DIPLOMATIC MODE & CUSTOM MERIT-BASED COMMENDATION / WARNING EVALUATOR
-  // Evaluates whether this citizen should receive:
-  //   - 'commendation' (Custom Merit-Based Congratulations: Active Historical Pillar, Sovereign Treasury Patriot, Battlefield Hero, or Dual-Crown Vanguard)
-  //   - 'over-donation-warning' (Burnout / Economic Self-Harm Warning: CapEx Growth Strain or Combat Ammo Strain)
-  //   - 'nudge' (Treasury Contribution Request)
+  // 5. CANONICAL STANDING PARITY & ADAPTIVE DIPLOMATIC MODE (WITH DUAL RECOMMENDATIONS)
+  // Evaluates citizen using the single canonical evaluateLeechTier rule so Overview,
+  // Forensic Audit, and Diplomatic Nudge agree 100% on Historical Pillar & Frontline Hero status.
   // ============================================================================
   const sustainableWeeklyCapBtc = Math.max(
     roundCleanBtc(donationMedian * 1.5),
@@ -1996,166 +2462,64 @@ export function calculateCitizenSuggestedDonation(
   );
   const overDonationExcessBtc = Math.max(0, Math.round((periodDonated - sustainableWeeklyCapBtc) * 10) / 10);
 
+  const canonicalTierEval = evaluateLeechTier(
+    profile.wealthBtc,
+    periodDonated,
+    config,
+    grossIncomeBtc,
+    profile.playstyle,
+    profile.totalDonatedBtc,
+    resourceWealthBtc,
+    profile.totalCombatDamage || 0,
+    profile.isHistoricalTopDonor || false,
+    profile.historicalRank,
+    profile.isNationalHeavyHitter || false,
+    profile.heavyHitterRank,
+    countryBenchmark,
+    liquidBtc,
+    {
+      companiesCount: profile.companiesCount,
+      companiesWealthBtc: profile.companiesWealthBtc,
+      pastWealthBtc: profile.pastWealthBtc,
+      lifetimeCombatDamage: profile.lifetimeCombatDamage ?? profile.totalCombatDamage,
+      donationCount: profile.donationCount,
+      daysSinceLastDonation: profile.daysSinceLastDonation,
+      daysInBuild: profile.daysInBuild,
+    }
+  );
+
   const isHistoricalPillar =
-    profile.leechTier === 'historical-pillar' ||
-    Boolean(profile.isHistoricalTopDonor) ||
-    profile.totalDonatedBtc >= (config.historicalDonorGraceThresholdBtc || 500);
+    canonicalTierEval.tier === 'historical-pillar' || profile.leechTier === 'historical-pillar';
+  const isDormantPillar = Boolean(canonicalTierEval.isDormantPillar && isHistoricalPillar);
+  const dormantWarningBadge = canonicalTierEval.dormantWarningBadge;
+  const dormantWarningTooltip = isDormantPillar
+    ? `${profile.username} retains Historical Pillar status (${Math.round(profile.totalDonatedBtc).toLocaleString()} BTC lifetime donated${profile.historicalRank ? `, Rank #${profile.historicalRank}` : ''}), but contributed ${Math.round(periodDonated).toLocaleString()} BTC in the current period (${profile.contributionRatio.toFixed(1)}% vs. ${targetQuotaPct}% policy quota). Dual diplomatic options are recommended.`
+    : undefined;
+
+  const specialContextTag = canonicalTierEval.specialContextTag || profile.specialContextTag;
+  const specialContextBadge = canonicalTierEval.specialContextBadge || profile.specialContextBadge;
+  const specialContextReason = canonicalTierEval.specialContextReason || profile.specialContextReason;
+
   const countryCombatThreshold = hasBenchmark
     ? Math.max(30000, (countryBenchmark!.fighterDamageMedianTopTier || 200000) * 0.35)
     : 100000;
   const periodCombatDamage = Math.max(0, profile.totalCombatDamage || 0);
+  const careerCombatDamage = Math.max(periodCombatDamage, profile.lifetimeCombatDamage || 0);
   const hasHeavyCombatMerit =
-    periodCombatDamage >= countryCombatThreshold ||
+    canonicalTierEval.tier === 'combat-veteran' ||
     profile.leechTier === 'combat-veteran' ||
+    periodCombatDamage >= countryCombatThreshold ||
     Boolean(profile.isNationalHeavyHitter) ||
     (profile.damageValueBtc || 0) >= moderateWeeklyTarget;
   const hasActivePeriodDonation =
     periodDonated >= Math.max(moderateWeeklyTarget * 0.85, donationMedian * 0.65, 25);
   const meetsPatriotTreasuryQuota =
-    periodDonated >= patriotWeeklyTarget * 0.9 ||
+    canonicalTierEval.tier === 'sovereign-patriot' ||
     profile.leechTier === 'sovereign-patriot' ||
+    periodDonated >= patriotWeeklyTarget * 0.9 ||
     profile.contributionRatio >= targetQuotaPct;
 
-  // Detect Over-Donation Burnout Risk (donating more than sustainable earning power & draining liquid/company reserves)
-  const isDrainingEcoGrowth =
-    periodDonated > Math.max(50, sustainableWeeklyCapBtc) &&
-    liquidBtc < liquidMedian * 1.1 &&
-    resourceWealthBtc < protectedGrowthReserveBtc * 0.6 &&
-    (total7dProjectedEarningPowerBtc === 0 || periodDonated > total7dProjectedEarningPowerBtc * 0.35);
-  const isDrainingCombatReadiness =
-    profile.playstyle !== 'pure-eco' &&
-    periodDonated >= Math.max(40, patriotWeeklyTarget * 1.3) &&
-    liquidBtc < liquidMedian * 0.75 &&
-    periodCombatDamage > 0;
-  const isOverDonatingBurnoutRisk = isDrainingEcoGrowth || isDrainingCombatReadiness;
-
-  // Determine recommended Over-Donation Warning Sub-Archetype
-  let recommendedOverDonationArchetype: import('../types/ministry').OverDonationWarningArchetype =
-    isDrainingCombatReadiness || profile.playstyle === 'pure-war'
-      ? 'combat-ammo-strain'
-      : 'capex-growth-strain';
-  let recommendedOverDonationLabel =
-    recommendedOverDonationArchetype === 'combat-ammo-strain'
-      ? 'Frontline Munitions & Gear Strain Warning'
-      : 'Company CapEx & Economic Growth Strain Warning';
-  let recommendedOverDonationReason =
-    recommendedOverDonationArchetype === 'combat-ammo-strain'
-      ? `${profile.username} donated ${periodDonated.toLocaleString()} BTC this period while fighting on the frontlines (${periodCombatDamage.toLocaleString()} dmg) and holding only ${liquidBtc.toLocaleString()} BTC liquid cash. Warn them to protect their cash for ammo, pills, and weapon repairs.`
-      : `${profile.username} donated ${periodDonated.toLocaleString()} BTC (exceeding their sustainable weekly cap of ${sustainableWeeklyCapBtc.toLocaleString()} BTC from ${total7dProjectedEarningPowerBtc.toLocaleString()} BTC/wk output) with only ${liquidBtc.toLocaleString()} BTC liquid cash left. Advise a temporary donation pause so they can upgrade companies and compound their economy.`;
-
-  const overDonationArchetypeOptions: import('../types/ministry').OverDonationArchetypeOption[] = [
-    {
-      id: 'capex-growth-strain',
-      title: 'Company & Economic Growth Strain',
-      subtitle: 'Protect capital for factory upgrades & market growth',
-      badge: `Cap: ${sustainableWeeklyCapBtc.toLocaleString()} BTC/wk`,
-      isRecommended: recommendedOverDonationArchetype === 'capex-growth-strain',
-      explanation:
-        'Advises citizens who are donating >35% of their weekly earning power (or draining low cash reserves) to pause tithes and reinvest in their own factories and trading capital so they do not fall behind.',
-    },
-    {
-      id: 'combat-ammo-strain',
-      title: 'Frontline Munitions & Gear Strain',
-      subtitle: 'Retain BTC for ammunition, armor & combat buffs',
-      badge: `Liquid: ${Math.round(liquidBtc).toLocaleString()} BTC`,
-      isRecommended: recommendedOverDonationArchetype === 'combat-ammo-strain',
-      explanation:
-        'Advises active warriors who are over-donating BTC at the expense of their personal war chest to keep their liquid BTC for ammunition, weapon durability, and frontline consumables.',
-    },
-  ];
-
-  // Determine recommended Custom Merit-Based Commendation Sub-Archetype
-  let recommendedCommendationArchetype: import('../types/ministry').CommendationArchetype =
-    'sovereign-treasury-patriot';
-  let recommendedCommendationLabel = 'Sovereign Treasury Patriot';
-  let recommendedCommendationReason = '';
-
-  if (isHistoricalPillar && (periodDonated > 0 || periodCombatDamage > 0 || hasHeavyCombatMerit)) {
-    recommendedCommendationArchetype = 'active-historical-pillar';
-    recommendedCommendationLabel = 'Active Historical Pillar (Still Giving)';
-    const pillarMeritDetail =
-      periodDonated > 0 && periodCombatDamage > 0
-        ? `contributing both +${periodDonated.toLocaleString()} BTC in fresh donations and ${periodCombatDamage.toLocaleString()} battlefield damage this period`
-        : periodDonated > 0
-        ? `contributing +${periodDonated.toLocaleString()} BTC in fresh treasury donations this period`
-        : `dealing ${periodCombatDamage.toLocaleString()} frontline combat damage this period`;
-    recommendedCommendationReason = `${profile.username} is an all-time National Pillar (${profile.totalDonatedBtc.toLocaleString()} BTC lifetime donated${profile.historicalRank ? `, Rank #${profile.historicalRank}` : ''}) who never stops serving—${pillarMeritDetail}.`;
-  } else if (hasActivePeriodDonation && hasHeavyCombatMerit) {
-    recommendedCommendationArchetype = 'dual-crown-vanguard';
-    recommendedCommendationLabel = 'Dual-Crown Vanguard (Treasury + Battlefield)';
-    recommendedCommendationReason = `${profile.username} excels on both fronts simultaneously: donating ${periodDonated.toLocaleString()} BTC to the national treasury while dealing ${periodCombatDamage.toLocaleString()} frontline combat damage.`;
-  } else if (hasHeavyCombatMerit || (profile.playstyle === 'pure-war' && periodCombatDamage > 0)) {
-    recommendedCommendationArchetype = 'battlefield-frontline-hero';
-    recommendedCommendationLabel = 'Battlefield Frontline Hero';
-    recommendedCommendationReason = `${profile.username} defends ${profile.countryName || 'the nation'} on the battlefield (${periodCombatDamage.toLocaleString()} period damage${profile.heavyHitterRank ? `, Heavy Hitter #${profile.heavyHitterRank}` : ''}), channeling their capital into weapons, ammo, and frontline readiness.`;
-  } else if (isHistoricalPillar) {
-    recommendedCommendationArchetype = 'active-historical-pillar';
-    recommendedCommendationLabel = 'Historical National Pillar';
-    recommendedCommendationReason = `${profile.username} is a foundational Historical Pillar (${profile.totalDonatedBtc.toLocaleString()} BTC lifetime donated${profile.historicalRank ? `, Rank #${profile.historicalRank}` : ''}) whose career contributions anchor the republic.`;
-  } else {
-    recommendedCommendationArchetype = 'sovereign-treasury-patriot';
-    recommendedCommendationLabel = 'Sovereign Treasury Patriot';
-    recommendedCommendationReason = `${profile.username} donated ${periodDonated.toLocaleString()} BTC this period (${profile.contributionRatio}% contribution ratio), meeting or exceeding the ${targetQuotaPct}% ${profile.playstyle} Patriot benchmark.`;
-  }
-
-  const commendationArchetypeOptions: import('../types/ministry').CommendationArchetypeOption[] = [
-    {
-      id: 'active-historical-pillar',
-      title: 'Active Historical Pillar',
-      subtitle: 'All-time foundation pillar who keeps giving (BTC or Damage)',
-      badge: `${Math.round(profile.totalDonatedBtc).toLocaleString()} BTC Lifetime`,
-      isRecommended: recommendedCommendationArchetype === 'active-historical-pillar',
-      explanation:
-        'Honors top lifetime donors who refuse to rest on their historical laurels and continue serving the country in the current period through fresh BTC tithes, frontline combat damage, or both.',
-    },
-    {
-      id: 'sovereign-treasury-patriot',
-      title: 'Sovereign Treasury Patriot',
-      subtitle: 'Exemplary period BTC donor funding the state',
-      badge: `${Math.round(periodDonated).toLocaleString()} BTC (${profile.contributionRatio}%)`,
-      isRecommended: recommendedCommendationArchetype === 'sovereign-treasury-patriot',
-      explanation:
-        'Commends economic and hybrid citizens who meet or exceed their playstyle’s Patriot treasury quota through consistent direct BTC donations.',
-    },
-    {
-      id: 'battlefield-frontline-hero',
-      title: 'Battlefield Frontline Hero',
-      subtitle: 'Heavy combat damage dealer & munitions spender',
-      badge: `${periodCombatDamage.toLocaleString()} Dmg`,
-      isRecommended: recommendedCommendationArchetype === 'battlefield-frontline-hero',
-      explanation:
-        'Salutes frontline warriors and illiquid combatants who pour their wealth into weapons, ammunition, and combat consumables to defend the nation’s borders.',
-    },
-    {
-      id: 'dual-crown-vanguard',
-      title: 'Dual-Crown Vanguard',
-      subtitle: 'Elite contributor in both Treasury BTC & Combat Damage',
-      badge: `${Math.round(periodDonated).toLocaleString()} BTC + ${periodCombatDamage.toLocaleString()} Dmg`,
-      isRecommended: recommendedCommendationArchetype === 'dual-crown-vanguard',
-      explanation:
-        'Celebrates rare all-around citizens who simultaneously finance the national treasury with BTC donations and deal heavy damage on the battlefield.',
-    },
-  ];
-
-  // Determine top-level Recommended Diplomatic Mode ('nudge' | 'commendation' | 'over-donation-warning')
-  let recommendedDiplomaticMode: import('../types/ministry').DiplomaticActionMode = 'nudge';
-  let recommendedDiplomaticModeLabel = `Treasury Nudge — ${recommendedArchetypeLabel}`;
-  let recommendedDiplomaticModeReason = recommendedArchetypeReason;
-
-  if (isOverDonatingBurnoutRisk) {
-    recommendedDiplomaticMode = 'over-donation-warning';
-    recommendedDiplomaticModeLabel = `Over-Donation Burnout Warning — ${recommendedOverDonationLabel}`;
-    recommendedDiplomaticModeReason = recommendedOverDonationReason;
-  } else if (
-    meetsPatriotTreasuryQuota ||
-    hasHeavyCombatMerit ||
-    (isHistoricalPillar && (periodDonated > 0 || periodCombatDamage > 0 || profile.leechTier !== 'critical-leech'))
-  ) {
-    recommendedDiplomaticMode = 'commendation';
-    recommendedDiplomaticModeLabel = `Patriot Commendation — ${recommendedCommendationLabel}`;
-    recommendedDiplomaticModeReason = recommendedCommendationReason;
-  }
-
+  // Compute suggested BTC targets first so Dual Recommendations can reference exact numbers
   let suggestedAmountBtc = stepUpRec;
   let minSuggestedBtc = 5;
   let maxSuggestedBtc = 500;
@@ -2212,6 +2576,222 @@ export function calculateCitizenSuggestedDonation(
       { label: 'Country Median', amount: Math.max(5, medianMatch), description: 'Match national median donor contribution' },
       { label: '1.5x Patriot Boost', amount: Math.max(15, stepUpHigh), description: 'Above-quota leadership contribution' },
     ];
+  }
+
+  // Override rationale / label with encouraging Veteran or War-to-Eco context when detected
+  if (specialContextTag === 'resting-veteran-donor') {
+    const lifetimeMedianVal = hasBenchmark
+      ? Math.round(countryBenchmark!.lifetimeDonationMedian ?? donationMedian * 3)
+      : 200;
+    recommendedArchetypeLabel = `Encouraging Veteran Nudge (${recommendedArchetypeLabel})`;
+    recommendedArchetypeReason = `${profile.username} has donated ${Math.round(profile.totalDonatedBtc).toLocaleString()} BTC lifetime (${profile.donationCount || 1}x donations, exceeding the ${lifetimeMedianVal.toLocaleString()} BTC country lifetime median) and is protected from Critical Leech classification. Because their current period donation is ${periodDonated.toLocaleString()} BTC while holding ${liquidBtc.toLocaleString()} BTC liquid cash and ${resourceWealthBtc.toLocaleString()} BTC stock (possibly saving for a personal milestone), send an Encouraging Veteran Nudge (${suggestedAmountBtc.toLocaleString()} BTC) that honors their proven record and warmly invites a contribution when ready.`;
+  } else if (specialContextTag === 'war-vet-in-eco') {
+    recommendedArchetypeLabel = `War-to-Eco Gear Farming Check-In (${recommendedArchetypeLabel})`;
+    recommendedArchetypeReason = `${profile.username} is a verified career combat veteran (${careerCombatDamage.toLocaleString()} career damage) currently running a ${profile.playstyle} build to farm capital and buy equipment (${liquidBtc.toLocaleString()} BTC liquid / ${resourceWealthBtc.toLocaleString()} BTC stock). Protected from Critical Leech—send a respectful War-to-Eco Check-In Nudge (${suggestedAmountBtc.toLocaleString()} BTC).`;
+  }
+
+  // Detect Over-Donation Burnout Risk (donating more than sustainable earning power & draining liquid/company reserves)
+  const isDrainingEcoGrowth =
+    periodDonated > Math.max(50, sustainableWeeklyCapBtc) &&
+    liquidBtc < liquidMedian * 1.1 &&
+    resourceWealthBtc < protectedGrowthReserveBtc * 0.6 &&
+    (total7dProjectedEarningPowerBtc === 0 || periodDonated > total7dProjectedEarningPowerBtc * 0.35);
+  const isDrainingCombatReadiness =
+    profile.playstyle !== 'pure-eco' &&
+    periodDonated >= Math.max(40, patriotWeeklyTarget * 1.3) &&
+    liquidBtc < liquidMedian * 0.75 &&
+    periodCombatDamage > 0;
+  const isOverDonatingBurnoutRisk = isDrainingEcoGrowth || isDrainingCombatReadiness;
+
+  // Determine recommended Over-Donation Warning Sub-Archetype
+  let recommendedOverDonationArchetype: import('../types/ministry').OverDonationWarningArchetype =
+    isDrainingCombatReadiness || profile.playstyle === 'pure-war'
+      ? 'combat-ammo-strain'
+      : 'capex-growth-strain';
+  let recommendedOverDonationLabel =
+    recommendedOverDonationArchetype === 'combat-ammo-strain'
+      ? 'Frontline Munitions & Gear Strain Warning'
+      : 'Company CapEx & Economic Growth Strain Warning';
+  let recommendedOverDonationReason =
+    recommendedOverDonationArchetype === 'combat-ammo-strain'
+      ? `${profile.username} donated ${periodDonated.toLocaleString()} BTC this period while fighting on the frontlines (${periodCombatDamage.toLocaleString()} dmg) and holding only ${liquidBtc.toLocaleString()} BTC liquid cash. Warn them to protect their cash for ammo, pills, and weapon repairs.`
+      : `${profile.username} donated ${periodDonated.toLocaleString()} BTC (exceeding their sustainable weekly cap of ${sustainableWeeklyCapBtc.toLocaleString()} BTC from ${total7dProjectedEarningPowerBtc.toLocaleString()} BTC/wk output) with only ${liquidBtc.toLocaleString()} BTC liquid cash left. Advise a temporary donation pause so they can upgrade companies and compound their economy.`;
+
+  const overDonationArchetypeOptions: import('../types/ministry').OverDonationArchetypeOption[] = [
+    {
+      id: 'capex-growth-strain',
+      title: 'Company & Economic Growth Strain',
+      subtitle: 'Protect capital for factory upgrades & market growth',
+      badge: `Cap: ${sustainableWeeklyCapBtc.toLocaleString()} BTC/wk`,
+      isRecommended: recommendedOverDonationArchetype === 'capex-growth-strain',
+      explanation:
+        'Advises citizens who are donating >35% of their weekly earning power (or draining low cash reserves) to pause tithes and reinvest in their own factories and trading capital so they do not fall behind.',
+    },
+    {
+      id: 'combat-ammo-strain',
+      title: 'Frontline Munitions & Gear Strain',
+      subtitle: 'Retain BTC for ammunition, armor & combat buffs',
+      badge: `Liquid: ${Math.round(liquidBtc).toLocaleString()} BTC`,
+      isRecommended: recommendedOverDonationArchetype === 'combat-ammo-strain',
+      explanation:
+        'Advises active warriors who are over-donating BTC at the expense of their personal war chest to keep their liquid BTC for ammunition, weapon durability, and frontline consumables.',
+    },
+  ];
+
+  // Determine recommended Custom Merit-Based Commendation Sub-Archetype
+  let recommendedCommendationArchetype: import('../types/ministry').CommendationArchetype =
+    'sovereign-treasury-patriot';
+  let recommendedCommendationLabel = 'Sovereign Treasury Patriot';
+  let recommendedCommendationReason = '';
+
+  if (specialContextTag === 'industrial-war-sacrifice') {
+    recommendedCommendationArchetype = 'industrial-war-sacrifice';
+    recommendedCommendationLabel = 'Supreme Sacrifice & Company Rebuild Salute (Morale Boost)';
+    recommendedCommendationReason = `${profile.username} dismantled or depleted their company equity (${Math.round(companiesWealthBtc).toLocaleString()} BTC remaining) while sacrificing for ${profile.countryName || 'the nation'} (${Math.round(profile.totalDonatedBtc).toLocaleString()} BTC lifetime donated / ${careerCombatDamage.toLocaleString()} career combat damage). Players who make this sacrifice often suffer low morale—send this Supreme Sacrifice Salute to lift their spirits and urge them to focus 100% on rebuilding their companies with zero donation pressure!`;
+  } else if (isHistoricalPillar && isDormantPillar) {
+    recommendedCommendationArchetype = 'dormant-pillar-reactivation';
+    recommendedCommendationLabel = 'Dormant Historical Pillar (Honor + Gentle Reactivation)';
+    recommendedCommendationReason = `${profile.username} is a revered Historical Pillar (${Math.round(profile.totalDonatedBtc).toLocaleString()} BTC lifetime donated${profile.historicalRank ? `, Rank #${profile.historicalRank}` : ''}) who is currently dormant this period (${periodDonated.toLocaleString()} BTC donated, ${profile.contributionRatio.toFixed(1)}% vs. ${targetQuotaPct}% policy quota). Primary recommendation honors their lifetime pillar status with a warm reactivation salute, while a Secondary Treasury Nudge (${suggestedAmountBtc.toLocaleString()} BTC) is ready below if you wish to request a period contribution.`;
+  } else if (isHistoricalPillar && (periodDonated > 0 || periodCombatDamage > 0 || hasHeavyCombatMerit)) {
+    recommendedCommendationArchetype = 'active-historical-pillar';
+    recommendedCommendationLabel = 'Active Historical Pillar (Still Giving)';
+    const pillarMeritDetail =
+      periodDonated > 0 && periodCombatDamage > 0
+        ? `contributing both +${periodDonated.toLocaleString()} BTC in fresh donations and ${periodCombatDamage.toLocaleString()} battlefield damage this period`
+        : periodDonated > 0
+        ? `contributing +${periodDonated.toLocaleString()} BTC in fresh treasury donations this period`
+        : `dealing ${periodCombatDamage.toLocaleString()} frontline combat damage this period`;
+    recommendedCommendationReason = `${profile.username} is an all-time National Pillar (${profile.totalDonatedBtc.toLocaleString()} BTC lifetime donated${profile.historicalRank ? `, Rank #${profile.historicalRank}` : ''}) who never stops serving—${pillarMeritDetail}.`;
+  } else if (hasActivePeriodDonation && hasHeavyCombatMerit) {
+    recommendedCommendationArchetype = 'dual-crown-vanguard';
+    recommendedCommendationLabel = 'Dual-Crown Vanguard (Treasury + Battlefield)';
+    recommendedCommendationReason = `${profile.username} excels on both fronts simultaneously: donating ${periodDonated.toLocaleString()} BTC to the national treasury while dealing ${periodCombatDamage.toLocaleString()} frontline combat damage.`;
+  } else if (hasHeavyCombatMerit || (profile.playstyle === 'pure-war' && periodCombatDamage > 0)) {
+    recommendedCommendationArchetype = 'battlefield-frontline-hero';
+    recommendedCommendationLabel = 'Battlefield Frontline Hero';
+    recommendedCommendationReason = `${profile.username} defends ${profile.countryName || 'the nation'} on the battlefield (${periodCombatDamage.toLocaleString()} period damage${profile.heavyHitterRank ? `, Heavy Hitter #${profile.heavyHitterRank}` : ''}), channeling their capital into weapons, ammo, and frontline readiness.`;
+  } else if (isHistoricalPillar) {
+    recommendedCommendationArchetype = 'active-historical-pillar';
+    recommendedCommendationLabel = 'Historical National Pillar';
+    recommendedCommendationReason = `${profile.username} is a foundational Historical Pillar (${profile.totalDonatedBtc.toLocaleString()} BTC lifetime donated${profile.historicalRank ? `, Rank #${profile.historicalRank}` : ''}) whose career contributions anchor the republic.`;
+  } else {
+    recommendedCommendationArchetype = 'sovereign-treasury-patriot';
+    recommendedCommendationLabel = 'Sovereign Treasury Patriot';
+    recommendedCommendationReason = `${profile.username} donated ${periodDonated.toLocaleString()} BTC this period (${profile.contributionRatio}% contribution ratio), meeting or exceeding the ${targetQuotaPct}% ${profile.playstyle} Patriot benchmark.`;
+  }
+
+  const commendationArchetypeOptions: import('../types/ministry').CommendationArchetypeOption[] = [
+    {
+      id: 'industrial-war-sacrifice',
+      title: 'Supreme Sacrifice & Rebuild Salute',
+      subtitle: 'Boost morale for citizens who burned factories for war/treasury',
+      badge: `🔥🏭 ${Math.round(companiesWealthBtc).toLocaleString()} BTC Comp.`,
+      isRecommended: recommendedCommendationArchetype === 'industrial-war-sacrifice',
+      explanation:
+        'Specifically crafted to lift the morale of patriotic citizens (like Soplete) who dismantled their companies to fund the war effort or national treasury. Honors their supreme sacrifice and urges them to focus 100% on rebuilding their companies with zero donation pressure.',
+    },
+    {
+      id: 'active-historical-pillar',
+      title: 'Active Historical Pillar',
+      subtitle: 'All-time foundation pillar who keeps giving (BTC or Damage)',
+      badge: `${Math.round(profile.totalDonatedBtc).toLocaleString()} BTC Lifetime`,
+      isRecommended: recommendedCommendationArchetype === 'active-historical-pillar',
+      explanation:
+        'Honors top lifetime donors who refuse to rest on their historical laurels and continue serving the country in the current period through fresh BTC tithes, frontline combat damage, or both.',
+    },
+    {
+      id: 'dormant-pillar-reactivation',
+      title: 'Dormant Pillar (Honor + Reactivation)',
+      subtitle: 'Salute lifetime Pillar record & gently invite period return',
+      badge: `⚠️ ${Math.round(periodDonated).toLocaleString()} BTC (${profile.contributionRatio.toFixed(1)}%)`,
+      isRecommended: recommendedCommendationArchetype === 'dormant-pillar-reactivation',
+      explanation:
+        'Designed for Historical Pillars with 0 or below-quota period donations: celebrates their all-time treasury foundation first while warmly inviting a voluntary period contribution.',
+    },
+    {
+      id: 'sovereign-treasury-patriot',
+      title: 'Sovereign Treasury Patriot',
+      subtitle: 'Exemplary period BTC donor funding the state',
+      badge: `${Math.round(periodDonated).toLocaleString()} BTC (${profile.contributionRatio}%)`,
+      isRecommended: recommendedCommendationArchetype === 'sovereign-treasury-patriot',
+      explanation:
+        'Commends economic and hybrid citizens who meet or exceed their playstyle’s Patriot treasury quota through consistent direct BTC donations.',
+    },
+    {
+      id: 'battlefield-frontline-hero',
+      title: 'Battlefield Frontline Hero',
+      subtitle: 'Heavy combat damage dealer & munitions spender',
+      badge: `${periodCombatDamage.toLocaleString()} Dmg`,
+      isRecommended: recommendedCommendationArchetype === 'battlefield-frontline-hero',
+      explanation:
+        'Salutes frontline warriors and illiquid combatants who pour their wealth into weapons, ammunition, and combat consumables to defend the nation’s borders.',
+    },
+    {
+      id: 'dual-crown-vanguard',
+      title: 'Dual-Crown Vanguard',
+      subtitle: 'Elite contributor in both Treasury BTC & Combat Damage',
+      badge: `${Math.round(periodDonated).toLocaleString()} BTC + ${periodCombatDamage.toLocaleString()} Dmg`,
+      isRecommended: recommendedCommendationArchetype === 'dual-crown-vanguard',
+      explanation:
+        'Celebrates rare all-around citizens who simultaneously finance the national treasury with BTC donations and deal heavy damage on the battlefield.',
+    },
+  ];
+
+  // Detect Edge Case C: Stockpiling / Liquid-Hoarding Frontline Hero (war hero who also sits on large idle liquid/commodity reserves with 0 direct BTC donated)
+  const isStockpilingCombatHero =
+    !isHistoricalPillar &&
+    hasHeavyCombatMerit &&
+    periodDonated === 0 &&
+    (recommendedArchetype === 'liquid-hoarder' || recommendedArchetype === 'resource-stockpiler') &&
+    suggestedAmountBtc >= 25;
+
+  // Determine top-level Primary & Secondary Diplomatic Modes
+  let recommendedDiplomaticMode: import('../types/ministry').DiplomaticActionMode = 'nudge';
+  let recommendedDiplomaticModeLabel = `Treasury Nudge — ${recommendedArchetypeLabel}`;
+  let recommendedDiplomaticModeReason = recommendedArchetypeReason;
+
+  let secondaryDiplomaticMode: import('../types/ministry').DiplomaticActionMode | undefined;
+  let secondaryDiplomaticModeLabel: string | undefined;
+  let secondaryDiplomaticModeReason: string | undefined;
+  let secondaryDiplomaticBadge: string | undefined;
+
+  if (specialContextTag === 'industrial-war-sacrifice') {
+    recommendedDiplomaticMode = 'commendation';
+    recommendedDiplomaticModeLabel = `Morale & Rebuild Commendation — ${recommendedCommendationLabel}`;
+    recommendedDiplomaticModeReason = recommendedCommendationReason;
+  } else if (isOverDonatingBurnoutRisk) {
+    recommendedDiplomaticMode = 'over-donation-warning';
+    recommendedDiplomaticModeLabel = `Over-Donation Burnout Warning — ${recommendedOverDonationLabel}`;
+    recommendedDiplomaticModeReason = recommendedOverDonationReason;
+  } else if (isHistoricalPillar && isDormantPillar) {
+    // Dual Recommendation for Dormant Historical Pillar:
+    // Primary = Patriot Commendation (Dormant Pillar Honor + Gentle Reactivation)
+    // Secondary = Treasury Nudge (with respectful Pillar framing)
+    recommendedDiplomaticMode = 'commendation';
+    recommendedDiplomaticModeLabel = `Patriot Commendation — ${recommendedCommendationLabel}`;
+    recommendedDiplomaticModeReason = recommendedCommendationReason;
+
+    secondaryDiplomaticMode = 'nudge';
+    secondaryDiplomaticModeLabel = `Treasury Nudge — ${recommendedArchetypeLabel}`;
+    secondaryDiplomaticBadge = `${suggestedAmountBtc.toLocaleString()} BTC Target`;
+    secondaryDiplomaticModeReason = `Because ${profile.username} contributed ${periodDonated.toLocaleString()} BTC in the active window (${profile.contributionRatio.toFixed(1)}% vs. ${targetQuotaPct}% quota) while holding ${liquidBtc.toLocaleString()} BTC liquid cash and ${resourceWealthBtc.toLocaleString()} BTC in commodities, a Secondary Treasury Nudge (${suggestedAmountBtc.toLocaleString()} BTC) is also recommended.`;
+  } else if (isStockpilingCombatHero) {
+    recommendedDiplomaticMode = 'commendation';
+    recommendedDiplomaticModeLabel = `Patriot Commendation — ${recommendedCommendationLabel}`;
+    recommendedDiplomaticModeReason = recommendedCommendationReason;
+
+    secondaryDiplomaticMode = 'nudge';
+    secondaryDiplomaticModeLabel = `Treasury Nudge — ${recommendedArchetypeLabel}`;
+    secondaryDiplomaticBadge = `${suggestedAmountBtc.toLocaleString()} BTC Target`;
+    secondaryDiplomaticModeReason = `While ${profile.username} earned Frontline Hero standing via ${periodCombatDamage.toLocaleString()} combat damage, they also hold significant idle reserves (${liquidBtc.toLocaleString()} BTC liquid / ${resourceWealthBtc.toLocaleString()} BTC stock) with 0 BTC direct treasury donations this period.`;
+  } else if (
+    meetsPatriotTreasuryQuota ||
+    hasHeavyCombatMerit ||
+    isHistoricalPillar
+  ) {
+    recommendedDiplomaticMode = 'commendation';
+    recommendedDiplomaticModeLabel = `Patriot Commendation — ${recommendedCommendationLabel}`;
+    recommendedDiplomaticModeReason = recommendedCommendationReason;
   }
 
   const taxable7dNetTradingBtc = Math.round(verified7dNetTradingBtc * 0.75 * 10) / 10;
@@ -2281,6 +2861,17 @@ export function calculateCitizenSuggestedDonation(
     recommendedDiplomaticModeReason,
     recommendedDiplomaticReason: recommendedDiplomaticModeReason,
     recommendedDiplomaticBadge,
+    isDormantPillar,
+    isStockpilingCombatHero,
+    dormantWarningBadge,
+    dormantWarningTooltip,
+    specialContextTag,
+    specialContextBadge,
+    specialContextReason,
+    secondaryDiplomaticMode,
+    secondaryDiplomaticModeLabel,
+    secondaryDiplomaticModeReason,
+    secondaryDiplomaticBadge,
     recommendedCommendationArchetype,
     recommendedCommendationLabel,
     recommendedCommendationReason,
@@ -2301,8 +2892,8 @@ export function calculateCitizenSuggestedDonation(
 /**
  * Deterministic Ministerial Message Templates (ZERO AI, dynamically interpolated, strictly <= 492 chars without name)
  * Supports 3 Adaptive Diplomatic Modes:
- *   1. 'nudge': Treasury contribution request ('weekly-cashflow', 'liquid-hoarder', 'resource-stockpiler' with 3.5x Growth Shield)
- *   2. 'commendation': Custom Merit-Based Patriot Congratulations ('active-historical-pillar', 'sovereign-treasury-patriot', 'battlefield-frontline-hero', 'dual-crown-vanguard')
+ *   1. 'nudge': Treasury contribution request ('weekly-cashflow', 'liquid-hoarder', 'resource-stockpiler' with 3.5x Growth Shield, plus Encouraging Veteran & War-to-Eco framing)
+ *   2. 'commendation': Custom Merit-Based Patriot Congratulations ('industrial-war-sacrifice', 'active-historical-pillar', 'dormant-pillar-reactivation', 'sovereign-treasury-patriot', 'battlefield-frontline-hero', 'dual-crown-vanguard')
  *   3. 'over-donation-warning': Burnout & Self-Harm Protection ('capex-growth-strain', 'combat-ammo-strain')
  */
 export function generateMinisterialNudge(
@@ -2346,8 +2937,11 @@ export function generateMinisterialNudge(
   const donatedFormatted = periodDonatedVal.toLocaleString(undefined, { maximumFractionDigits: 1 });
   const lifetimeDonatedFormatted = (profile.totalDonatedBtc || 0).toLocaleString(undefined, { maximumFractionDigits: 1 });
   const combatDmgFormatted = (profile.totalCombatDamage || 0).toLocaleString();
+  const careerDmgFormatted = Math.max(profile.totalCombatDamage || 0, profile.lifetimeCombatDamage || 0).toLocaleString();
   const sustainableCapFormatted = recommendation.sustainableWeeklyCapBtc.toLocaleString(undefined, { maximumFractionDigits: 0 });
-  const isLeech = profile.leechTier === 'critical-leech';
+  const isPillarStanding = profile.leechTier === 'historical-pillar' || Boolean(recommendation.isDormantPillar);
+  const specialTag = recommendation.specialContextTag || profile.specialContextTag;
+  const isLeech = profile.leechTier === 'critical-leech' && !isPillarStanding && !specialTag;
   const messages: MinisterialMessage[] = [];
 
   // ============================================================================
@@ -2356,7 +2950,83 @@ export function generateMinisterialNudge(
   if (activeMode === 'commendation') {
     const commArch = options?.commendationArchetype || recommendation.recommendedCommendationArchetype;
 
-    if (commArch === 'active-historical-pillar') {
+    if (commArch === 'industrial-war-sacrifice') {
+      const sacrificeMeritEn =
+        (profile.totalDonatedBtc || 0) > 0 && Math.max(profile.totalCombatDamage || 0, profile.lifetimeCombatDamage || 0) > 0
+          ? `${lifetimeDonatedFormatted} BTC in lifetime donations and ${careerDmgFormatted} combat damage`
+          : (profile.totalDonatedBtc || 0) > 0
+          ? `${lifetimeDonatedFormatted} BTC in lifetime treasury donations`
+          : `${careerDmgFormatted} career battlefield damage`;
+      const sacrificeMeritEs =
+        (profile.totalDonatedBtc || 0) > 0 && Math.max(profile.totalCombatDamage || 0, profile.lifetimeCombatDamage || 0) > 0
+          ? `${lifetimeDonatedFormatted} BTC donados y ${careerDmgFormatted} de daño en combate`
+          : (profile.totalDonatedBtc || 0) > 0
+          ? `${lifetimeDonatedFormatted} BTC donados a la tesorería`
+          : `${careerDmgFormatted} de daño histórico en batalla`;
+
+      const enBody = `🔥🏛️ [SUPREME SACRIFICE SALUTE - ${countryName.toUpperCase()} ${ministerTitle}]
+Heroic Patriot ${profile.username}!
+${countryName} will NEVER forget that you burned your companies to the ground to back the homeland (${sacrificeMeritEn}).
+Hold your head high! You have ZERO donation pressure from us—focus 100% on rebuilding your factories and fortune. The entire republic stands behind your recovery!
+Immortal gratitude! ${ministerTitle}`;
+
+      const esBody = `🔥🏛️ [HONOR AL SACRIFICIO SUPREMO - ${countryName.toUpperCase()} ${ministerTitle}]
+¡Heroico Patriota ${profile.username}!
+${countryName} JAMÁS olvidará que usted sacrificó sus empresas desde los cimientos por la patria (${sacrificeMeritEs}).
+¡Ánimo y frente en alto! Tiene CERO presión de donar: enfóquese 100% en reconstruir sus fábricas y economía. ¡Toda la república respalda su recuperación!
+¡Gratitud eterna! ${ministerTitle}`;
+
+      messages.push({
+        language: 'en',
+        tone: 'patriotic-military',
+        title: 'Supreme Sacrifice & Company Rebuild Morale Salute (English)',
+        body: enforceMaxTelegramLength(enBody, profile.username, 492),
+        diplomaticMode: 'commendation',
+        commendationArchetype: commArch,
+      });
+      messages.push({
+        language: 'es',
+        tone: 'patriotic-military',
+        title: 'Saludo de Moral al Sacrificio Supremo y Reconstrucción (Español)',
+        body: enforceMaxTelegramLength(esBody, profile.username, 492),
+        diplomaticMode: 'commendation',
+        commendationArchetype: commArch,
+      });
+    } else if (commArch === 'dormant-pillar-reactivation') {
+      const rankTagEn = profile.historicalRank ? ` (All-Time Rank #${profile.historicalRank})` : '';
+      const rankTagEs = profile.historicalRank ? ` (Rango Histórico #${profile.historicalRank})` : '';
+
+      const enBody = `🏛️ [PILLAR SALUTE & INVITATION - ${countryName.toUpperCase()} ${ministerTitle}]
+Salute, Historical Pillar ${profile.username}!
+Our ${currentDate} audit honors your ${lifetimeDonatedFormatted} BTC lifetime treasury foundation${rankTagEn}.
+While your last ${periodDays}d contribution is ${donatedFormatted} BTC (with ${liquidFormatted} BTC liquid cash), your Pillar legacy stands tall. Whenever ready, a voluntary ${suggestedFormatted} BTC boost would greatly strengthen ${countryName}!
+With gratitude, ${ministerTitle}`;
+
+      const esBody = `🏛️ [SALUDO E INVITACIÓN A PILAR - ${countryName.toUpperCase()} ${ministerTitle}]
+¡Salve, Pilar Histórico ${profile.username}!
+La auditoría (${currentDate}) honra su legado histórico de ${lifetimeDonatedFormatted} BTC donados${rankTagEs}.
+Aunque en los últimos ${periodDays}d registra ${donatedFormatted} BTC (con ${liquidFormatted} BTC líquidos), su estatus de Pilar permanece intacto. Cuando guste, un aporte voluntario de ${suggestedFormatted} BTC impulsaría enormemente a ${countryName}.
+¡Con gratitud! ${ministerTitle}`;
+
+      messages.push({
+        language: 'en',
+        tone: 'diplomatic-formal',
+        title: 'Dormant Historical Pillar — Honor & Gentle Reactivation (English)',
+        body: enforceMaxTelegramLength(enBody, profile.username, 492),
+        diplomaticMode: 'commendation',
+        commendationArchetype: commArch,
+        suggestedAmountBtc: suggestedDonation,
+      });
+      messages.push({
+        language: 'es',
+        tone: 'diplomatic-formal',
+        title: 'Pilar Histórico Inactivo — Honor y Reactivación Cordial (Español)',
+        body: enforceMaxTelegramLength(esBody, profile.username, 492),
+        diplomaticMode: 'commendation',
+        commendationArchetype: commArch,
+        suggestedAmountBtc: suggestedDonation,
+      });
+    } else if (commArch === 'active-historical-pillar') {
       const rankTagEn = profile.historicalRank ? ` (All-Time Rank #${profile.historicalRank})` : '';
       const rankTagEs = profile.historicalRank ? ` (Rango Histórico #${profile.historicalRank})` : '';
       const activeMeritEn =
@@ -2571,13 +3241,108 @@ Con gratitud, ${ministerTitle}`;
   }
 
   // ============================================================================
-  // MODE 1: TREASURY CONTRIBUTION NUDGE (WITH 3.5x GROWTH SHIELD)
+  // MODE 1: TREASURY CONTRIBUTION NUDGE (WITH 3.5x GROWTH SHIELD, PILLAR & VETERAN RESPECT)
   // ============================================================================
+  if (specialTag === 'resting-veteran-donor') {
+    const enBody = `🎖️ [VETERAN DONOR SALUTE - ${countryName.toUpperCase()} ${ministerTitle}]
+Dear Veteran Donor ${profile.username},
+We deeply value your ${lifetimeDonatedFormatted} BTC lifetime donations to ${countryName} (well above our national median)!
+We noticed ${donatedFormatted} BTC donated in the last ${periodDays}d (${liquidFormatted} BTC cash / ${resourceFormatted} BTC stock). If you're saving for a milestone, keep pushing—and whenever ready, a ${suggestedFormatted} BTC boost would be hugely appreciated!
+With gratitude, ${ministerTitle}`;
+
+    const esBody = `🎖️ [SALUDO A DONANTE VETERANO - ${countryName.toUpperCase()} ${ministerTitle}]
+Estimado Donante Veterano ${profile.username}:
+¡Valoramos enormemente su historial de ${lifetimeDonatedFormatted} BTC donados a ${countryName} (muy por encima de la mediana nacional)!
+Notamos ${donatedFormatted} BTC en los últimos ${periodDays}d (${liquidFormatted} BTC líquidos / ${resourceFormatted} BTC en stock). Si ahorra para una meta personal, ¡adelante! Cuando guste retomar, un aporte de ${suggestedFormatted} BTC será muy apreciado.
+Con gratitud, ${ministerTitle}`;
+
+    messages.push({
+      language: 'en',
+      tone: 'diplomatic-formal',
+      title: 'Encouraging Veteran Donor — Milestone-Aware Nudge (English)',
+      body: enforceMaxTelegramLength(enBody, profile.username, 492),
+      archetype,
+      diplomaticMode: 'nudge',
+      suggestedAmountBtc: suggestedDonation,
+    });
+    messages.push({
+      language: 'es',
+      tone: 'diplomatic-formal',
+      title: 'Donante Veterano — Invitación Cordial Consciente de Metas (Español)',
+      body: enforceMaxTelegramLength(esBody, profile.username, 492),
+      archetype,
+      diplomaticMode: 'nudge',
+      suggestedAmountBtc: suggestedDonation,
+    });
+
+    const activeLangVet =
+      typeof localStorage !== 'undefined' && localStorage.getItem('warera_app_lang_v1') === 'es'
+        ? 'es'
+        : 'en';
+    if (activeLangVet === 'es') {
+      messages.sort((a, b) => (a.language === 'es' ? -1 : b.language === 'es' ? 1 : 0));
+    }
+    return messages;
+  }
+
+  if (specialTag === 'war-vet-in-eco') {
+    const enBody = `⚔️🔄 [WAR VETERAN CHECK-IN - ${countryName.toUpperCase()} ${ministerTitle}]
+Salute, Warrior ${profile.username}!
+We honor your ${careerDmgFormatted} career combat damage for ${countryName} and see you're currently in ${profile.playstyle} mode (${liquidFormatted} BTC cash / ${resourceFormatted} BTC stock).
+If you're farming to buy weapons and war gear, we salute your preparation! Whenever your war chest allows, a ${suggestedFormatted} BTC treasury contribution would be greatly appreciated.
+For ${countryName}! ${ministerTitle}`;
+
+    const esBody = `⚔️🔄 [SALUDO A VETERANO EN ECO - ${countryName.toUpperCase()} ${ministerTitle}]
+¡Saludo militar, Guerrero ${profile.username}!
+Honramos sus ${careerDmgFormatted} de daño histórico por ${countryName} y vemos que está en modo ${profile.playstyle} (${liquidFormatted} BTC líquidos / ${resourceFormatted} BTC en stock).
+Si está farmeando para comprar armas y equipo de guerra, ¡apoyamos su preparación! Cuando su arsenal lo permita, un aporte de ${suggestedFormatted} BTC ayudará mucho al país.
+¡Por ${countryName}! ${ministerTitle}`;
+
+    messages.push({
+      language: 'en',
+      tone: 'patriotic-military',
+      title: 'War Veteran in Eco — Gear Farming Check-In Nudge (English)',
+      body: enforceMaxTelegramLength(enBody, profile.username, 492),
+      archetype,
+      diplomaticMode: 'nudge',
+      suggestedAmountBtc: suggestedDonation,
+    });
+    messages.push({
+      language: 'es',
+      tone: 'patriotic-military',
+      title: 'Veterano de Guerra en Eco — Invitación Cordial de Equipamiento (Español)',
+      body: enforceMaxTelegramLength(esBody, profile.username, 492),
+      archetype,
+      diplomaticMode: 'nudge',
+      suggestedAmountBtc: suggestedDonation,
+    });
+
+    const activeLangWarEco =
+      typeof localStorage !== 'undefined' && localStorage.getItem('warera_app_lang_v1') === 'es'
+        ? 'es'
+        : 'en';
+    if (activeLangWarEco === 'es') {
+      messages.sort((a, b) => (a.language === 'es' ? -1 : b.language === 'es' ? 1 : 0));
+    }
+    return messages;
+  }
+
+  const pillarGreetingEn = isPillarStanding
+    ? `Dear Historical Pillar ${profile.username} (${lifetimeDonatedFormatted} BTC lifetime),`
+    : `Dear citizen ${profile.username},`;
+  const pillarGreetingEs = isPillarStanding
+    ? `Estimado Pilar Histórico ${profile.username} (${lifetimeDonatedFormatted} BTC históricos),`
+    : `Estimado ciudadano ${profile.username},`;
+
   if (archetype === 'resource-stockpiler') {
-    const enTitle = isLeech
+    const enTitle = isPillarStanding
+      ? 'Historical Pillar — Stockpile Contribution Invitation (English)'
+      : isLeech
       ? 'Urgent Stockpile Mobilization Summons (English)'
       : 'Strategic Stockpile Liquidation Notice (English)';
-    const esTitle = isLeech
+    const esTitle = isPillarStanding
+      ? 'Pilar Histórico — Invitación de Aporte de Stock (Español)'
+      : isLeech
       ? 'Llamado Urgente de Movilización de Reservas (Español)'
       : 'Aviso Estratégico de Liquidación de Stock (Español)';
 
@@ -2588,7 +3353,7 @@ Audit (${currentDate}) records ${resourceFormatted} BTC in commodities (${recomm
 Even after shielding ${growthBufferFormatted} BTC (3.5x reserve) for your economic growth, your excess hoard is massive. Please sell 10%–15% of excess stock and donate ${suggestedFormatted} BTC this week.
 Fulfill your duty! ${ministerTitle}`
       : `🏛️ [${countryName.toUpperCase()} - ${ministerTitle}]
-Dear citizen ${profile.username},
+${pillarGreetingEn}
 As of ${currentDate}, our audit notes ${resourceFormatted} BTC in stockpiles (${recommendation.resourceRatioToCountryMedian}x median) and ${donatedFormatted} BTC donated in ${periodDays}d.
 We protect a ${growthBufferFormatted} BTC (3.5x) reserve so you can speculate and grow; selling just 10%–15% of your excess above that buffer lets you donate ${suggestedFormatted} BTC to ${countryName}.
 For the homeland! ${ministerTitle}`;
@@ -2600,7 +3365,7 @@ La auditoría (${currentDate}) registra ${resourceFormatted} BTC en recursos (${
 Incluso protegiendo ${growthBufferFormatted} BTC (3.5x) para su crecimiento, su excedente es alto. Le solicitamos vender 10%–15% del exceso y aportar ${suggestedFormatted} BTC esta semana.
 ¡Cumpla su deber! ${ministerTitle}`
       : `🏛️ [${countryName.toUpperCase()} - ${ministerTitle}]
-Estimado ciudadano ${profile.username},
+${pillarGreetingEs}
 Al ${currentDate}, el Ministerio registra ${resourceFormatted} BTC en recursos (${recommendation.resourceRatioToCountryMedian}x la mediana) y ${donatedFormatted} BTC donados en ${periodDays}d.
 Protegemos ${growthBufferFormatted} BTC (3.5x) para su comercio y crecimiento; vendiendo solo 10%–15% del excedente sobre ese margen, le invitamos a donar ${suggestedFormatted} BTC a ${countryName}.
 ¡Por la patria! ${ministerTitle}`;
@@ -2624,10 +3389,14 @@ Protegemos ${growthBufferFormatted} BTC (3.5x) para su comercio y crecimiento; v
       suggestedAmountBtc: suggestedDonation,
     });
   } else if (archetype === 'liquid-hoarder') {
-    const enTitle = isLeech
+    const enTitle = isPillarStanding
+      ? 'Historical Pillar — Liquidity Reactivation Invitation (English)'
+      : isLeech
       ? 'Urgent Idle Liquidity Summons (English)'
       : 'Lump-Sum Liquidity Contribution Notice (English)';
-    const esTitle = isLeech
+    const esTitle = isPillarStanding
+      ? 'Pilar Histórico — Invitación de Aporte de Liquidez (Español)'
+      : isLeech
       ? 'Llamado Urgente de Liquidez Inactiva (Español)'
       : 'Invitación de Aporte de Liquidez (Español)';
 
@@ -2638,7 +3407,7 @@ Audit (${currentDate}) notes ${liquidFormatted} BTC in idle liquid cash (${recom
 Uninvested capital weakens our frontlines. An immediate lump-sum contribution of ${suggestedFormatted} BTC from your idle reserves is requested for the national treasury.
 Currency is ammunition! ${ministerTitle}`
       : `🏛️ [${countryName.toUpperCase()} - ${ministerTitle}]
-Dear citizen ${profile.username},
+${pillarGreetingEn}
 The Ministry notes (${currentDate}) ${liquidFormatted} BTC in available liquid cash (${recommendation.liquidRatioToCountryMedian}x country median) and ${donatedFormatted} BTC donated over ${periodDays}d.
 Since you hold strong unused liquidity, we invite you to make a one-time lump-sum contribution of ${suggestedFormatted} BTC to ${countryName}'s treasury to fund national defense and growth.
 For the homeland! ${ministerTitle}`;
@@ -2650,7 +3419,7 @@ En auditoría (${currentDate}) registra ${liquidFormatted} BTC en efectivo líqu
 El capital sin uso debilita nuestras líneas. Se requiere un aporte único urgente de ${suggestedFormatted} BTC de su liquidez disponible a la tesorería nacional.
 ¡La moneda es munición! ${ministerTitle}`
       : `🏛️ [${countryName.toUpperCase()} - ${ministerTitle}]
-Estimado ciudadano ${profile.username},
+${pillarGreetingEs}
 El Ministerio nota (${currentDate}) ${liquidFormatted} BTC en liquidez disponible (${recommendation.liquidRatioToCountryMedian}x la mediana del país) y aportes de ${donatedFormatted} BTC en ${periodDays}d.
 Contando con amplia reserva líquida sin uso, le invitamos a realizar un aporte único sugerido de ${suggestedFormatted} BTC a la tesorería de ${countryName} para impulsar nuestra defensa.
 ¡Por la patria! ${ministerTitle}`;
@@ -2675,10 +3444,14 @@ Contando con amplia reserva líquida sin uso, le invitamos a realizar un aporte 
     });
   } else {
     // 'weekly-cashflow' archetype
-    const enTitle = isLeech
+    const enTitle = isPillarStanding
+      ? 'Historical Pillar — Period Quota Step-Up Invitation (English)'
+      : isLeech
       ? 'Urgent Weekly Quota Summons (English)'
       : 'Weekly Cashflow Step-Up Notice (English)';
-    const esTitle = isLeech
+    const esTitle = isPillarStanding
+      ? 'Pilar Histórico — Invitación de Cuota del Período (Español)'
+      : isLeech
       ? 'Llamado Urgente de Cuota Semanal (Español)'
       : 'Notificación de Aporte Semanal (Español)';
 
@@ -2689,7 +3462,7 @@ Audit (${currentDate}) records ${liquidFormatted} BTC liquid cash and only ${don
 To align with ${countryName}'s ${recommendation.targetQuotaPct}% weekly ${profile.playstyle} benchmark, an urgent contribution of ${suggestedFormatted} BTC is requested this week to sustain defense contracts.
 Fulfill your patriotic duty! ${ministerTitle}`
       : `🏛️ [${countryName.toUpperCase()} - ${ministerTitle}]
-Dear citizen ${profile.username},
+${pillarGreetingEn}
 The Ministry of Economy notes (${currentDate}) ${donatedFormatted} BTC contributed over the past ${periodDays} days and ${liquidFormatted} BTC in available liquidity.
 A modest weekly step-up goes a long way: we invite you to contribute a suggested ${suggestedFormatted} BTC this week to reach ${countryName}'s ${recommendation.targetQuotaPct}% ${profile.playstyle} goal.
 For the homeland! ${ministerTitle}`;
@@ -2701,7 +3474,7 @@ La auditoría (${currentDate}) registra ${liquidFormatted} BTC de liquidez y sol
 Para cumplir la meta semanal del ${recommendation.targetQuotaPct}% (${profile.playstyle}) de ${countryName}, se solicita un aporte urgente de ${suggestedFormatted} BTC esta semana a la tesorería.
 ¡Cumpla su deber patriótico! ${ministerTitle}`
       : `🏛️ [${countryName.toUpperCase()} - ${ministerTitle}]
-Estimado ciudadano ${profile.username},
+${pillarGreetingEs}
 El Ministerio de Economía registra (${currentDate}) aportes de ${donatedFormatted} BTC en los últimos ${periodDays} días y ${liquidFormatted} BTC de liquidez.
 Un pequeño incremento semanal marca la diferencia: le invitamos a realizar una donación sugerida de ${suggestedFormatted} BTC esta semana para alcanzar la meta nacional (${recommendation.targetQuotaPct}%).
 ¡Por la patria! ${ministerTitle}`;
